@@ -1,0 +1,67 @@
+{
+  "name": "agent-conf",
+  "version": "1.0.0",
+  "description": "CLI utility to sync AI agent configurations across repositories",
+  "type": "module",
+  "bin": {
+    "agent-conf": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "build": "tsup",
+    "dev": "tsx --watch src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "biome lint",
+    "lint:fix": "biome lint --fix",
+    "format": "biome format --write",
+    "format:check": "biome format",
+    "check": "biome check",
+    "check:fix": "biome check --fix",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "pnpm run build",
+    "install:global": "pnpm build && npm install -g ."
+  },
+  "dependencies": {
+    "@clack/prompts": "^0.7.0",
+    "commander": "^12.1.0",
+    "fast-glob": "^3.3.2",
+    "ora": "^8.0.1",
+    "picocolors": "^1.0.1",
+    "simple-git": "^3.25.0",
+    "tabtab": "^3.0.2",
+    "yaml": "^2.4.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.13",
+    "@types/node": "^20.14.0",
+    "@types/tabtab": "^3.0.4",
+    "tsup": "^8.1.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.4.5",
+    "vitest": "^1.6.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "keywords": [
+    "agent-conf",
+    "ai-agents",
+    "engineering-standards",
+    "cli",
+    "sync"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/org/agent-conf.git",
+    "directory": "cli"
+  },
+  "license": "MIT"
+}
