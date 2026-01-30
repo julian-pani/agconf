@@ -7,9 +7,7 @@ import {
 } from "../core/global-config.js";
 import { createLogger } from "../utils/logger.js";
 
-export interface ConfigOptions {
-  // No options for now
-}
+export type ConfigOptions = {}
 
 export type ConfigSetKey = "cli-repo";
 

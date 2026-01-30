@@ -177,11 +177,12 @@ export function getShellConfigFile(shell: string): string | null {
   switch (shell) {
     case "zsh":
       return path.join(home, ".zshrc");
-    case "bash":
+    case "bash": {
       // Check for .bash_profile first (macOS), then .bashrc
       const bashProfile = path.join(home, ".bash_profile");
       if (fs.existsSync(bashProfile)) return bashProfile;
       return path.join(home, ".bashrc");
+    }
     case "fish":
       return path.join(home, ".config", "fish", "config.fish");
     default:
