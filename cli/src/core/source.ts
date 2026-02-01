@@ -1,7 +1,11 @@
+import { exec } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { promisify } from "node:util";
 import { type SimpleGit, simpleGit } from "simple-git";
 import type { Source } from "../schemas/lockfile.js";
+
+const execAsync = promisify(exec);
 
 export interface ResolvedSource {
   source: Source;
@@ -63,10 +67,8 @@ export async function resolveGithubSource(
   tempDir: string,
 ): Promise<ResolvedSource> {
   const { repository, ref = DEFAULT_REF } = options;
-  const repoUrl = `https://github.com/${repository}.git`;
 
-  const git: SimpleGit = simpleGit();
-  await git.clone(repoUrl, tempDir, ["--depth", "1", "--branch", ref]);
+  await cloneRepository(repository, ref, tempDir);
 
   const clonedGit: SimpleGit = simpleGit(tempDir);
   const log = await clonedGit.log({ maxCount: 1 });
@@ -85,6 +87,43 @@ export async function resolveGithubSource(
     agentsMdPath: path.join(tempDir, "instructions", "AGENTS.md"),
     skillsPath: path.join(tempDir, "skills"),
   };
+}
+
+/**
+ * Clone a repository using the best available method.
+ * Tries in order: gh CLI, HTTPS with token, plain HTTPS.
+ */
+async function cloneRepository(repository: string, ref: string, tempDir: string): Promise<void> {
+  // Try gh CLI first (handles auth automatically in CI)
+  if (await isGhAvailable()) {
+    try {
+      await execAsync(`gh repo clone ${repository} ${tempDir} -- --depth 1 --branch ${ref}`);
+      return;
+    } catch {
+      // gh failed, try other methods
+    }
+  }
+
+  // Fall back to git with GITHUB_TOKEN authentication
+  const token = process.env.GITHUB_TOKEN;
+  const repoUrl = token
+    ? `https://x-access-token:${token}@github.com/${repository}.git`
+    : `https://github.com/${repository}.git`;
+
+  const git: SimpleGit = simpleGit();
+  await git.clone(repoUrl, tempDir, ["--depth", "1", "--branch", ref]);
+}
+
+/**
+ * Check if gh CLI is available.
+ */
+async function isGhAvailable(): Promise<boolean> {
+  try {
+    await execAsync("gh --version");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function findCanonicalRepo(startDir: string): Promise<string> {
