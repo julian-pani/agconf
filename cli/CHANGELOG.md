@@ -1,3 +1,14 @@
+## 1.0.0 (2026-02-01)
+
+### Features
+
+* agent-conf CLI, initial work, partial MVP ([bbb9472](https://github.com/julian-pani/agent-conf/commit/bbb9472f0f5fb1aa092fd63e91187adb3bb0d6b9))
+* prepare CLI for npm publishing ([a151423](https://github.com/julian-pani/agent-conf/commit/a151423ff4c76e1a82dbcb2461bca5d341df3522))
+
+### Bug Fixes
+
+* **release:** fixing the release from github ([e5d4628](https://github.com/julian-pani/agent-conf/commit/e5d462836cb5cc615705b42c91b120105b8db789))
+
 # Changelog
 
 ## 0.1.2
