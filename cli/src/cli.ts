@@ -18,8 +18,8 @@ if (handleCompletion()) {
 }
 
 /**
- * Checks if the installed CLI is outdated compared to the lockfile's source commit.
- * Shows a warning if they don't match.
+ * Checks if the installed CLI is outdated compared to the version used in the last sync.
+ * Shows a warning if the lockfile was created with a newer CLI version.
  */
 async function warnIfCliOutdated(): Promise<void> {
   try {
@@ -32,14 +32,10 @@ async function warnIfCliOutdated(): Promise<void> {
       console.log();
       console.log(
         pc.yellow(
-          `⚠ CLI is outdated: built from ${mismatch.cliCommit}, but repo was synced from ${mismatch.lockfileCommit}`,
+          `⚠ CLI is outdated: v${mismatch.currentVersion} installed, but repo was synced with v${mismatch.lockfileVersion}`,
         ),
       );
-      console.log(
-        pc.yellow(
-          "  Rebuild the CLI: cd <agent-conf-repo>/cli && pnpm build && pnpm link --global",
-        ),
-      );
+      console.log(pc.yellow("  Run: agent-conf upgrade-cli"));
       console.log();
     }
   } catch {
@@ -96,6 +92,8 @@ export function createCli(): Command {
     .option("--ref <ref>", "GitHub ref/version to sync from")
     .option("--pinned", "Use lockfile version without fetching latest")
     .option("-t, --target <targets...>", "Target platforms (claude, codex)", ["claude"])
+    .option("--summary-file <path>", "Write sync summary to file (markdown, for CI)")
+    .option("--expand-changes", "Show all items in output (default: first 5)")
     .action(
       async (options: {
         source?: string;
@@ -105,6 +103,8 @@ export function createCli(): Command {
         ref?: string;
         pinned?: boolean;
         target?: string[];
+        summaryFile?: string;
+        expandChanges?: boolean;
       }) => {
         await syncCommand(options);
       },

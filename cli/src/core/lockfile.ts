@@ -85,13 +85,13 @@ export function getCliVersion(): string {
 }
 
 export interface VersionMismatch {
-  cliCommit: string;
-  lockfileCommit: string;
+  currentVersion: string;
+  lockfileVersion: string;
 }
 
 /**
- * Checks if the CLI's build commit matches the lockfile's source commit.
- * Returns mismatch info if they differ (CLI is outdated), null otherwise.
+ * Checks if the installed CLI version is older than the version used to sync.
+ * Returns mismatch info if CLI is outdated, null otherwise.
  */
 export async function checkCliVersionMismatch(targetDir: string): Promise<VersionMismatch | null> {
   const lockfile = await readLockfile(targetDir);
@@ -101,29 +101,30 @@ export async function checkCliVersionMismatch(targetDir: string): Promise<Versio
     return null;
   }
 
-  // Only check for GitHub sources (local doesn't have a meaningful commit to compare)
-  if (lockfile.source.type !== "github") {
+  const currentVersion = getCliVersion();
+  const lockfileVersion = lockfile.cli_version;
+
+  // Can't compare if either version is missing/invalid
+  if (!currentVersion || !lockfileVersion) {
     return null;
   }
 
-  const cliCommit = getBuildCommit();
-  const lockfileCommit = lockfile.source.commit_sha;
+  // Compare versions: warn if lockfile was synced with a newer CLI
+  // Simple semver comparison (major.minor.patch)
+  const current = currentVersion.split(".").map(Number);
+  const lockfile_ = lockfileVersion.split(".").map(Number);
 
-  // If CLI commit is unknown, we can't compare
-  if (cliCommit === "unknown") {
-    return null;
+  for (let i = 0; i < 3; i++) {
+    if ((lockfile_[i] || 0) > (current[i] || 0)) {
+      return {
+        currentVersion,
+        lockfileVersion,
+      };
+    }
+    if ((current[i] || 0) > (lockfile_[i] || 0)) {
+      return null; // Current is newer, no warning needed
+    }
   }
 
-  // Check if commits match (compare first 7 chars for short SHA compatibility)
-  const cliShort = cliCommit.slice(0, 7);
-  const lockfileShort = lockfileCommit.slice(0, 7);
-
-  if (cliShort !== lockfileShort) {
-    return {
-      cliCommit: cliShort,
-      lockfileCommit: lockfileShort,
-    };
-  }
-
-  return null;
+  return null; // Versions are equal
 }

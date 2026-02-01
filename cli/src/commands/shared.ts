@@ -1,3 +1,4 @@
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as prompts from "@clack/prompts";
 import pc from "picocolors";
@@ -28,6 +29,8 @@ export interface SharedSyncOptions {
   ref?: string;
   target?: string[];
   pinned?: boolean;
+  summaryFile?: string;
+  expandChanges?: boolean;
 }
 
 export interface CommandContext {
@@ -161,8 +164,7 @@ export async function resolveVersion(
       releaseInfo: release,
     };
   } catch {
-    spinner.fail("Failed to fetch latest release, falling back to master");
-    logger.warn("Could not fetch latest release. Using master branch instead.");
+    spinner.info("No releases found, using master branch");
     return {
       ref: "master",
       version: undefined,
@@ -326,6 +328,10 @@ export interface PerformSyncOptions {
   yes?: boolean | undefined;
   /** Source repository in owner/repo format (for GitHub sources) */
   sourceRepo?: string;
+  /** Write markdown summary to this file (for CI PR descriptions) */
+  summaryFile?: string | undefined;
+  /** Show all items instead of truncating (skills, rules, hooks, etc.) */
+  expandChanges?: boolean | undefined;
 }
 
 export async function performSync(options: PerformSyncOptions): Promise<void> {
@@ -435,7 +441,10 @@ export async function performSync(options: PerformSyncOptions): Promise<void> {
     // Install git hooks
     const hookResult = await installPreCommitHook(targetDir);
 
-    // Summary
+    // Build summary lines for both console and markdown file
+    const summaryLines: string[] = [];
+
+    // Summary header
     console.log();
     console.log(pc.bold("Sync complete:"));
     console.log();
@@ -445,8 +454,10 @@ export async function performSync(options: PerformSyncOptions): Promise<void> {
     if (result.agentsMd.merged) {
       const label = context.commandName === "sync" ? "(updated)" : "(merged)";
       console.log(`  ${pc.green("+")} ${agentsMdPath} ${pc.dim(label)}`);
+      summaryLines.push(`- \`AGENTS.md\` ${label}`);
     } else {
       console.log(`  ${pc.green("+")} ${agentsMdPath} ${pc.dim("(created)")}`);
+      summaryLines.push("- `AGENTS.md` (created)");
     }
 
     // Per-target results
@@ -460,37 +471,94 @@ export async function performSync(options: PerformSyncOptions): Promise<void> {
             ? formatPath(path.join(targetDir, config.instructionsFile))
             : formatPath(path.join(targetDir, config.dir, config.instructionsFile));
 
+        const instructionsRelPath =
+          targetResult.instructionsMd.location === "root"
+            ? config.instructionsFile
+            : `${config.dir}/${config.instructionsFile}`;
+
         if (targetResult.instructionsMd.created) {
           console.log(`  ${pc.green("+")} ${instructionsPath} ${pc.dim("(created)")}`);
+          summaryLines.push(`- \`${instructionsRelPath}\` (created)`);
         } else if (targetResult.instructionsMd.updated) {
           const hint = targetResult.instructionsMd.contentMerged
             ? "(content merged into AGENTS.md, reference added)"
             : "(reference added)";
           console.log(`  ${pc.yellow("~")} ${instructionsPath} ${pc.dim(hint)}`);
+          summaryLines.push(`- \`${instructionsRelPath}\` ${hint}`);
         } else {
           console.log(`  ${pc.dim("-")} ${instructionsPath} ${pc.dim("(unchanged)")}`);
+          summaryLines.push(`- \`${instructionsRelPath}\` (unchanged)`);
         }
       }
 
       // Skills status for this target
       const skillsPath = formatPath(path.join(targetDir, config.dir, "skills"));
+      const skillsRelPath = `${config.dir}/skills/`;
+
+      // Compute new vs updated skills
+      const newSkills = result.skills.synced.filter((s) => !previousSkills.includes(s)).sort();
+      const updatedSkills = result.skills.synced.filter((s) => previousSkills.includes(s)).sort();
+      const removedSkills = orphanResult.deleted.sort();
+
+      // Summary line for skills directory
       console.log(
         `  ${pc.green("+")} ${skillsPath}/ ${pc.dim(`(${result.skills.synced.length} skills, ${targetResult.skills.copied} files)`)}`,
       );
+      summaryLines.push(
+        `- \`${skillsRelPath}\` (${result.skills.synced.length} skills, ${targetResult.skills.copied} files)`,
+      );
 
-      // Orphan deletion status for this target
-      if (orphanResult.deleted.length > 0) {
-        for (const skill of orphanResult.deleted) {
-          const orphanPath = formatPath(path.join(targetDir, config.dir, "skills", skill));
-          console.log(
-            `  ${pc.red("-")} ${orphanPath}/ ${pc.dim("(removed - no longer in source)")}`,
-          );
+      // Helper to display skill list with truncation
+      const MAX_ITEMS_DEFAULT = 5;
+      const shouldExpand = options.expandChanges === true;
+
+      const formatSkillList = (
+        skills: string[],
+        icon: string,
+        colorFn: (s: string) => string,
+        label: string,
+        mdLabel: string,
+      ) => {
+        if (skills.length === 0) return;
+
+        const maxDisplay = shouldExpand ? skills.length : MAX_ITEMS_DEFAULT;
+        const displaySkills = skills.slice(0, maxDisplay);
+        const hiddenCount = skills.length - displaySkills.length;
+
+        for (const skill of displaySkills) {
+          const skillPath = formatPath(path.join(targetDir, config.dir, "skills", skill));
+          const skillRelPath = `${config.dir}/skills/${skill}/`;
+          console.log(`    ${colorFn(icon)} ${skillPath}/ ${pc.dim(`(${label})`)}`);
+          summaryLines.push(`  - \`${skillRelPath}\` (${mdLabel})`);
         }
+
+        if (hiddenCount > 0) {
+          console.log(`    ${pc.dim(`  ... ${hiddenCount} more ${label}`)}`);
+          summaryLines.push(`  - ... ${hiddenCount} more ${mdLabel}`);
+        }
+      };
+
+      // Show new skills
+      formatSkillList(newSkills, "+", pc.green, "new", "new");
+
+      // Show updated skills
+      formatSkillList(updatedSkills, "~", pc.yellow, "updated", "updated");
+
+      // Show removed skills
+      for (const skill of removedSkills) {
+        const orphanPath = formatPath(path.join(targetDir, config.dir, "skills", skill));
+        const orphanRelPath = `${config.dir}/skills/${skill}/`;
+        console.log(`    ${pc.red("-")} ${orphanPath}/ ${pc.dim("(removed)")}`);
+        summaryLines.push(`  - \`${orphanRelPath}\` (removed)`);
       }
+
+      // Show skipped orphans
       if (orphanResult.skipped.length > 0) {
         for (const skill of orphanResult.skipped) {
           const orphanPath = formatPath(path.join(targetDir, config.dir, "skills", skill));
-          console.log(`  ${pc.yellow("!")} ${orphanPath}/ ${pc.dim("(orphaned but skipped)")}`);
+          const orphanRelPath = `${config.dir}/skills/${skill}/`;
+          console.log(`    ${pc.yellow("!")} ${orphanPath}/ ${pc.dim("(orphaned but skipped)")}`);
+          summaryLines.push(`  - \`${orphanRelPath}\` (orphaned but skipped)`);
         }
       }
     }
@@ -500,33 +568,41 @@ export async function performSync(options: PerformSyncOptions): Promise<void> {
       for (const filename of workflowResult.created) {
         const workflowPath = formatPath(path.join(targetDir, ".github/workflows", filename));
         console.log(`  ${pc.green("+")} ${workflowPath} ${pc.dim("(created)")}`);
+        summaryLines.push(`- \`.github/workflows/${filename}\` (created)`);
       }
       for (const filename of workflowResult.updated) {
         const workflowPath = formatPath(path.join(targetDir, ".github/workflows", filename));
         console.log(`  ${pc.yellow("~")} ${workflowPath} ${pc.dim("(updated)")}`);
+        summaryLines.push(`- \`.github/workflows/${filename}\` (updated)`);
       }
       for (const filename of workflowResult.unchanged) {
         const workflowPath = formatPath(path.join(targetDir, ".github/workflows", filename));
         console.log(`  ${pc.dim("-")} ${workflowPath} ${pc.dim("(unchanged)")}`);
+        summaryLines.push(`- \`.github/workflows/${filename}\` (unchanged)`);
       }
     }
 
     // Lockfile status
     const lockfilePath = formatPath(path.join(targetDir, ".agent-conf", "agent-conf.lock"));
     console.log(`  ${pc.green("+")} ${lockfilePath}`);
+    summaryLines.push("- `.agent-conf/lockfile.json` (updated)");
 
     // Git hook status
     const hookPath = formatPath(path.join(targetDir, ".git/hooks/pre-commit"));
     if (hookResult.installed) {
       if (hookResult.alreadyExisted && !hookResult.wasUpdated) {
         console.log(`  ${pc.dim("-")} ${hookPath} ${pc.dim("(unchanged)")}`);
+        summaryLines.push("- `.git/hooks/pre-commit` (unchanged)");
       } else if (hookResult.wasUpdated) {
         console.log(`  ${pc.yellow("~")} ${hookPath} ${pc.dim("(updated)")}`);
+        summaryLines.push("- `.git/hooks/pre-commit` (updated)");
       } else {
         console.log(`  ${pc.green("+")} ${hookPath} ${pc.dim("(installed)")}`);
+        summaryLines.push("- `.git/hooks/pre-commit` (installed)");
       }
     } else if (hookResult.alreadyExisted) {
       console.log(`  ${pc.yellow("!")} ${hookPath} ${pc.dim("(skipped - custom hook exists)")}`);
+      summaryLines.push("- `.git/hooks/pre-commit` (skipped - custom hook exists)");
     }
 
     console.log();
@@ -536,6 +612,23 @@ export async function performSync(options: PerformSyncOptions): Promise<void> {
     }
     if (targets.length > 1) {
       console.log(pc.dim(`Targets: ${targets.join(", ")}`));
+    }
+
+    // Write summary file if requested (for CI PR descriptions)
+    if (options.summaryFile) {
+      const sourceStr = formatSourceString(resolvedSource.source);
+      const versionStr = resolvedVersion.version
+        ? `v${resolvedVersion.version}`
+        : resolvedVersion.ref;
+      const summary = `## Changes
+
+${summaryLines.join("\n")}
+
+---
+**Source:** ${sourceStr}
+**Version:** ${versionStr}
+`;
+      await fs.writeFile(options.summaryFile, summary, "utf-8");
     }
 
     prompts.outro(pc.green("Done!"));

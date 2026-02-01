@@ -137,5 +137,7 @@ export async function syncCommand(options: SyncOptions): Promise<void> {
     tempDir,
     yes: options.yes,
     sourceRepo: repository,
+    summaryFile: options.summaryFile,
+    expandChanges: options.expandChanges,
   });
 }

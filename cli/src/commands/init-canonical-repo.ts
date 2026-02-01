@@ -226,7 +226,7 @@ jobs:
         run: npm install -g agent-conf
 
       - name: Run sync
-        run: agent-conf sync --yes
+        run: agent-conf sync --yes --summary-file /tmp/sync-summary.md --expand-changes
         env:
           GITHUB_TOKEN: \${{ secrets.token }}
 
@@ -270,10 +270,17 @@ jobs:
         env:
           GH_TOKEN: \${{ github.token }}
         run: |
+          # Read sync summary if available
+          if [ -f /tmp/sync-summary.md ]; then
+            SYNC_SUMMARY=\$(cat /tmp/sync-summary.md)
+          else
+            SYNC_SUMMARY="## Changes
+          - Synced agent configuration from canonical repository"
+          fi
+
           PR_BODY="This PR was automatically created by the ${prefix} sync workflow.
 
-          ## Changes
-          - Synced agent configuration from canonical repository
+          \$SYNC_SUMMARY
 
           ---
           *This is an automated PR. Review the changes and merge when ready.*"
