@@ -6,7 +6,7 @@ nav_order: 3
 
 # Canonical Repository Setup Guide
 
-This guide explains how to set up a canonical repository after scaffolding it with `agent-conf init-canonical-repo`.
+This guide explains how to set up a canonical repository after scaffolding it with `agent-conf canonical init`.
 
 ## Overview
 
@@ -20,7 +20,7 @@ mkdir my-standards && cd my-standards
 git init
 
 # 2. Scaffold the canonical repository structure
-agent-conf init-canonical-repo
+agent-conf canonical init
 
 # 3. Edit the generated files (see sections below)
 
@@ -32,7 +32,7 @@ git push -u origin main
 
 ## Directory Structure
 
-After running `init-canonical-repo`, you'll have:
+After running `canonical init`, you'll have:
 
 ```
 my-standards/
@@ -161,18 +161,23 @@ The scaffolded workflows in `.github/workflows/` are **reusable workflows** that
 
 ### CLI Installation
 
-The generated workflow files install the `agent-conf` CLI from npm:
-
-```yaml
-- name: Install agent-conf CLI
-  run: npm install -g agent-conf
-```
-
-This is the default and recommended method. If you need a specific version:
+The generated workflow files install the `agent-conf` CLI with a pinned version:
 
 ```yaml
 - name: Install agent-conf CLI
   run: npm install -g agent-conf@1.2.0
+```
+
+The version is automatically set to the CLI version used when running `agent-conf canonical init`. This ensures consistent behavior between local development and CI.
+
+To update the CLI version in your workflows after upgrading:
+
+```bash
+# Update to your current CLI version
+agent-conf canonical update
+
+# Or specify a version explicitly
+agent-conf canonical update --cli-version 2.0.0
 ```
 
 ### How Reusable Workflows Work

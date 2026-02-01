@@ -236,14 +236,53 @@ The lockfile tracks all sync metadata:
 
 The CLI version is tracked separately from content versions. The CLI version in the lockfile (`cli_version`) records which CLI version performed the sync, but doesn't affect content versioning.
 
+**CLI Version in Workflows:**
+
+Canonical repository workflows pin to a specific CLI version, set during `agent-conf canonical init`. Use `agent-conf canonical update` after upgrading the CLI to update workflow files.
+
 **To update the CLI:**
 
 ```bash
-# Using npm (recommended)
+# Upgrade CLI
 npm install -g agent-conf@latest
 
-# Or install a specific version
-npm install -g agent-conf@1.2.0
+# Update canonical repo workflows (if in a canonical repo)
+agent-conf canonical update
+```
+
+## CLI Version Pinning in Workflows
+
+When you create a canonical repository with `agent-conf canonical init`, the generated workflow files pin the CLI version:
+
+```yaml
+- name: Install agent-conf CLI
+  run: npm install -g agent-conf@1.2.0  # Pinned to CLI version at init time
+```
+
+### Updating Pinned CLI Version
+
+After upgrading the CLI locally, update your canonical repository's workflows:
+
+```bash
+# Upgrade CLI
+npm install -g agent-conf@latest
+
+# Update workflows to use new version
+agent-conf canonical update
+```
+
+This ensures CI uses the same CLI version you're using locally.
+
+### Specifying a Specific Version
+
+You can pin to a specific version:
+
+```bash
+# During init
+agent-conf canonical init --cli-version 1.5.0
+
+# Or update existing
+agent-conf canonical update --cli-version 1.5.0
 ```
 
 ## Upgrade Scenarios

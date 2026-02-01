@@ -54,7 +54,7 @@ pnpm install:global       # Build + install globally
 - `providers/` - Content providers (GitHub API)
 
 ### Commands (`cli/src/commands/`)
-10 commands: init, sync, status, check, update, upgrade-cli, init-canonical-repo, config, completion, shared
+Commands: init, sync, status, check, upgrade-cli, canonical (init, update), config, completion
 
 ### Configuration (`cli/src/config/`)
 - Zod schemas for canonical config (`agent-conf.yaml`) and lockfile validation
@@ -86,3 +86,15 @@ Types: feat, fix, docs, style, refactor, perf, test, chore
 - `BREAKING CHANGE:` → **blocked** (requires manual workflow trigger with `allow_major=true`)
 
 Major releases are protected to prevent accidental breaking version bumps. See `cli/CONTRIBUTING.md` for full release docs.
+
+## Important Guidelines
+
+### CLI Command Changes
+When adding or modifying CLI commands, always update the shell completions in `cli/src/commands/completion.ts` accordingly. The completions provide tab-completion for commands, subcommands, and options.
+
+### Testing Requirements
+**No manual tests.** All tests must be runnable programmatically via `pnpm test`. When implementing new features:
+- Write comprehensive unit and integration tests
+- Avoid any verification steps that require manual execution
+- Use temp directories and mocks for file system and external dependencies
+- For commands that use `process.cwd()`, add a `cwd` option for testability

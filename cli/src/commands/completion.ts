@@ -39,20 +39,31 @@ const COMMANDS = {
     description: "Upgrade the CLI to latest version",
     options: ["-y", "--yes"],
   },
-  "init-canonical-repo": {
-    description: "Scaffold a new canonical repository",
-    options: [
-      "-n",
-      "--name",
-      "-o",
-      "--org",
-      "-d",
-      "--dir",
-      "--marker-prefix",
-      "--no-examples",
-      "-y",
-      "--yes",
-    ],
+  canonical: {
+    description: "Manage canonical repositories",
+    options: [],
+    subcommands: {
+      init: {
+        description: "Scaffold a new canonical repository",
+        options: [
+          "-n",
+          "--name",
+          "-o",
+          "--org",
+          "-d",
+          "--dir",
+          "--marker-prefix",
+          "--cli-version",
+          "--no-examples",
+          "-y",
+          "--yes",
+        ],
+      },
+      update: {
+        description: "Update CLI version in workflow files",
+        options: ["--cli-version", "-y", "--yes"],
+      },
+    },
   },
   completion: {
     description: "Manage shell completions",
@@ -62,6 +73,7 @@ const COMMANDS = {
 
 const CONFIG_SUBCOMMANDS = ["show", "get", "set"];
 const COMPLETION_SUBCOMMANDS = ["install", "uninstall"];
+const CANONICAL_SUBCOMMANDS = ["init", "update"];
 const TARGET_VALUES = ["claude", "codex"];
 
 /**
@@ -114,6 +126,35 @@ export function handleCompletion(): boolean {
       })),
     );
     return true;
+  }
+
+  // Complete subcommands for 'canonical'
+  if (currentCommand === "canonical" && words === 2) {
+    tabtab.log(
+      CANONICAL_SUBCOMMANDS.map((name) => ({
+        name,
+        description:
+          name === "init"
+            ? "Scaffold a new canonical repository"
+            : "Update CLI version in workflows",
+      })),
+    );
+    return true;
+  }
+
+  // Complete options for 'canonical' subcommands
+  if (currentCommand === "canonical" && words >= 3) {
+    const subcommand = env.line.split(/\s+/)[2];
+    const canonicalCmd = COMMANDS.canonical as {
+      subcommands: Record<string, { options: string[] }>;
+    };
+    if (subcommand && subcommand in canonicalCmd.subcommands) {
+      const subcommandConfig = canonicalCmd.subcommands[subcommand];
+      if (subcommandConfig) {
+        tabtab.log(subcommandConfig.options);
+        return true;
+      }
+    }
   }
 
   // Complete --target values

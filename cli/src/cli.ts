@@ -1,10 +1,10 @@
 import { Command } from "commander";
 import pc from "picocolors";
+import { canonicalInitCommand, canonicalUpdateCommand } from "./commands/canonical.js";
 import { checkCommand } from "./commands/check.js";
 import { handleCompletion, installCompletion, uninstallCompletion } from "./commands/completion.js";
 import { configGetCommand, configSetCommand, configShowCommand } from "./commands/config.js";
 import { initCommand } from "./commands/init.js";
-import { initCanonicalRepoCommand } from "./commands/init-canonical-repo.js";
 import { statusCommand } from "./commands/status.js";
 import { syncCommand } from "./commands/sync.js";
 import { upgradeCliCommand } from "./commands/upgrade-cli.js";
@@ -187,13 +187,17 @@ export function createCli(): Command {
     await installCompletion();
   });
 
-  program
-    .command("init-canonical-repo")
+  // Canonical command group
+  const canonicalCmd = program.command("canonical").description("Manage canonical repositories");
+
+  canonicalCmd
+    .command("init")
     .description("Scaffold a new canonical repository structure")
     .option("-n, --name <name>", "Name for the canonical repository")
     .option("-o, --org <organization>", "Organization name")
     .option("-d, --dir <directory>", "Target directory (default: current)")
     .option("--marker-prefix <prefix>", "Marker prefix (default: agent-conf)")
+    .option("--cli-version <version>", "CLI version to pin in workflows (default: current)")
     .option("--no-examples", "Skip example skill creation")
     .option("-y, --yes", "Non-interactive mode")
     .action(
@@ -202,19 +206,38 @@ export function createCli(): Command {
         org?: string;
         dir?: string;
         markerPrefix?: string;
+        cliVersion?: string;
         examples?: boolean;
         yes?: boolean;
       }) => {
-        await initCanonicalRepoCommand({
+        await canonicalInitCommand({
           name: options.name,
           org: options.org,
           dir: options.dir,
           markerPrefix: options.markerPrefix,
+          cliVersion: options.cliVersion,
           includeExamples: options.examples,
           yes: options.yes,
         });
       },
     );
+
+  canonicalCmd
+    .command("update")
+    .description("Update CLI version in workflow files")
+    .option("--cli-version <version>", "CLI version to pin (default: current)")
+    .option("-y, --yes", "Non-interactive mode")
+    .action(async (options: { cliVersion?: string; yes?: boolean }) => {
+      await canonicalUpdateCommand({
+        cliVersion: options.cliVersion,
+        yes: options.yes,
+      });
+    });
+
+  // Default for canonical command: show help
+  canonicalCmd.action(() => {
+    canonicalCmd.help();
+  });
 
   // Default command: show help
   program.action(() => {

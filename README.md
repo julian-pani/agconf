@@ -78,7 +78,7 @@ gh repo clone your-org/agent-conf /tmp/agent-conf -- --depth 1 \
 ```bash
 mkdir engineering-standards && cd engineering-standards
 git init
-agent-conf init-canonical-repo --name my-standards --org "My Org"
+agent-conf canonical init --name my-standards --org "My Org"
 ```
 
 This scaffolds the structure for your standards. Edit `instructions/AGENTS.md` to add your engineering guidelines, then commit and push to GitHub.
@@ -110,7 +110,8 @@ GitHub Actions workflows are created automatically to keep downstream repos in s
 | `status` | Show current sync status |
 | `check` | Verify managed files are unchanged |
 | `upgrade-cli` | Upgrade the CLI to the latest version |
-| `init-canonical-repo` | Scaffold a new canonical repository |
+| `canonical init` | Scaffold a new canonical repository |
+| `canonical update` | Update CLI version in workflow files |
 | `config` | Manage global CLI configuration |
 
 ### `agent-conf init`
@@ -196,25 +197,43 @@ agent-conf upgrade-cli --yes
 
 The CLI repository is saved to `~/.agent-conf/config.json` after the first use.
 
-### `agent-conf init-canonical-repo`
+### `agent-conf canonical init`
 
 Scaffold a new canonical repository structure.
 
 ```bash
 # Interactive mode
-agent-conf init-canonical-repo
+agent-conf canonical init
 
 # With options
-agent-conf init-canonical-repo --name acme-standards --org "ACME Corp"
+agent-conf canonical init --name acme-standards --org "ACME Corp"
 
 # Non-interactive with all defaults
-agent-conf init-canonical-repo -y
+agent-conf canonical init -y
 
 # Skip example skill
-agent-conf init-canonical-repo --no-examples
+agent-conf canonical init --no-examples
 
 # Custom marker prefix
-agent-conf init-canonical-repo --marker-prefix my-org
+agent-conf canonical init --marker-prefix my-org
+
+# Pin specific CLI version in workflows
+agent-conf canonical init --cli-version 1.2.0
+```
+
+### `agent-conf canonical update`
+
+Update CLI version in workflow files of a canonical repository.
+
+```bash
+# Update to current CLI version
+agent-conf canonical update
+
+# Update to specific version
+agent-conf canonical update --cli-version 2.0.0
+
+# Non-interactive mode
+agent-conf canonical update -y
 ```
 
 This creates the standard canonical repository structure:
@@ -333,7 +352,7 @@ agent-conf sync
 
 The architecture uses GitHub's reusable workflows:
 
-**Canonical repository** (created by `init-canonical-repo`):
+**Canonical repository** (created by `canonical init`):
 - `sync-reusable.yml` - Reusable workflow for syncing
 - `check-reusable.yml` - Reusable workflow for checking
 

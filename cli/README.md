@@ -25,7 +25,8 @@ Full documentation, setup guides, and FAQ available on GitHub:
 | `sync` | Sync content from canonical repo (fetches latest by default) |
 | `status` | Show current sync status |
 | `check` | Verify managed files are unchanged |
-| `init-canonical-repo` | Scaffold a new canonical repository |
+| `canonical init` | Scaffold a new canonical repository |
+| `canonical update` | Update CLI version in workflow files |
 
 
 ## Quick Start
@@ -35,7 +36,7 @@ Full documentation, setup guides, and FAQ available on GitHub:
 ```bash
 mkdir engineering-standards && cd engineering-standards
 git init
-agent-conf init-canonical-repo --name my-standards --org "My Org"
+agent-conf canonical init --name my-standards --org "My Org"
 ```
 
 This scaffolds the structure for your standards. Edit `instructions/AGENTS.md` to add your engineering guidelines, then commit and push to GitHub.
