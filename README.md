@@ -264,7 +264,9 @@ agent-conf tracks **canonical content versions** independently from CLI versions
 | Pin specific version | `agent-conf sync --ref v1.2.0` | Production stability |
 | Development mode | `agent-conf init --local` | Testing changes |
 
-## Files Created
+## Files Created in Downstream Repos
+
+When you run `agent-conf init` or `agent-conf sync` in a downstream repository:
 
 | File | Purpose |
 |------|---------|
@@ -272,8 +274,8 @@ agent-conf tracks **canonical content versions** independently from CLI versions
 | `.claude/CLAUDE.md` | Reference to AGENTS.md |
 | `.claude/skills/` | Skill definitions |
 | `.agent-conf/lockfile.json` | Sync metadata |
-| `.github/workflows/agent-conf-sync.yml` | Auto-sync workflow |
-| `.github/workflows/agent-conf-check.yml` | File integrity check |
+| `.github/workflows/agent-conf-sync.yml` | Auto-sync workflow (calls canonical's `sync-reusable.yml`) |
+| `.github/workflows/agent-conf-check.yml` | File integrity check (calls canonical's `check-reusable.yml`) |
 
 ## AGENTS.md Structure
 
@@ -323,12 +325,17 @@ agent-conf sync
 
 ## CI/CD Integration
 
-The CLI creates GitHub Actions workflows that reference reusable workflows in your **canonical repository**:
+The architecture uses GitHub's reusable workflows:
 
-- **agent-conf-sync.yml** - Scheduled sync (creates PRs for updates)
-- **agent-conf-check.yml** - Checks for modified managed files on PRs
+**Canonical repository** (created by `init-canonical-repo`):
+- `sync-reusable.yml` - Reusable workflow for syncing
+- `check-reusable.yml` - Reusable workflow for checking
 
-Both workflows use the `agent-conf check` command to verify file integrity. Workflows reference the same version as your lockfile, ensuring consistency.
+**Downstream repositories** (created by `init` or `sync`):
+- `agent-conf-sync.yml` - Scheduled sync (calls canonical's reusable workflow)
+- `agent-conf-check.yml` - Checks for modified managed files on PRs
+
+Both downstream workflows use the `agent-conf check` command to verify file integrity. Workflows reference the same version as your lockfile, ensuring consistency.
 
 **For detailed setup instructions including GitHub App configuration for cross-repository access, see [cli/docs/CANONICAL_REPOSITORY_SETUP.md](cli/docs/CANONICAL_REPOSITORY_SETUP.md).**
 
