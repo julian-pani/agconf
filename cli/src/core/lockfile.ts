@@ -4,18 +4,10 @@ import * as path from "node:path";
 import { type Lockfile, LockfileSchema, type Source } from "../schemas/lockfile.js";
 
 // Injected at build time by tsup
-declare const __BUILD_COMMIT__: string;
 declare const __BUILD_VERSION__: string;
 
 const CONFIG_DIR = ".agent-conf";
 const LOCKFILE_NAME = "lockfile.json";
-
-/**
- * Gets the git commit SHA the CLI was built from.
- */
-export function getBuildCommit(): string {
-  return typeof __BUILD_COMMIT__ !== "undefined" ? __BUILD_COMMIT__ : "unknown";
-}
 
 export function getLockfilePath(targetDir: string): string {
   return path.join(targetDir, CONFIG_DIR, LOCKFILE_NAME);
