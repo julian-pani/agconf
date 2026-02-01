@@ -1,10 +1,3 @@
----
-layout: default
-title: Home
-nav_order: 1
-permalink: /
----
-
 # agent-conf
 
 [![npm version](https://img.shields.io/npm/v/agent-conf.svg)](https://www.npmjs.com/package/agent-conf)
