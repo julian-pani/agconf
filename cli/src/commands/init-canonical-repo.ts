@@ -149,7 +149,7 @@ function generateSyncWorkflow(repoFullName: string, prefix: string): string {
 #   uses: ${repoFullName}/.github/workflows/sync-reusable.yml@v1.0.0
 #
 # SETUP REQUIRED: Update the CLI installation step below with your installation method.
-# See docs/CANONICAL_REPOSITORY_SETUP.md for detailed instructions.
+# See https://github.com/julian-pani/agent-conf/blob/master/cli/docs/CANONICAL_REPOSITORY_SETUP.md for detailed instructions.
 
 name: Sync Reusable
 
@@ -190,7 +190,7 @@ jobs:
           # Example using git clone (replace with your CLI repository):
           # git clone --depth 1 git@github.com:your-org/agent-conf.git /tmp/agent-conf \\
           #   && /tmp/agent-conf/cli/scripts/install_local.sh
-          echo "ERROR: CLI installation not configured. See docs/CANONICAL_REPOSITORY_SETUP.md"
+          echo "ERROR: CLI installation not configured. See https://github.com/julian-pani/agent-conf/blob/master/cli/docs/CANONICAL_REPOSITORY_SETUP.md"
           exit 1
 
       - name: Run sync
@@ -212,7 +212,7 @@ function generateCheckWorkflow(repoFullName: string, prefix: string): string {
 #   uses: ${repoFullName}/.github/workflows/check-reusable.yml@v1.0.0
 #
 # SETUP REQUIRED: Update the CLI installation step below with your installation method.
-# See docs/CANONICAL_REPOSITORY_SETUP.md for detailed instructions.
+# See https://github.com/julian-pani/agent-conf/blob/master/cli/docs/CANONICAL_REPOSITORY_SETUP.md for detailed instructions.
 
 name: Check Reusable
 
@@ -243,7 +243,7 @@ jobs:
           # Example using git clone (replace with your CLI repository):
           # git clone --depth 1 git@github.com:your-org/agent-conf.git /tmp/agent-conf \\
           #   && /tmp/agent-conf/cli/scripts/install_local.sh
-          echo "ERROR: CLI installation not configured. See docs/CANONICAL_REPOSITORY_SETUP.md"
+          echo "ERROR: CLI installation not configured. See https://github.com/julian-pani/agent-conf/blob/master/cli/docs/CANONICAL_REPOSITORY_SETUP.md"
           exit 1
 
       - name: Check file integrity
@@ -487,7 +487,7 @@ export async function initCanonicalRepoCommand(options: InitCanonicalRepoOptions
     console.log(`     (The workflow files will fail until you configure how to install the CLI)`);
     console.log(`  4. Commit and push to create your canonical repository`);
     console.log();
-    console.log(pc.dim(`See docs/CANONICAL_REPOSITORY_SETUP.md for detailed setup instructions.`));
+    console.log(pc.dim(`See https://github.com/julian-pani/agent-conf/blob/master/cli/docs/CANONICAL_REPOSITORY_SETUP.md for detailed setup instructions.`));
 
     prompts.outro(pc.green("Done!"));
   } catch (error) {

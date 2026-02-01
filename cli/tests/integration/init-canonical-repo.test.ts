@@ -397,7 +397,7 @@ describe("init-canonical-repo workflow content", () => {
 #   uses: ${repoFullName}/.github/workflows/sync-reusable.yml@v1.0.0
 #
 # SETUP REQUIRED: Update the CLI installation step below with your installation method.
-# See docs/CANONICAL_REPOSITORY_SETUP.md for detailed instructions.
+# See https://github.com/julian-pani/agent-conf/blob/master/cli/docs/CANONICAL_REPOSITORY_SETUP.md for detailed instructions.
 
 name: Sync Reusable
 `;
@@ -411,7 +411,7 @@ name: Sync Reusable
 #   uses: ${repoFullName}/.github/workflows/check-reusable.yml@v1.0.0
 #
 # SETUP REQUIRED: Update the CLI installation step below with your installation method.
-# See docs/CANONICAL_REPOSITORY_SETUP.md for detailed instructions.
+# See https://github.com/julian-pani/agent-conf/blob/master/cli/docs/CANONICAL_REPOSITORY_SETUP.md for detailed instructions.
 
 name: Check Reusable
 `;
@@ -422,7 +422,7 @@ name: Check Reusable
 
     expect(content).toContain("acme-corp/my-standards/.github/workflows/sync-reusable.yml@v1.0.0");
     expect(content).toContain("SETUP REQUIRED");
-    expect(content).toContain("docs/CANONICAL_REPOSITORY_SETUP.md");
+    expect(content).toContain("https://github.com/julian-pani/agent-conf/blob/master/cli/docs/CANONICAL_REPOSITORY_SETUP.md");
   });
 
   it("should include repo name in check workflow", () => {
@@ -430,7 +430,7 @@ name: Check Reusable
 
     expect(content).toContain("acme-corp/my-standards/.github/workflows/check-reusable.yml@v1.0.0");
     expect(content).toContain("SETUP REQUIRED");
-    expect(content).toContain("docs/CANONICAL_REPOSITORY_SETUP.md");
+    expect(content).toContain("https://github.com/julian-pani/agent-conf/blob/master/cli/docs/CANONICAL_REPOSITORY_SETUP.md");
   });
 
   it("should use custom prefix in workflow header", () => {
