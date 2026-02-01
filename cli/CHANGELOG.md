@@ -1,3 +1,9 @@
+## [2.2.0](https://github.com/julian-pani/agent-conf/compare/v2.1.1...v2.2.0) (2026-02-01)
+
+### Features
+
+* **sync:** add detailed sync summary for workflow PR descriptions ([5562f9a](https://github.com/julian-pani/agent-conf/commit/5562f9a728b60e9b390eca6f3b0469433cfce0ca))
+
 ## [2.1.1](https://github.com/julian-pani/agent-conf/compare/v2.1.0...v2.1.1) (2026-02-01)
 
 ### Bug Fixes
