@@ -194,12 +194,14 @@ describe("git utilities", () => {
       expect(result).toBe("preferred-org");
     });
 
-    it("should return undefined when no remote and no user.name", async () => {
+    it("should fallback to global user.name when no remote and no local user.name", async () => {
       const git = simpleGit(tempDir);
       await git.init();
 
       const result = await getGitOrganization(tempDir);
-      expect(result).toBeUndefined();
+      // Result will be the global user.name if configured, or undefined if not
+      const globalUserName = await git.getConfig("user.name", "global");
+      expect(result).toBe(globalUserName.value ?? undefined);
     });
   });
 });
