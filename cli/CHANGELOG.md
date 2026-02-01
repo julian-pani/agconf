@@ -1,3 +1,9 @@
+## [2.1.0](https://github.com/julian-pani/agent-conf/compare/v2.0.4...v2.1.0) (2026-02-01)
+
+### Features
+
+* **markers:** wire custom marker prefix through entire sync pipeline ([3c7b76b](https://github.com/julian-pani/agent-conf/commit/3c7b76b06c0540427a4f54a4a0ca93cf71ed0e26))
+
 ## [2.0.4](https://github.com/julian-pani/agent-conf/compare/v2.0.3...v2.0.4) (2026-02-01)
 
 ### Bug Fixes
