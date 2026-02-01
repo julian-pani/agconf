@@ -17,6 +17,9 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       - uses: pnpm/action-setup@v4
         with:
@@ -24,7 +27,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: pnpm
           cache-dependency-path: cli/pnpm-lock.yaml
           registry-url: "https://registry.npmjs.org"
@@ -37,14 +40,8 @@ jobs:
         run: pnpm build
         working-directory: cli
 
-      - name: Create Release Pull Request or Publish
-        id: changesets
-        uses: changesets/action@v1
-        with:
-          publish: pnpm release
-          version: pnpm version
-          cwd: cli
-          title: "chore: version packages"
-          commit: "chore: version packages"
+      - name: Release
+        working-directory: cli
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx semantic-release
