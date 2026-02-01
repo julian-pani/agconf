@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { getCliVersion, hashContent } from "../../src/core/lockfile.js";
 import { LockfileSchema } from "../../src/schemas/lockfile.js";
@@ -154,17 +154,20 @@ describe("lockfile", () => {
       expect(version).toMatch(/^\d+\.\d+\.\d+/);
     });
 
-    it("built CLI should output version matching package.json", () => {
-      // This test verifies that after building, the CLI version matches package.json
-      const pkgJson = JSON.parse(readFileSync("./package.json", "utf-8"));
-      const expectedVersion = pkgJson.version;
+    it.skipIf(!existsSync("./dist/index.js"))(
+      "built CLI should output version matching package.json",
+      () => {
+        // This test verifies that after building, the CLI version matches package.json
+        const pkgJson = JSON.parse(readFileSync("./package.json", "utf-8"));
+        const expectedVersion = pkgJson.version;
 
-      // Run the built CLI to get its version
-      const output = execSync("node ./dist/index.js --version", {
-        encoding: "utf-8",
-      }).trim();
+        // Run the built CLI to get its version
+        const output = execSync("node ./dist/index.js --version", {
+          encoding: "utf-8",
+        }).trim();
 
-      expect(output).toBe(expectedVersion);
-    });
+        expect(output).toBe(expectedVersion);
+      },
+    );
   });
 });
