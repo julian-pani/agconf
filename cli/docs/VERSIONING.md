@@ -1,3 +1,9 @@
+---
+layout: default
+title: Versioning
+nav_order: 2
+---
+
 # agent-conf Versioning
 
 This document explains how versioning works in agent-conf, including how versions are managed for the CLI, content repositories, and CI workflows.

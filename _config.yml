@@ -1,17 +1,30 @@
 title: agent-conf
 description: CLI utility to manage and sync AI agent configurations across repositories
-remote_theme: pages-themes/cayman@v0.2.0
+remote_theme: just-the-docs/just-the-docs@v0.10.0
 plugins:
   - jekyll-remote-theme
 
-# Use README.md as the index
-include:
-  - README.md
-  - CONTRIBUTING.md
-  - SECURITY.md
-  - CODE_OF_CONDUCT.md
-  - CHANGELOG.md
-  - cli/docs
+# Color scheme
+color_scheme: light
+
+# Aux links in header
+aux_links:
+  "GitHub":
+    - "https://github.com/julian-pani/agent-conf"
+  "npm":
+    - "https://www.npmjs.com/package/agent-conf"
+
+aux_links_new_tab: true
+
+# Enable search
+search_enabled: true
+search:
+  heading_level: 3
+  previews: 3
+
+# Back to top link
+back_to_top: true
+back_to_top_text: "Back to top"
 
 # Exclude build artifacts
 exclude:
@@ -19,5 +32,17 @@ exclude:
   - cli/dist
   - cli/node_modules
   - "*.log"
-  - .github
   - projects
+  - cli/src
+  - cli/tests
+  - cli/package.json
+  - cli/tsconfig.json
+  - cli/tsup.config.ts
+  - cli/vitest.config.ts
+  - cli/biome.json
+  - cli/.releaserc.json
+  - package.json
+  - pnpm-workspace.yaml
+  - pnpm-lock.yaml
+  - .gitignore
+  - .npmrc

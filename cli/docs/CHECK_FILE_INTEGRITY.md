@@ -1,3 +1,9 @@
+---
+layout: default
+title: File Integrity
+nav_order: 4
+---
+
 # File Integrity Checking
 
 This document explains how agent-conf detects and prevents unauthorized modifications to managed files.

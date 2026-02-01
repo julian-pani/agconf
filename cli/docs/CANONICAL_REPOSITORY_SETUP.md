@@ -1,3 +1,9 @@
+---
+layout: default
+title: Canonical Repository Setup
+nav_order: 3
+---
+
 # Canonical Repository Setup Guide
 
 This guide explains how to set up a canonical repository after scaffolding it with `agent-conf init-canonical-repo`.
