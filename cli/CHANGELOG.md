@@ -1,3 +1,9 @@
+## [2.2.1](https://github.com/julian-pani/agent-conf/compare/v2.2.0...v2.2.1) (2026-02-01)
+
+### Bug Fixes
+
+* **workflows:** reuse existing PR branch instead of creating duplicates ([3a3b9df](https://github.com/julian-pani/agent-conf/commit/3a3b9df347e03acb1eade3f9d81ee28d71adea21))
+
 ## [2.2.0](https://github.com/julian-pani/agent-conf/compare/v2.1.1...v2.2.0) (2026-02-01)
 
 ### Features
