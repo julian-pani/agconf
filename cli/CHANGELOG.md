@@ -1,3 +1,9 @@
+## [1.0.2](https://github.com/julian-pani/agent-conf/compare/v1.0.1...v1.0.2) (2026-02-01)
+
+### Bug Fixes
+
+* bump version ([41c3ccf](https://github.com/julian-pani/agent-conf/commit/41c3ccf34746ba358e676b577cba9be8f8bf65f7))
+
 ---
 layout: default
 title: Changelog
