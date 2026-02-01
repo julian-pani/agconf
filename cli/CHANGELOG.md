@@ -1,3 +1,9 @@
+## [1.0.1](https://github.com/julian-pani/agent-conf/compare/v1.0.0...v1.0.1) (2026-02-01)
+
+### Bug Fixes
+
+* **cli:** use full GitHub URLs for documentation references ([5b623a5](https://github.com/julian-pani/agent-conf/commit/5b623a5993c45cf88becfd5989e0ac7b49ad7906))
+
 ## 1.0.0 (2026-02-01)
 
 ### Features
