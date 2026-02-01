@@ -1,6 +1,6 @@
 {
   "name": "agent-conf",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "CLI utility to sync AI agent configurations across repositories",
   "author": "Julian Pani",
   "type": "module",

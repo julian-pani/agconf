@@ -1,3 +1,9 @@
+## [2.1.1](https://github.com/julian-pani/agent-conf/compare/v2.1.0...v2.1.1) (2026-02-01)
+
+### Bug Fixes
+
+* **lockfile:** inject CLI version from package.json at build time ([9b308e0](https://github.com/julian-pani/agent-conf/commit/9b308e0fd96e0ef435980419a0be0b8c8488faa4))
+
 ## [2.1.0](https://github.com/julian-pani/agent-conf/compare/v2.0.4...v2.1.0) (2026-02-01)
 
 ### Features
