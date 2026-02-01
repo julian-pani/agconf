@@ -3,6 +3,12 @@ name: Release
 on:
   push:
     branches: [master]
+  workflow_dispatch:
+    inputs:
+      allow_major:
+        description: 'Allow major version release (breaking changes)'
+        type: boolean
+        default: false
 
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
@@ -44,4 +50,5 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_CONFIG_PROVENANCE: true
+          ALLOW_MAJOR: ${{ github.event.inputs.allow_major }}
         run: npx semantic-release

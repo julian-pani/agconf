@@ -16,6 +16,7 @@ Thank you for your interest in contributing to agent-conf! This document provide
 - [Code Style](#code-style)
 - [Testing](#testing)
 - [Commit Conventions](#commit-conventions)
+- [Releases](#releases)
 - [Pull Request Process](#pull-request-process)
 - [Reporting Issues](#reporting-issues)
 
@@ -175,6 +176,43 @@ fix(sync): handle empty skills directory gracefully
 docs(readme): update installation instructions
 test(check): add tests for modified file detection
 ```
+
+## Releases
+
+Releases are fully automated via [semantic-release](https://semantic-release.gitbook.io/) based on commit messages.
+
+### Version Bumps
+
+| Commit Type | Version Bump | Example |
+|-------------|--------------|---------|
+| `fix:` | Patch (0.0.x) | `0.1.0` → `0.1.1` |
+| `feat:` | Minor (0.x.0) | `0.1.0` → `0.2.0` |
+| `BREAKING CHANGE:` in footer | Major (x.0.0) | `0.2.0` → `1.0.0` |
+
+### Major Release Protection
+
+Major releases (breaking changes) are **blocked by default** to prevent accidental version bumps. When a commit with `BREAKING CHANGE:` is pushed, the release workflow will fail with:
+
+```
+❌ Major release blocked. Trigger workflow manually with allow_major=true to proceed.
+```
+
+### Releasing a Major Version
+
+To release a major version:
+
+1. Go to **Actions** → **Release** workflow
+2. Click **Run workflow**
+3. Check **"Allow major version release (breaking changes)"**
+4. Click **Run workflow**
+
+This ensures breaking changes are intentional and reviewed before release.
+
+### What Triggers a Release
+
+- Pushes to `master` branch automatically trigger the release workflow
+- Only commits with `feat:`, `fix:`, or `BREAKING CHANGE:` create new releases
+- Commits with `docs:`, `chore:`, `test:`, etc. do not trigger releases
 
 ## Pull Request Process
 

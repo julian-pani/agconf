@@ -10,6 +10,9 @@
     ["@semantic-release/commit-analyzer", {
       "preset": "conventionalcommits"
     }],
+    ["@semantic-release/exec", {
+      "verifyReleaseCmd": "if [ '${nextRelease.type}' = 'major' ] && [ -z \"$ALLOW_MAJOR\" ]; then echo '❌ Major release blocked. Trigger workflow manually with allow_major=true to proceed.' && exit 1; fi"
+    }],
     ["@semantic-release/release-notes-generator", {
       "preset": "conventionalcommits"
     }],

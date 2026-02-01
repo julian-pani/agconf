@@ -78,4 +78,11 @@ Types: feat, fix, docs, style, refactor, perf, test, chore
 
 - **ci.yml**: Lint, type check, test on Node 20/22
 - **release.yml**: Semantic-release with automated npm publishing
-- Releases are fully automated via semantic-release based on commit messages
+
+### Release Behavior
+
+- `fix:` commits → patch release (0.0.x)
+- `feat:` commits → minor release (0.x.0)
+- `BREAKING CHANGE:` → **blocked** (requires manual workflow trigger with `allow_major=true`)
+
+Major releases are protected to prevent accidental breaking version bumps. See `cli/CONTRIBUTING.md` for full release docs.
