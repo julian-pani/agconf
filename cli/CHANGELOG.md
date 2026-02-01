@@ -1,3 +1,9 @@
+## [0.0.2](https://github.com/julian-pani/agent-conf/compare/v0.0.1...v0.0.2) (2026-02-01)
+
+### Bug Fixes
+
+* **release:** block major releases without manual approval ([32af1b4](https://github.com/julian-pani/agent-conf/commit/32af1b42004d0dab5557366fec6bee0ef1c578e9))
+
 ## [2.2.2](https://github.com/julian-pani/agent-conf/compare/v2.2.1...v2.2.2) (2026-02-01)
 
 ### Bug Fixes
