@@ -1,3 +1,9 @@
+## [2.0.2](https://github.com/julian-pani/agent-conf/compare/v2.0.1...v2.0.2) (2026-02-01)
+
+### Bug Fixes
+
+* **workflows:** use default github.token for downstream repo operations ([2f12f45](https://github.com/julian-pani/agent-conf/commit/2f12f4590125f1183bea7c1fc50621e464d0b9e2))
+
 ## [2.0.1](https://github.com/julian-pani/agent-conf/compare/v2.0.0...v2.0.1) (2026-02-01)
 
 ### Bug Fixes
