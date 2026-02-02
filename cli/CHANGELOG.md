@@ -1,3 +1,9 @@
+## [0.3.2](https://github.com/julian-pani/agconf/compare/v0.3.1...v0.3.2) (2026-02-02)
+
+### Bug Fixes
+
+* **cli:** rename agent-conf references to agconf throughout codebase ([d5802a8](https://github.com/julian-pani/agconf/commit/d5802a827b738a85cd914399ed63fc8ba67631ec))
+
 ## [0.3.1](https://github.com/julian-pani/agconf/compare/v0.3.0...v0.3.1) (2026-02-02)
 
 ### Bug Fixes
