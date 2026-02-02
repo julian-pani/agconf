@@ -20,6 +20,8 @@ export interface CanonicalInitOptions {
   markerPrefix?: string | undefined;
   /** Include example skill (default: true) */
   includeExamples?: boolean | undefined;
+  /** Rules directory (omit or empty to skip rules) */
+  rulesDir?: string | undefined;
   /** Non-interactive mode */
   yes?: boolean | undefined;
 }
@@ -30,21 +32,29 @@ interface ResolvedOptions {
   targetDir: string;
   markerPrefix: string;
   includeExamples: boolean;
+  rulesDir?: string | undefined;
 }
 
 /**
  * Generates the agent-conf.yaml configuration file content.
  */
 function generateConfigYaml(options: ResolvedOptions): string {
+  const content: Record<string, unknown> = {
+    instructions: "instructions/AGENTS.md",
+    skills_dir: "skills",
+  };
+
+  // Add rules_dir if specified
+  if (options.rulesDir) {
+    content.rules_dir = options.rulesDir;
+  }
+
   const config: Record<string, unknown> = {
     version: CURRENT_CONFIG_VERSION,
     meta: {
       name: options.name,
     },
-    content: {
-      instructions: "instructions/AGENTS.md",
-      skills_dir: "skills",
-    },
+    content,
     targets: ["claude"],
     markers: {
       prefix: options.markerPrefix,
@@ -58,7 +68,14 @@ function generateConfigYaml(options: ResolvedOptions): string {
     (config.meta as Record<string, unknown>).organization = options.organization;
   }
 
-  return stringifyYaml(config, { lineWidth: 0 });
+  let yaml = stringifyYaml(config, { lineWidth: 0 });
+
+  // If no rules_dir specified, add commented-out example after skills_dir
+  if (!options.rulesDir) {
+    yaml = yaml.replace(/skills_dir: skills\n/, "skills_dir: skills\n  # rules_dir: rules\n");
+  }
+
+  return yaml;
 }
 
 /**
@@ -469,6 +486,7 @@ export async function canonicalInitCommand(options: CanonicalInitOptions): Promi
       targetDir,
       markerPrefix: options.markerPrefix ?? "agent-conf",
       includeExamples: options.includeExamples !== false,
+      rulesDir: options.rulesDir || undefined,
     };
   } else {
     // Interactive mode: prompt for values
@@ -530,12 +548,46 @@ export async function canonicalInitCommand(options: CanonicalInitOptions): Promi
       process.exit(0);
     }
 
+    // Ask about rules
+    const includeRules = await prompts.confirm({
+      message: "Include rules directory?",
+      initialValue: false,
+    });
+
+    if (prompts.isCancel(includeRules)) {
+      prompts.cancel("Operation cancelled");
+      process.exit(0);
+    }
+
+    let rulesDir: string | undefined;
+    if (includeRules) {
+      const rulesDirInput = await prompts.text({
+        message: "Rules directory name:",
+        placeholder: "rules",
+        defaultValue: "rules",
+        validate: (value) => {
+          if (!value.trim()) return "Directory name is required";
+          if (!/^[a-z0-9-_/]+$/.test(value))
+            return "Directory name must be lowercase alphanumeric with hyphens, underscores, or slashes";
+          return undefined;
+        },
+      });
+
+      if (prompts.isCancel(rulesDirInput)) {
+        prompts.cancel("Operation cancelled");
+        process.exit(0);
+      }
+
+      rulesDir = rulesDirInput as string;
+    }
+
     resolvedOptions = {
       name: name as string,
       organization: (organization as string) || undefined,
       targetDir,
       markerPrefix: markerPrefix as string,
       includeExamples: includeExamples as boolean,
+      rulesDir,
     };
   }
 
@@ -555,6 +607,14 @@ export async function canonicalInitCommand(options: CanonicalInitOptions): Promi
     await ensureDir(instructionsDir);
     await ensureDir(skillsDir);
     await ensureDir(workflowsDir);
+
+    // Create rules directory if specified
+    if (resolvedOptions.rulesDir) {
+      const rulesDir = path.join(resolvedOptions.targetDir, resolvedOptions.rulesDir);
+      await ensureDir(rulesDir);
+      // Add a .gitkeep to the rules directory
+      await fs.writeFile(path.join(rulesDir, ".gitkeep"), "", "utf-8");
+    }
 
     // Write agent-conf.yaml
     const configPath = path.join(resolvedOptions.targetDir, "agent-conf.yaml");
@@ -609,6 +669,11 @@ export async function canonicalInitCommand(options: CanonicalInitOptions): Promi
         `  ${pc.green("+")} ${formatPath(path.join(skillsDir, "example-skill/SKILL.md"))}`,
       );
     }
+    if (resolvedOptions.rulesDir) {
+      console.log(
+        `  ${pc.green("+")} ${formatPath(path.join(resolvedOptions.targetDir, resolvedOptions.rulesDir))}/`,
+      );
+    }
     console.log(`  ${pc.green("+")} ${formatPath(syncWorkflowPath)}`);
     console.log(`  ${pc.green("+")} ${formatPath(checkWorkflowPath)}`);
 
@@ -623,7 +688,12 @@ export async function canonicalInitCommand(options: CanonicalInitOptions): Promi
     console.log(pc.bold("Next steps:"));
     console.log(`  1. Edit ${pc.cyan("instructions/AGENTS.md")} with your engineering standards`);
     console.log(`  2. Add skills to ${pc.cyan("skills/")} directory`);
-    console.log(`  3. Commit and push to create your canonical repository`);
+    if (resolvedOptions.rulesDir) {
+      console.log(`  3. Add rules to ${pc.cyan(`${resolvedOptions.rulesDir}/`)} directory`);
+      console.log(`  4. Commit and push to create your canonical repository`);
+    } else {
+      console.log(`  3. Commit and push to create your canonical repository`);
+    }
     console.log();
     console.log(
       pc.dim(

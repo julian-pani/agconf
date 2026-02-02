@@ -51,6 +51,100 @@ cd your-project
 agent-conf init --source your-org/engineering-standards
 ```
 
+## Rules
+
+Rules are modular, topic-specific project instructions that live in `.claude/rules/` for Claude targets. They allow you to organize standards by topic (security, testing, code style) rather than putting everything in a single AGENTS.md file.
+
+### Configuration
+
+Add `rules_dir` to your canonical `agent-conf.yaml`:
+
+```yaml
+version: "1.0.0"
+content:
+  instructions: "instructions/AGENTS.md"
+  skills_dir: "skills"
+  rules_dir: "rules"  # Optional - path to rules directory
+targets: ["claude", "codex"]
+```
+
+### Directory Structure
+
+Rules support arbitrary subdirectory nesting:
+
+```
+canonical-repo/
+├── agent-conf.yaml
+├── instructions/
+│   └── AGENTS.md
+├── skills/
+└── rules/
+    ├── code-style.md
+    ├── security/
+    │   ├── api-auth.md
+    │   └── data-handling.md
+    └── testing/
+        └── unit-tests.md
+```
+
+### Target-Specific Behavior
+
+**Claude**: Rules are copied to `.claude/rules/` preserving the directory structure. Each rule file gets metadata added to track sync status.
+
+```
+downstream-repo/
+└── .claude/
+    └── rules/
+        ├── code-style.md
+        ├── security/
+        │   └── api-auth.md
+        └── testing/
+            └── unit-tests.md
+```
+
+**Codex**: Rules are concatenated into AGENTS.md under a `# Project Rules` section. Heading levels are automatically adjusted (h1 becomes h2, etc.) to nest under the section header.
+
+```markdown
+<!-- agent-conf:rules:start -->
+# Project Rules
+
+<!-- Rule: code-style.md -->
+## Code Style Guidelines
+...
+
+<!-- Rule: security/api-auth.md -->
+## API Authentication
+...
+<!-- agent-conf:rules:end -->
+```
+
+### Path-Specific Rules
+
+Rules can include `paths` frontmatter for conditional loading (a Claude feature):
+
+```markdown
+---
+paths:
+  - "src/api/**/*.ts"
+  - "lib/api/**/*.ts"
+---
+
+# API Authentication Rules
+...
+```
+
+For Claude targets, the `paths` frontmatter is preserved. For Codex targets (which don't support conditional loading), paths are included as comments in AGENTS.md:
+
+```markdown
+<!-- Rule: security/api-auth.md -->
+<!-- Applies to: src/api/**/*.ts, lib/api/**/*.ts -->
+## API Authentication Rules
+```
+
+### Backward Compatibility
+
+The `rules_dir` configuration is optional. Existing canonical repositories without rules continue to work unchanged.
+
 ## License
 
 MIT

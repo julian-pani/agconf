@@ -48,6 +48,7 @@ pnpm install:global       # Build + install globally
 - `workflows.ts` - GitHub Actions workflow generation
 - `hooks.ts` - Pre-commit hook installation
 - `targets.ts` - Multi-agent target support
+- `rules.ts` - Sync modular rule files from canonical to downstream repos
 
 ### Plugin System (`cli/src/plugins/`)
 - `targets/` - Agent implementations (Claude Code, GitHub Copilot)
@@ -65,6 +66,24 @@ Commands: init, sync, status, check, upgrade-cli, canonical (init, update), conf
 - **Lockfile pinning**: `.agent-conf/lockfile.json` tracks sync state and versions
 - **Merge strategy**: Global content updates while preserving repo-specific sections in AGENTS.md
 - **Plugin architecture**: Targets and providers are extensible
+
+### Rules Sync
+
+Rules are modular, topic-specific instruction files (e.g., `security/api-auth.md`) synced from a canonical repository. The `rules.ts` module handles discovery, parsing, and target-specific sync.
+
+**Key functions in `cli/src/core/rules.ts`:**
+- `adjustHeadingLevels(content, increment)` - Shifts markdown heading levels (respects code blocks, caps at h6)
+- `parseRule(content, relativePath)` - Parses frontmatter and body using `gray-matter`
+- `generateRulesSection(rules, markerPrefix)` - Concatenates rules into a marked section for Codex
+- `syncRules(sourceDir, targetDir, options)` - Main entry point for rules sync
+
+**Target-specific behavior:**
+- **Claude**: Copies rule files to `.claude/rules/` preserving directory structure. Adds metadata frontmatter (`agent_conf_managed`, `agent_conf_content_hash`, `agent_conf_source_path`) for change tracking and orphan detection.
+- **Codex**: Concatenates all rules into AGENTS.md under `<!-- {prefix}:rules:start/end -->` markers. Heading levels shift +1 to nest under "# Project Rules". Includes source attribution comments (`<!-- Rule: path/to/rule.md -->`).
+
+**Configuration:**
+- `rules_dir` in canonical `agent-conf.yaml` (optional) - path to rules directory
+- Rules tracked in lockfile under `content.rules` with file list and content hash
 
 ## Commit Conventions
 
@@ -98,3 +117,26 @@ When adding or modifying CLI commands, always update the shell completions in `c
 - Avoid any verification steps that require manual execution
 - Use temp directories and mocks for file system and external dependencies
 - For commands that use `process.cwd()`, add a `cwd` option for testability
+
+### Check Command Integrity Requirement
+**Critical:** The `check` command must verify the integrity of ALL synced content. When adding new content types to sync or modifying sync behavior:
+- The `check` command MUST detect manual modifications to any synced file or section
+- Each synced content type needs a content hash stored during sync and verified during check
+- The check must fail (exit code 1) if any managed content has been modified
+- Write tests that verify: (1) check passes immediately after sync, (2) check fails when content is modified
+
+**Current content types verified by check:**
+- AGENTS.md global block (`<!-- agent-conf:global:start/end -->`)
+- AGENTS.md rules section for Codex (`<!-- agent-conf:rules:start/end -->`)
+- Individual skill files (`.claude/skills/*/SKILL.md`) via frontmatter metadata
+- Individual rule files for Claude (`.claude/rules/**/*.md`) via frontmatter metadata
+
+### Content Hash Consistency
+**Critical:** All content hashes MUST use the same format: `sha256:` prefix + 12 hex characters.
+
+**Reuse existing hash functions - DO NOT create new ones:**
+- `computeContentHash()` from `cli/src/core/skill-metadata.ts` - for skill/rule file frontmatter
+- `computeGlobalBlockHash()` from `cli/src/core/markers.ts` - for AGENTS.md global block
+- `computeRulesSectionHash()` from `cli/src/core/markers.ts` - for AGENTS.md rules section
+
+All these functions return `sha256:${hash.slice(0, 12)}` format. When adding new content types, import and use these existing functions rather than computing hashes inline. This prevents hash length mismatches (e.g., 12 vs 16 chars) that cause check to fail immediately after sync.

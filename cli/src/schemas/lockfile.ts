@@ -11,6 +11,13 @@ import { z } from "zod";
  */
 export const CURRENT_LOCKFILE_VERSION = "1.0.0";
 
+export const RulesContentSchema = z.object({
+  /** List of rule file paths synced (relative to rules dir) */
+  files: z.array(z.string()),
+  /** Hash of all rules content */
+  content_hash: z.string(),
+});
+
 export const SourceSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("github"),
@@ -34,6 +41,8 @@ export const ContentSchema = z.object({
   targets: z.array(z.string()).optional(),
   /** Marker prefix used for managed content (default: "agent-conf") */
   marker_prefix: z.string().optional(),
+  /** Rules content tracking - optional for backward compat */
+  rules: RulesContentSchema.optional(),
 });
 
 export const LockfileSchema = z.object({
@@ -51,3 +60,4 @@ export const LockfileSchema = z.object({
 export type Source = z.infer<typeof SourceSchema>;
 export type Content = z.infer<typeof ContentSchema>;
 export type Lockfile = z.infer<typeof LockfileSchema>;
+export type RulesContent = z.infer<typeof RulesContentSchema>;

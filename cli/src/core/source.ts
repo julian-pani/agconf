@@ -13,6 +13,8 @@ export interface ResolvedSource {
   basePath: string;
   agentsMdPath: string;
   skillsPath: string;
+  /** Path to rules directory (null if no rules_dir configured) */
+  rulesPath: string | null;
   /** Marker prefix from canonical config (default: "agent-conf") */
   markerPrefix: string;
 }
@@ -51,9 +53,10 @@ export async function resolveLocalSource(
     // Expected: not a git repo or git not available, commit SHA is optional
   }
 
-  // Load canonical config to get marker prefix
+  // Load canonical config to get marker prefix and rules_dir
   const canonicalConfig = await loadCanonicalRepoConfig(basePath);
   const markerPrefix = canonicalConfig?.markers.prefix ?? "agent-conf";
+  const rulesDir = canonicalConfig?.content.rules_dir;
 
   const source: Source = {
     type: "local",
@@ -66,6 +69,7 @@ export async function resolveLocalSource(
     basePath,
     agentsMdPath: path.join(basePath, "instructions", "AGENTS.md"),
     skillsPath: path.join(basePath, "skills"),
+    rulesPath: rulesDir ? path.join(basePath, rulesDir) : null,
     markerPrefix,
   };
 }
@@ -82,9 +86,10 @@ export async function resolveGithubSource(
   const log = await clonedGit.log({ maxCount: 1 });
   const commitSha = log.latest?.hash ?? "";
 
-  // Load canonical config to get marker prefix
+  // Load canonical config to get marker prefix and rules_dir
   const canonicalConfig = await loadCanonicalRepoConfig(tempDir);
   const markerPrefix = canonicalConfig?.markers.prefix ?? "agent-conf";
+  const rulesDir = canonicalConfig?.content.rules_dir;
 
   const source: Source = {
     type: "github",
@@ -98,6 +103,7 @@ export async function resolveGithubSource(
     basePath: tempDir,
     agentsMdPath: path.join(tempDir, "instructions", "AGENTS.md"),
     skillsPath: path.join(tempDir, "skills"),
+    rulesPath: rulesDir ? path.join(tempDir, rulesDir) : null,
     markerPrefix,
   };
 }

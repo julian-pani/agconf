@@ -1,11 +1,11 @@
 {
-  "name": "agent-conf",
+  "name": "agconf",
   "version": "0.2.0",
   "description": "CLI utility to sync AI agent configurations across repositories",
   "author": "Julian Pani",
   "type": "module",
   "bin": {
-    "agent-conf": "./dist/index.js"
+    "agconf": "./dist/index.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -27,7 +27,7 @@
     "check:fix": "biome check --fix",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "pnpm run build",
-    "install:global": "pnpm build && npm install -g .",
+    "install:global": "pnpm install && pnpm build && pnpm link --global",
     "release": "semantic-release",
     "release:dry-run": "semantic-release --dry-run"
   },

@@ -5,10 +5,12 @@ import fg from "fast-glob";
 import { getMetadataKeys } from "../config/schema.js";
 import {
   hasGlobalBlockChanges,
+  hasRulesSectionChanges,
   isAgentsMdManaged,
   type MarkerOptions,
   parseAgentsMd,
   parseGlobalBlockMetadata,
+  parseRulesSection,
 } from "./markers.js";
 
 // Default metadata prefix
@@ -402,16 +404,88 @@ export async function getModifiedSkillFiles(
 }
 
 /**
+ * Check all synced rule files in a target directory for manual modifications.
+ * Returns information about each managed rule file found.
+ */
+export async function checkRuleFiles(
+  targetDir: string,
+  targets: string[] = ["claude"],
+  options: MetadataOptions = {},
+): Promise<RuleFileCheckResult[]> {
+  const results: RuleFileCheckResult[] = [];
+
+  for (const target of targets) {
+    const rulesDir = path.join(targetDir, `.${target}`, "rules");
+
+    // Check if rules directory exists
+    try {
+      await fs.access(rulesDir);
+    } catch {
+      // Expected: rules directory may not exist for this target
+      continue;
+    }
+
+    // Find all .md files recursively
+    const ruleFiles = await fg("**/*.md", {
+      cwd: rulesDir,
+      absolute: false,
+    });
+
+    for (const ruleFile of ruleFiles) {
+      const fullPath = path.join(rulesDir, ruleFile);
+      const relativePath = path.join(`.${target}`, "rules", ruleFile);
+
+      try {
+        const content = await fs.readFile(fullPath, "utf-8");
+        const fileIsManaged = isManaged(content, options);
+        const hasChanges = fileIsManaged && hasManualChanges(content, options);
+
+        // Extract rulePath from metadata if available
+        const { frontmatter } = parseFrontmatter(content);
+        const metadata = frontmatter.metadata as Record<string, string> | undefined;
+        const keyPrefix = (options.metadataPrefix || "agent-conf").replace(/-/g, "_");
+        const rulePath = metadata?.[`${keyPrefix}_source_path`] || ruleFile;
+
+        results.push({
+          path: relativePath,
+          rulePath,
+          isManaged: fileIsManaged,
+          hasChanges,
+        });
+      } catch (_error) {
+        // Expected: file read may fail, skip this rule file
+      }
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Get only the modified rule files.
+ */
+export async function getModifiedRuleFiles(
+  targetDir: string,
+  targets: string[] = ["claude"],
+  options: MetadataOptions = {},
+): Promise<RuleFileCheckResult[]> {
+  const allFiles = await checkRuleFiles(targetDir, targets, options);
+  return allFiles.filter((f) => f.hasChanges);
+}
+
+/**
  * Result of checking a managed file for modifications.
- * Used for both skill files and AGENTS.md.
+ * Used for skill files, rule files, and AGENTS.md.
  */
 export interface ManagedFileCheckResult {
   /** Relative path to the file */
   path: string;
   /** Type of file */
-  type: "skill" | "agents";
+  type: "skill" | "agents" | "rule" | "rules-section";
   /** Skill name if type is skill */
   skillName?: string;
+  /** Rule source path if type is rule (e.g., "security/auth.md") */
+  rulePath?: string;
   /** Whether the file is managed by agent-conf */
   isManaged: boolean;
   /** Whether the file has been manually modified */
@@ -420,6 +494,20 @@ export interface ManagedFileCheckResult {
   source?: string;
   /** When the file was synced */
   syncedAt?: string;
+}
+
+/**
+ * Result of checking a rule file for modifications.
+ */
+export interface RuleFileCheckResult {
+  /** Relative path to the rule file (from target dir) */
+  path: string;
+  /** Original rule path (e.g., "security/auth.md") */
+  rulePath: string;
+  /** Whether the file is managed by agent-conf */
+  isManaged: boolean;
+  /** Whether the file has been manually modified */
+  hasChanges: boolean;
 }
 
 /**
@@ -476,7 +564,7 @@ export interface CheckManagedFilesOptions {
 }
 
 /**
- * Check all managed files (skills and AGENTS.md) for modifications.
+ * Check all managed files (skills, rules, and AGENTS.md) for modifications.
  */
 export async function checkAllManagedFiles(
   targetDir: string,
@@ -487,10 +575,16 @@ export async function checkAllManagedFiles(
   const markerOptions = options.markerPrefix ? { prefix: options.markerPrefix } : {};
   const metadataOptions = options.metadataPrefix ? { metadataPrefix: options.metadataPrefix } : {};
 
-  // Check AGENTS.md
+  // Check AGENTS.md global block
   const agentsMdResult = await checkAgentsMd(targetDir, markerOptions);
   if (agentsMdResult) {
     results.push(agentsMdResult);
+  }
+
+  // Check AGENTS.md rules section (for Codex target where rules are concatenated)
+  const rulesSectionResult = await checkAgentsMdRulesSection(targetDir, markerOptions);
+  if (rulesSectionResult) {
+    results.push(rulesSectionResult);
   }
 
   // Check skill files
@@ -507,7 +601,53 @@ export async function checkAllManagedFiles(
     }
   }
 
+  // Check rule files (for Claude target where rules are separate files)
+  const ruleFiles = await checkRuleFiles(targetDir, targets, metadataOptions);
+  for (const rule of ruleFiles) {
+    if (rule.isManaged) {
+      results.push({
+        path: rule.path,
+        type: "rule",
+        rulePath: rule.rulePath,
+        isManaged: rule.isManaged,
+        hasChanges: rule.hasChanges,
+      });
+    }
+  }
+
   return results;
+}
+
+/**
+ * Check AGENTS.md rules section for manual modifications.
+ * This is used for Codex target where rules are concatenated into AGENTS.md.
+ */
+export async function checkAgentsMdRulesSection(
+  targetDir: string,
+  options: MarkerOptions = {},
+): Promise<ManagedFileCheckResult | null> {
+  const agentsMdPath = path.join(targetDir, "AGENTS.md");
+
+  try {
+    const content = await fs.readFile(agentsMdPath, "utf-8");
+    const parsed = parseRulesSection(content, options);
+
+    if (!parsed.hasMarkers || !parsed.content) {
+      return null; // No rules section
+    }
+
+    const hasChanges = hasRulesSectionChanges(content, options);
+
+    return {
+      path: "AGENTS.md",
+      type: "rules-section",
+      isManaged: true,
+      hasChanges,
+    };
+  } catch {
+    // Expected: AGENTS.md may not exist or can't be read
+    return null;
+  }
 }
 
 /**

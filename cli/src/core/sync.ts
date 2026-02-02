@@ -1,9 +1,17 @@
+import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import fg from "fast-glob";
 import type { Lockfile } from "../schemas/lockfile.js";
 import { readLockfile, writeLockfile } from "./lockfile.js";
 import { ensureClaudeMd, mergeAgentsMd, writeAgentsMd } from "./merge.js";
+import {
+  addRuleMetadata,
+  generateRulesSection,
+  parseRule,
+  type Rule,
+  updateAgentsMdWithRules,
+} from "./rules.js";
 import {
   addManagedMetadata,
   type SkillValidationError,
@@ -17,6 +25,134 @@ export interface SyncOptions {
   targets: Target[];
   /** Pinned version to record in lockfile */
   pinnedVersion?: string;
+}
+
+// =============================================================================
+// Rules Sync
+// =============================================================================
+
+export interface RulesSyncOptions {
+  sourceRulesPath: string;
+  targetDir: string;
+  targets: Target[];
+  markerPrefix: string;
+  metadataPrefix: string;
+  agentsMdContent: string;
+}
+
+export interface RulesSyncResult {
+  rules: Rule[];
+  updatedAgentsMd: string | null;
+  claudeFiles: string[];
+  modifiedRules: string[];
+  contentHash: string;
+}
+
+/**
+ * Discover all markdown rule files in a directory recursively.
+ */
+async function discoverRules(rulesDir: string): Promise<Rule[]> {
+  try {
+    await fs.access(rulesDir);
+  } catch {
+    // Directory doesn't exist - return empty array
+    return [];
+  }
+
+  const ruleFiles = await fg("**/*.md", {
+    cwd: rulesDir,
+    absolute: false,
+  });
+
+  const rules: Rule[] = [];
+  for (const relativePath of ruleFiles) {
+    const fullPath = path.join(rulesDir, relativePath);
+    const content = await fs.readFile(fullPath, "utf-8");
+    rules.push(parseRule(content, relativePath));
+  }
+
+  return rules;
+}
+
+/**
+ * Compute aggregate hash for a list of rules.
+ * Rules are sorted by path for determinism.
+ */
+function computeRulesHash(rules: Rule[]): string {
+  if (rules.length === 0) return "";
+
+  const sorted = [...rules].sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  const combined = sorted.map((r) => `${r.relativePath}:${r.body}`).join("\n---\n");
+  const hash = createHash("sha256").update(combined).digest("hex");
+  return hash.slice(0, 16);
+}
+
+/**
+ * Sync rules from a canonical source to target directory.
+ *
+ * For Claude target: Copy rules to .claude/rules/ with metadata added
+ * For Codex target: Generate rules section and return updated AGENTS.md
+ */
+export async function syncRules(options: RulesSyncOptions): Promise<RulesSyncResult> {
+  const { sourceRulesPath, targetDir, targets, markerPrefix, metadataPrefix, agentsMdContent } =
+    options;
+
+  // Discover all rules
+  const rules = await discoverRules(sourceRulesPath);
+
+  const result: RulesSyncResult = {
+    rules,
+    updatedAgentsMd: null,
+    claudeFiles: [],
+    modifiedRules: [],
+    contentHash: "",
+  };
+
+  // No rules - return early
+  if (rules.length === 0) {
+    return result;
+  }
+
+  // Compute content hash for lockfile
+  result.contentHash = computeRulesHash(rules);
+
+  // Sync to Claude target
+  if (targets.includes("claude")) {
+    const claudeRulesDir = path.join(targetDir, ".claude", "rules");
+
+    for (const rule of rules) {
+      const targetPath = path.join(claudeRulesDir, rule.relativePath);
+
+      // Ensure parent directory exists
+      await fs.mkdir(path.dirname(targetPath), { recursive: true });
+
+      // Add metadata and write file
+      const contentWithMetadata = addRuleMetadata(rule, metadataPrefix);
+
+      // Check if file exists and has same content
+      let existingContent: string | null = null;
+      try {
+        existingContent = await fs.readFile(targetPath, "utf-8");
+      } catch {
+        // File doesn't exist
+      }
+
+      if (existingContent !== contentWithMetadata) {
+        await fs.writeFile(targetPath, contentWithMetadata, "utf-8");
+        result.modifiedRules.push(rule.relativePath);
+      }
+
+      result.claudeFiles.push(rule.relativePath);
+    }
+  }
+
+  // Sync to Codex target
+  if (targets.includes("codex")) {
+    const rulesSection = generateRulesSection(rules, markerPrefix);
+    result.updatedAgentsMd = updateAgentsMdWithRules(agentsMdContent, rulesSection, markerPrefix);
+  }
+
+  return result;
 }
 
 export interface TargetResult {
@@ -41,8 +177,16 @@ export interface SyncResult {
   targets: TargetResult[];
   skills: {
     synced: string[];
+    modified: string[];
     totalCopied: number;
     validationErrors: SkillValidationError[];
+  };
+  rules?: {
+    synced: string[];
+    modified: string[];
+    contentHash: string;
+    claudeFiles: string[];
+    codexUpdated: boolean;
   };
 }
 
@@ -90,19 +234,23 @@ export async function sync(
   // Process each target
   const targetResults: TargetResult[] = [];
   let totalCopied = 0;
+  const allModifiedSkills = new Set<string>();
 
   for (const target of options.targets) {
     const config = getTargetConfig(target);
 
     // Sync skills to this target
-    const skillsCopied = await syncSkillsToTarget(
+    const skillsResult = await syncSkillsToTarget(
       targetDir,
       resolvedSource.skillsPath,
       skillNames,
       config,
       markerPrefix,
     );
-    totalCopied += skillsCopied;
+    totalCopied += skillsResult.copied;
+    for (const skill of skillsResult.modifiedSkills) {
+      allModifiedSkills.add(skill);
+    }
 
     // Only Claude needs an instructions file with @AGENTS.md reference
     // Other targets (codex, etc.) read AGENTS.md directly
@@ -125,8 +273,29 @@ export async function sync(
     targetResults.push({
       target,
       instructionsMd: instructionsResult,
-      skills: { copied: skillsCopied },
+      skills: { copied: skillsResult.copied },
     });
+  }
+
+  // Sync rules if canonical has rules configured
+  let rulesResult: RulesSyncResult | null = null;
+  if (resolvedSource.rulesPath) {
+    // Read current AGENTS.md content for potential Codex rules insertion
+    const currentAgentsMd = await fs.readFile(path.join(targetDir, "AGENTS.md"), "utf-8");
+
+    rulesResult = await syncRules({
+      sourceRulesPath: resolvedSource.rulesPath,
+      targetDir,
+      targets: options.targets,
+      markerPrefix,
+      metadataPrefix: markerPrefix.replace(/-/g, "_"),
+      agentsMdContent: currentAgentsMd,
+    });
+
+    // If Codex target and rules were found, update AGENTS.md with rules section
+    if (rulesResult.updatedAgentsMd && options.targets.includes("codex")) {
+      await writeAgentsMd(targetDir, rulesResult.updatedAgentsMd);
+    }
   }
 
   // Write lockfile
@@ -140,9 +309,15 @@ export async function sync(
   if (options.pinnedVersion) {
     lockfileOptions.pinnedVersion = options.pinnedVersion;
   }
+  if (rulesResult && rulesResult.rules.length > 0) {
+    lockfileOptions.rules = {
+      files: rulesResult.rules.map((r) => r.relativePath),
+      content_hash: rulesResult.contentHash,
+    };
+  }
   const lockfile = await writeLockfile(targetDir, lockfileOptions);
 
-  return {
+  const result: SyncResult = {
     lockfile,
     agentsMd: {
       merged: mergeResult.merged,
@@ -151,10 +326,28 @@ export async function sync(
     targets: targetResults,
     skills: {
       synced: skillNames,
+      modified: [...allModifiedSkills],
       totalCopied,
       validationErrors,
     },
   };
+
+  if (rulesResult && rulesResult.rules.length > 0) {
+    result.rules = {
+      synced: rulesResult.rules.map((r) => r.relativePath),
+      modified: rulesResult.modifiedRules,
+      contentHash: rulesResult.contentHash,
+      claudeFiles: rulesResult.claudeFiles,
+      codexUpdated: rulesResult.updatedAgentsMd !== null,
+    };
+  }
+
+  return result;
+}
+
+interface SkillSyncResult {
+  copied: number;
+  modifiedSkills: string[];
 }
 
 async function syncSkillsToTarget(
@@ -163,54 +356,93 @@ async function syncSkillsToTarget(
   skillNames: string[],
   config: TargetConfig,
   metadataPrefix: string,
-): Promise<number> {
+): Promise<SkillSyncResult> {
   const targetSkillsPath = path.join(targetDir, config.dir, "skills");
   let copied = 0;
+  const modifiedSkills: string[] = [];
 
   for (const skillName of skillNames) {
     const sourceDir = path.join(sourceSkillsPath, skillName);
     const targetSkillDir = path.join(targetSkillsPath, skillName);
 
-    const filesCopied = await copySkillDirectory(sourceDir, targetSkillDir, metadataPrefix);
-    copied += filesCopied;
+    const result = await copySkillDirectory(sourceDir, targetSkillDir, metadataPrefix);
+    copied += result.copied;
+    if (result.modified) {
+      modifiedSkills.push(skillName);
+    }
   }
 
-  return copied;
+  return { copied, modifiedSkills };
+}
+
+interface CopyResult {
+  copied: number;
+  modified: boolean;
 }
 
 /**
  * Copy a skill directory, adding managed metadata to SKILL.md files.
+ * Returns whether any files were actually modified (content changed).
  */
 async function copySkillDirectory(
   sourceDir: string,
   targetDir: string,
   metadataPrefix: string,
-): Promise<number> {
+): Promise<CopyResult> {
   await fs.mkdir(targetDir, { recursive: true });
 
   const entries = await fs.readdir(sourceDir, { withFileTypes: true });
   let copied = 0;
+  let modified = false;
 
   for (const entry of entries) {
     const sourcePath = path.join(sourceDir, entry.name);
     const targetPath = path.join(targetDir, entry.name);
 
     if (entry.isDirectory()) {
-      copied += await copySkillDirectory(sourcePath, targetPath, metadataPrefix);
+      const subResult = await copySkillDirectory(sourcePath, targetPath, metadataPrefix);
+      copied += subResult.copied;
+      if (subResult.modified) modified = true;
     } else if (entry.name === "SKILL.md") {
       // Add managed metadata to SKILL.md files
       const content = await fs.readFile(sourcePath, "utf-8");
       const contentWithMetadata = addManagedMetadata(content, { metadataPrefix });
-      await fs.writeFile(targetPath, contentWithMetadata, "utf-8");
+
+      // Check if file exists and has same content
+      let existingContent: string | null = null;
+      try {
+        existingContent = await fs.readFile(targetPath, "utf-8");
+      } catch {
+        // File doesn't exist
+      }
+
+      if (existingContent !== contentWithMetadata) {
+        await fs.writeFile(targetPath, contentWithMetadata, "utf-8");
+        modified = true;
+      }
       copied++;
     } else {
-      // Copy other files as-is
-      await fs.copyFile(sourcePath, targetPath);
+      // Check if file exists and has same content
+      let needsCopy = true;
+      try {
+        const [sourceContent, targetContent] = await Promise.all([
+          fs.readFile(sourcePath),
+          fs.readFile(targetPath),
+        ]);
+        needsCopy = !sourceContent.equals(targetContent);
+      } catch {
+        // Target doesn't exist
+      }
+
+      if (needsCopy) {
+        await fs.copyFile(sourcePath, targetPath);
+        modified = true;
+      }
       copied++;
     }
   }
 
-  return copied;
+  return { copied, modified };
 }
 
 async function ensureInstructionsMd(

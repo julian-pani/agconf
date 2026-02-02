@@ -198,6 +198,7 @@ export function createCli(): Command {
     .option("-d, --dir <directory>", "Target directory (default: current)")
     .option("--marker-prefix <prefix>", "Marker prefix (default: agent-conf)")
     .option("--no-examples", "Skip example skill creation")
+    .option("--rules-dir <directory>", "Rules directory (e.g., 'rules')")
     .option("-y, --yes", "Non-interactive mode")
     .action(
       async (options: {
@@ -206,6 +207,7 @@ export function createCli(): Command {
         dir?: string;
         markerPrefix?: string;
         examples?: boolean;
+        rulesDir?: string;
         yes?: boolean;
       }) => {
         await canonicalInitCommand({
@@ -214,6 +216,7 @@ export function createCli(): Command {
           dir: options.dir,
           markerPrefix: options.markerPrefix,
           includeExamples: options.examples,
+          rulesDir: options.rulesDir,
           yes: options.yes,
         });
       },

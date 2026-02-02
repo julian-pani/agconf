@@ -54,6 +54,7 @@ const COMMANDS = {
           "--dir",
           "--marker-prefix",
           "--no-examples",
+          "--rules-dir",
           "-y",
           "--yes",
         ],

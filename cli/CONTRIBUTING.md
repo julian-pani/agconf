@@ -124,6 +124,73 @@ pnpm test:coverage
 - Write descriptive test names
 - Test both success and failure cases
 
+### Check Command Integrity Requirement
+
+**Critical:** When adding new content types to sync or modifying sync behavior, you MUST ensure the `check` command can verify the integrity of all synced content.
+
+The `check` command (`agent-conf check`) verifies that managed files haven't been manually modified. This is essential for CI pipelines and maintaining sync integrity.
+
+**Requirements:**
+
+1. **Hash storage**: Every synced content type must store a content hash during sync
+2. **Hash verification**: The `check` command must recompute and compare hashes
+3. **Failure on modification**: Check must exit with code 1 if any content was modified
+4. **Test coverage**: Write tests that verify:
+   - Check passes immediately after sync (no false positives)
+   - Check fails when content is manually modified (no false negatives)
+
+**Example test pattern:**
+
+```typescript
+it("should pass check immediately after sync", async () => {
+  // Sync content
+  await syncCommand({ ... });
+
+  // Check should pass - nothing was modified
+  await checkCommand({});
+  expect(mockExit).not.toHaveBeenCalled();
+});
+
+it("should detect modified content", async () => {
+  // Create file with hash that won't match
+  await fs.writeFile(path, contentWithWrongHash);
+
+  // Check should fail
+  await expect(checkCommand({})).rejects.toThrow();
+  expect(mockExit).toHaveBeenCalledWith(1);
+});
+```
+
+**Currently verified content types:**
+- AGENTS.md global block (hash in `<!-- Content hash: ... -->` comment)
+- AGENTS.md rules section for Codex (hash in rules section markers)
+- Skill files (hash in `metadata.agent_conf_content_hash` frontmatter)
+- Rule files for Claude (hash in `metadata.agent_conf_content_hash` frontmatter)
+
+### Content Hash Consistency
+
+**Critical:** All content hashes MUST use the same format to prevent check failures immediately after sync.
+
+**Standard format:** `sha256:` prefix + 12 hex characters (e.g., `sha256:94ca9e76de02`)
+
+**Reuse existing hash functions - DO NOT create new ones:**
+
+```typescript
+// For skill/rule file frontmatter metadata
+import { computeContentHash } from "../core/skill-metadata.js";
+const hash = computeContentHash(content, { metadataPrefix: "agent-conf" });
+
+// For AGENTS.md global block
+import { computeGlobalBlockHash } from "../core/markers.js";
+const hash = computeGlobalBlockHash(content);
+
+// For AGENTS.md rules section (Codex)
+import { computeRulesSectionHash } from "../core/markers.js";
+const hash = computeRulesSectionHash(content);
+```
+
+**Why this matters:** Previous bugs occurred when sync computed a hash with 16 chars but check expected 12 chars, causing check to always fail. By reusing the same functions, we guarantee consistency.
+
 ### Test Structure
 
 ```typescript

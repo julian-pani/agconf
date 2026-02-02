@@ -4,9 +4,13 @@ import pc from "picocolors";
 import { readLockfile } from "../core/lockfile.js";
 import {
   computeGlobalBlockHash,
+  computeRulesSectionHash,
   parseAgentsMd,
   parseGlobalBlockMetadata,
+  parseRulesSection,
+  parseRulesSectionMetadata,
   stripMetadataComments,
+  stripRulesSectionMetadata,
 } from "../core/markers.js";
 import {
   checkAllManagedFiles,
@@ -25,9 +29,11 @@ export interface CheckResult {
 
 export interface ModifiedFileInfo {
   path: string;
-  type: "skill" | "agents";
+  type: "skill" | "agents" | "rule" | "rules-section";
   expectedHash: string;
   currentHash: string;
+  /** Rule source path if type is rule */
+  rulePath?: string;
 }
 
 /**
@@ -123,6 +129,50 @@ export async function checkCommand(options: CheckOptions = {}): Promise<void> {
         expectedHash: storedHash,
         currentHash,
       });
+    } else if (file.type === "rule") {
+      // Get hash info for rule file
+      const rulePath = path.join(targetDir, file.path);
+      const content = await fs.readFile(rulePath, "utf-8");
+      const { frontmatter } = parseFrontmatter(content);
+
+      const metadata = frontmatter.metadata as Record<string, string> | undefined;
+      const storedHash = metadata?.[`${keyPrefix}content_hash`] ?? "unknown";
+      const currentHash = computeContentHash(
+        content,
+        markerPrefix ? { metadataPrefix: markerPrefix } : undefined,
+      );
+
+      const ruleInfo: ModifiedFileInfo = {
+        path: file.path,
+        type: "rule",
+        expectedHash: storedHash,
+        currentHash,
+      };
+      if (file.rulePath) {
+        ruleInfo.rulePath = file.rulePath;
+      }
+      modifiedFiles.push(ruleInfo);
+    } else if (file.type === "rules-section") {
+      // Get hash info for rules section in AGENTS.md (Codex target)
+      const agentsMdPath = path.join(targetDir, "AGENTS.md");
+      const content = await fs.readFile(agentsMdPath, "utf-8");
+      const parsed = parseRulesSection(
+        content,
+        markerPrefix ? { prefix: markerPrefix } : undefined,
+      );
+
+      if (parsed.content) {
+        const metadata = parseRulesSectionMetadata(parsed.content);
+        const contentWithoutMeta = stripRulesSectionMetadata(parsed.content);
+        const currentHash = computeRulesSectionHash(contentWithoutMeta);
+
+        modifiedFiles.push({
+          path: "AGENTS.md",
+          type: "rules-section",
+          expectedHash: metadata.contentHash ?? "unknown",
+          currentHash,
+        });
+      }
     }
   }
 
@@ -171,7 +221,14 @@ export async function checkCommand(options: CheckOptions = {}): Promise<void> {
   console.log();
 
   for (const file of modifiedFiles) {
-    const label = file.type === "agents" ? " (global block)" : "";
+    let label = "";
+    if (file.type === "agents") {
+      label = " (global block)";
+    } else if (file.type === "rules-section") {
+      label = " (rules section)";
+    } else if (file.type === "rule" && file.rulePath) {
+      label = ` (rule: ${file.rulePath})`;
+    }
     console.log(`  ${file.path}${pc.dim(label)}`);
     console.log(`    Expected hash: ${pc.dim(file.expectedHash)}`);
     console.log(`    Current hash:  ${pc.dim(file.currentHash)}`);

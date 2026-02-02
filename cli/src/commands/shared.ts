@@ -340,9 +340,10 @@ export async function performSync(options: PerformSyncOptions): Promise<void> {
 
   const logger = createLogger();
 
-  // Read previous lockfile to detect orphaned skills later
+  // Read previous lockfile to detect orphaned skills/rules later
   const previousLockfileResult = await readLockfile(targetDir);
   const previousSkills = previousLockfileResult?.lockfile.content.skills ?? [];
+  const previousRules = previousLockfileResult?.lockfile.content.rules?.files ?? [];
   const previousTargets = previousLockfileResult?.lockfile.content.targets ?? ["claude"];
 
   const syncSpinner = logger.spinner("Syncing...");
@@ -495,9 +496,10 @@ export async function performSync(options: PerformSyncOptions): Promise<void> {
       const skillsPath = formatPath(path.join(targetDir, config.dir, "skills"));
       const skillsRelPath = `${config.dir}/skills/`;
 
-      // Compute new vs updated skills
+      // Compute new vs actually modified skills
       const newSkills = result.skills.synced.filter((s) => !previousSkills.includes(s)).sort();
-      const updatedSkills = result.skills.synced.filter((s) => previousSkills.includes(s)).sort();
+      // Only show as "updated" if content actually changed (not just re-synced)
+      const updatedSkills = result.skills.modified.filter((s) => previousSkills.includes(s)).sort();
       const removedSkills = orphanResult.deleted.sort();
 
       // Summary line for skills directory
@@ -560,6 +562,99 @@ export async function performSync(options: PerformSyncOptions): Promise<void> {
           console.log(`    ${pc.yellow("!")} ${orphanPath}/ ${pc.dim("(orphaned but skipped)")}`);
           summaryLines.push(`  - \`${orphanRelPath}\` (orphaned but skipped)`);
         }
+      }
+
+      // Rules status for Claude target
+      if (result.rules && result.rules.claudeFiles.length > 0 && targetResult.target === "claude") {
+        const rulesPath = formatPath(path.join(targetDir, config.dir, "rules"));
+        const rulesRelPath = `${config.dir}/rules/`;
+        const rulesCount = result.rules.claudeFiles.length;
+
+        console.log(`  ${pc.green("+")} ${rulesPath}/ ${pc.dim(`(${rulesCount} rules)`)}`);
+        summaryLines.push(`- \`${rulesRelPath}\` (${rulesCount} rules)`);
+
+        // Compute new vs actually modified rules
+        const newRules = result.rules.synced.filter((r) => !previousRules.includes(r)).sort();
+        // Only show as "updated" if content actually changed (not just re-synced)
+        const updatedRules = result.rules.modified.filter((r) => previousRules.includes(r)).sort();
+
+        // Helper to display rule list with truncation
+        const formatRuleList = (
+          rules: string[],
+          icon: string,
+          colorFn: (s: string) => string,
+          label: string,
+          mdLabel: string,
+        ) => {
+          if (rules.length === 0) return;
+
+          const maxDisplay = shouldExpand ? rules.length : MAX_ITEMS_DEFAULT;
+          const displayRules = rules.slice(0, maxDisplay);
+          const hiddenCount = rules.length - displayRules.length;
+
+          for (const rule of displayRules) {
+            const rulePath = formatPath(path.join(targetDir, config.dir, "rules", rule));
+            const ruleRelPath = `${config.dir}/rules/${rule}`;
+            console.log(`    ${colorFn(icon)} ${rulePath} ${pc.dim(`(${label})`)}`);
+            summaryLines.push(`  - \`${ruleRelPath}\` (${mdLabel})`);
+          }
+
+          if (hiddenCount > 0) {
+            console.log(`    ${pc.dim(`  ... ${hiddenCount} more ${label}`)}`);
+            summaryLines.push(`  - ... ${hiddenCount} more ${mdLabel}`);
+          }
+        };
+
+        // Show new rules
+        formatRuleList(newRules, "+", pc.green, "new", "new");
+
+        // Show updated rules
+        formatRuleList(updatedRules, "~", pc.yellow, "updated", "updated");
+      }
+
+      // Rules status for Codex target (concatenated into AGENTS.md)
+      if (result.rules?.codexUpdated && targetResult.target === "codex") {
+        const rulesCount = result.rules.synced.length;
+        console.log(
+          `  ${pc.green("+")} ${pc.dim("AGENTS.md rules section")} ${pc.dim(`(${rulesCount} rules concatenated)`)}`,
+        );
+        summaryLines.push(`- AGENTS.md rules section (${rulesCount} rules concatenated)`);
+
+        // Compute new vs actually modified rules for Codex
+        const newRules = result.rules.synced.filter((r) => !previousRules.includes(r)).sort();
+        // Only show as "updated" if content actually changed (not just re-synced)
+        const updatedRules = result.rules.modified.filter((r) => previousRules.includes(r)).sort();
+
+        // Helper to display rule list with truncation (Codex version - no file paths)
+        const formatCodexRuleList = (
+          rules: string[],
+          icon: string,
+          colorFn: (s: string) => string,
+          label: string,
+          mdLabel: string,
+        ) => {
+          if (rules.length === 0) return;
+
+          const maxDisplay = shouldExpand ? rules.length : MAX_ITEMS_DEFAULT;
+          const displayRules = rules.slice(0, maxDisplay);
+          const hiddenCount = rules.length - displayRules.length;
+
+          for (const rule of displayRules) {
+            console.log(`    ${colorFn(icon)} ${rule} ${pc.dim(`(${label})`)}`);
+            summaryLines.push(`  - \`${rule}\` (${mdLabel})`);
+          }
+
+          if (hiddenCount > 0) {
+            console.log(`    ${pc.dim(`  ... ${hiddenCount} more ${label}`)}`);
+            summaryLines.push(`  - ... ${hiddenCount} more ${mdLabel}`);
+          }
+        };
+
+        // Show new rules
+        formatCodexRuleList(newRules, "+", pc.green, "new", "new");
+
+        // Show updated rules
+        formatCodexRuleList(updatedRules, "~", pc.yellow, "updated", "updated");
       }
     }
 

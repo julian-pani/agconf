@@ -238,3 +238,114 @@ export function isAgentsMdManaged(agentsMdContent: string, options: MarkerOption
   const parsed = parseAgentsMd(agentsMdContent, options);
   return parsed.hasMarkers && parsed.globalBlock !== null;
 }
+
+// =============================================================================
+// Rules section parsing (for Codex target)
+// =============================================================================
+
+export interface ParsedRulesSection {
+  /** The content between rules markers, or null if not found */
+  content: string | null;
+  /** Whether rules markers exist */
+  hasMarkers: boolean;
+}
+
+export interface RulesSectionMetadata {
+  /** Content hash stored in the rules section */
+  contentHash?: string;
+  /** Number of rules stored in the section */
+  ruleCount?: number;
+}
+
+/**
+ * Parse the rules section from AGENTS.md content.
+ * The rules section is between <!-- prefix:rules:start --> and <!-- prefix:rules:end --> markers.
+ */
+export function parseRulesSection(
+  agentsMdContent: string,
+  options: MarkerOptions = {},
+): ParsedRulesSection {
+  const { prefix = DEFAULT_MARKER_PREFIX } = options;
+  const rulesStartMarker = `<!-- ${prefix}:rules:start -->`;
+  const rulesEndMarker = `<!-- ${prefix}:rules:end -->`;
+
+  const startIdx = agentsMdContent.indexOf(rulesStartMarker);
+  const endIdx = agentsMdContent.indexOf(rulesEndMarker);
+
+  if (startIdx === -1 || endIdx === -1 || endIdx <= startIdx) {
+    return { content: null, hasMarkers: false };
+  }
+
+  const content = agentsMdContent.slice(startIdx + rulesStartMarker.length, endIdx).trim();
+
+  return { content, hasMarkers: true };
+}
+
+/**
+ * Parse metadata from the rules section.
+ */
+export function parseRulesSectionMetadata(rulesSection: string): RulesSectionMetadata {
+  const result: RulesSectionMetadata = {};
+
+  const hashMatch = rulesSection.match(/<!--\s*Content hash:\s*(.+?)\s*-->/);
+  if (hashMatch?.[1]) {
+    result.contentHash = hashMatch[1];
+  }
+
+  const countMatch = rulesSection.match(/<!--\s*Rule count:\s*(\d+)\s*-->/);
+  if (countMatch?.[1]) {
+    result.ruleCount = Number.parseInt(countMatch[1], 10);
+  }
+
+  return result;
+}
+
+/**
+ * Strip metadata comments from a rules section, keeping only the actual content.
+ */
+export function stripRulesSectionMetadata(rulesSection: string): string {
+  const lines = rulesSection.split("\n");
+  const filteredLines = lines.filter((line) => {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("<!-- DO NOT EDIT")) return false;
+    if (trimmed.startsWith("<!-- Content hash:")) return false;
+    if (trimmed.startsWith("<!-- Rule count:")) return false;
+    return true;
+  });
+  return filteredLines.join("\n").trim();
+}
+
+/**
+ * Compute content hash for the rules section.
+ */
+export function computeRulesSectionHash(content: string): string {
+  const hash = createHash("sha256").update(content.trim()).digest("hex");
+  return `sha256:${hash.slice(0, 12)}`;
+}
+
+/**
+ * Check if the rules section of AGENTS.md has been manually modified.
+ * Returns true if the content hash doesn't match.
+ */
+export function hasRulesSectionChanges(
+  agentsMdContent: string,
+  options: MarkerOptions = {},
+): boolean {
+  const parsed = parseRulesSection(agentsMdContent, options);
+
+  if (!parsed.content) {
+    return false; // No rules section
+  }
+
+  const metadata = parseRulesSectionMetadata(parsed.content);
+
+  if (!metadata.contentHash) {
+    return false; // No hash stored
+  }
+
+  // Get content without metadata comments
+  const content = stripRulesSectionMetadata(parsed.content);
+  const currentHash = computeRulesSectionHash(content);
+
+  return metadata.contentHash !== currentHash;
+}

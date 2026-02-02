@@ -32,6 +32,8 @@ export const CanonicalPathsSchema = z.object({
   instructions: z.string().default("instructions/AGENTS.md"),
   /** Path to the skills directory (e.g., "skills") */
   skills_dir: z.string().default("skills"),
+  /** Path to the rules directory (e.g., "rules") - optional for backward compat */
+  rules_dir: z.string().optional(),
 });
 
 export const MarkersConfigSchema = z.object({
@@ -118,6 +120,8 @@ export const ResolvedConfigSchema = z.object({
   instructionsPath: z.string(),
   /** Path to skills directory within source */
   skillsDir: z.string(),
+  /** Path to rules directory within source - optional for backward compat */
+  rulesDir: z.string().optional(),
   /** Marker prefix for managed content */
   markerPrefix: z.string(),
   /** Target agents to sync to */
@@ -176,5 +180,15 @@ export function getMetadataKeys(prefix: string) {
   return {
     managed: `${keyPrefix}_managed`,
     contentHash: `${keyPrefix}_content_hash`,
+  };
+}
+
+/**
+ * Generate rules marker strings based on the configured prefix.
+ */
+export function getRulesMarkers(prefix: string) {
+  return {
+    rulesStart: `<!-- ${prefix}:rules:start -->`,
+    rulesEnd: `<!-- ${prefix}:rules:end -->`,
   };
 }

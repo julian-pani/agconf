@@ -60,6 +60,11 @@ export interface WriteLockfileOptions {
   pinnedVersion?: string;
   /** Marker prefix used for managed content (default: "agent-conf") */
   markerPrefix?: string;
+  /** Rules content for lockfile tracking */
+  rules?: {
+    files: string[];
+    content_hash: string;
+  };
 }
 
 export async function writeLockfile(
@@ -81,6 +86,7 @@ export async function writeLockfile(
       skills: options.skills,
       targets: options.targets ?? ["claude"],
       marker_prefix: options.markerPrefix,
+      rules: options.rules,
     },
     cli_version: getCliVersion(),
   };
