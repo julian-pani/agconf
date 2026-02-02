@@ -1,3 +1,9 @@
+## [0.3.1](https://github.com/julian-pani/agent-conf/compare/v0.3.0...v0.3.1) (2026-02-02)
+
+### Bug Fixes
+
+* **cli:** use lockfile targets when --target not specified in sync ([f5ab1f3](https://github.com/julian-pani/agent-conf/commit/f5ab1f3390e55d06ae685870c7cb88d3a1d88707))
+
 ## [0.3.0](https://github.com/julian-pani/agent-conf/compare/v0.2.0...v0.3.0) (2026-02-02)
 
 ### Features
