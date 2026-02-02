@@ -435,7 +435,9 @@ export async function performSync(options: PerformSyncOptions): Promise<void> {
         resolvedVersion.isRelease && resolvedVersion.version
           ? formatTag(resolvedVersion.version)
           : resolvedVersion.ref;
-      workflowResult = await syncWorkflows(targetDir, workflowRef, options.sourceRepo);
+      workflowResult = await syncWorkflows(targetDir, workflowRef, options.sourceRepo, {
+        markerPrefix: resolvedSource.markerPrefix,
+      });
       workflowSpinner.stop();
     }
 

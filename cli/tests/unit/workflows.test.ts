@@ -107,6 +107,32 @@ jobs:
     });
   });
 
+  describe("getWorkflowConfig", () => {
+    it("uses default secretName when no config provided", () => {
+      const config = getWorkflowConfig(SOURCE_REPO);
+      expect(config.secretName).toBe("AGCONF_TOKEN");
+    });
+
+    it("derives secretName from markerPrefix", () => {
+      const config = getWorkflowConfig(SOURCE_REPO, { markerPrefix: "fbagents" });
+      expect(config.secretName).toBe("FBAGENTS_TOKEN");
+    });
+
+    it("converts markerPrefix dashes to underscores in secretName", () => {
+      const config = getWorkflowConfig(SOURCE_REPO, { markerPrefix: "my-custom-prefix" });
+      expect(config.secretName).toBe("MY_CUSTOM_PREFIX_TOKEN");
+    });
+
+    it("uses markerPrefix for secretName independent of name", () => {
+      // Even if 'name' is provided, secretName should use markerPrefix
+      const config = getWorkflowConfig(SOURCE_REPO, {
+        name: "acme-standards",
+        markerPrefix: "acme",
+      });
+      expect(config.secretName).toBe("ACME_TOKEN");
+    });
+  });
+
   describe("generateSyncWorkflow", () => {
     it("generates workflow with correct version ref", () => {
       const content = generateSyncWorkflow("v1.2.3", DEFAULT_CONFIG);
@@ -134,6 +160,13 @@ jobs:
       const content = generateSyncWorkflow("v1.0.0", DEFAULT_CONFIG);
       expect(content).toContain("repository_dispatch:");
       expect(content).toContain("agconf-release");
+    });
+
+    it("uses custom secret name from markerPrefix", () => {
+      const customConfig = getWorkflowConfig(SOURCE_REPO, { markerPrefix: "fbagents" });
+      const content = generateSyncWorkflow("v1.0.0", customConfig);
+      expect(content).toContain("secrets.FBAGENTS_TOKEN");
+      expect(content).not.toContain("secrets.AGCONF_TOKEN");
     });
   });
 
