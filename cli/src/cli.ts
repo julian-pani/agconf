@@ -91,7 +91,7 @@ export function createCli(): Command {
     .option("--override", "Override existing AGENTS.md instead of merging")
     .option("--ref <ref>", "GitHub ref/version to sync from")
     .option("--pinned", "Use lockfile version without fetching latest")
-    .option("-t, --target <targets...>", "Target platforms (claude, codex)", ["claude"])
+    .option("-t, --target <targets...>", "Target platforms (claude, codex)")
     .option("--summary-file <path>", "Write sync summary to file (markdown, for CI)")
     .option("--expand-changes", "Show all items in output (default: first 5)")
     .action(

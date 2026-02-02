@@ -35,11 +35,14 @@ export async function syncCommand(options: SyncOptions): Promise<void> {
   // Resolve target directory to git root
   const targetDir = await resolveTargetDirectory();
 
-  // Parse targets
-  const targets = await parseAndValidateTargets(options.target);
-
   // Check current status (informational only, no confirmation prompt)
   const status = await getSyncStatus(targetDir);
+
+  // Parse targets: use lockfile targets if --target not explicitly specified
+  const targetsFromLockfile = status.lockfile?.content.targets;
+  const effectiveTargetOption =
+    options.target ?? (targetsFromLockfile?.length ? targetsFromLockfile : undefined);
+  const targets = await parseAndValidateTargets(effectiveTargetOption);
 
   // Check schema compatibility
   if (status.schemaError) {
