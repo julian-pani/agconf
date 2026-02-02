@@ -1,3 +1,9 @@
+## [0.3.3](https://github.com/julian-pani/agconf/compare/v0.3.2...v0.3.3) (2026-02-02)
+
+### Bug Fixes
+
+* **cli:** use markerPrefix for workflow secret name ([bb05ac6](https://github.com/julian-pani/agconf/commit/bb05ac6adfd3ddc7e40c263130ccc568a913da43))
+
 ## [0.3.2](https://github.com/julian-pani/agconf/compare/v0.3.1...v0.3.2) (2026-02-02)
 
 ### Bug Fixes
