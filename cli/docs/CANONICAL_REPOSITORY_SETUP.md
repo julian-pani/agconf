@@ -165,7 +165,7 @@ The generated workflow files install the `agent-conf` CLI with a pinned version:
 
 ```yaml
 - name: Install agent-conf CLI
-  run: npm install -g agent-conf@1.2.0
+  run: npm install -g agconf@1.2.0
 ```
 
 The version is automatically set to the CLI version used when running `agent-conf canonical init`. This ensures consistent behavior between local development and CI.

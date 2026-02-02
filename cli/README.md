@@ -6,7 +6,7 @@ nav_order: 8
 
 # agent-conf
 
-[![npm version](https://img.shields.io/npm/v/agent-conf.svg)](https://www.npmjs.com/package/agent-conf)
+[![npm version](https://img.shields.io/npm/v/agconf.svg)](https://www.npmjs.com/package/agconf)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 CLI to sync AI agent configurations across repositories.

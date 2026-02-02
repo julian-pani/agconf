@@ -5,7 +5,7 @@ import { getCliVersion } from "../core/lockfile.js";
 import { compareVersions } from "../core/version.js";
 import { createLogger } from "../utils/logger.js";
 
-const NPM_PACKAGE_NAME = "agent-conf";
+const NPM_PACKAGE_NAME = "agconf";
 
 export interface UpgradeCliOptions {
   yes?: boolean;

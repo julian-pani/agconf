@@ -181,7 +181,7 @@ agent-conf canonical init --name my-standards --org my-org
 The generated workflows use unpinned CLI installation:
 ```yaml
 - name: Install agent-conf CLI
-  run: npm install -g agent-conf  # Uses latest compatible version
+  run: npm install -g agconf  # Uses latest compatible version
 ```
 
 ## Version Bump Guidelines
@@ -234,7 +234,7 @@ The generated workflows use unpinned CLI installation:
 
 The lockfile was created with a CLI that uses a newer schema format.
 
-**Solution:** Upgrade the CLI: `npm install -g agent-conf@latest`
+**Solution:** Upgrade the CLI: `npm install -g agconf@latest`
 
 ### "Schema version X.Y.Z is outdated and no longer supported"
 
@@ -246,7 +246,7 @@ The lockfile uses an old schema format that the current CLI no longer supports.
 
 The lockfile has features from a newer minor version. The CLI will work but may miss some features.
 
-**Solution:** Consider upgrading: `npm install -g agent-conf@latest`
+**Solution:** Consider upgrading: `npm install -g agconf@latest`
 
 ### "No releases found"
 

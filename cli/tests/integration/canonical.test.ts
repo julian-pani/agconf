@@ -246,14 +246,14 @@ describe("canonical init - workflow generation", () => {
     // Check sync workflow uses unpinned version
     const syncWorkflowPath = path.join(tempDir, ".github", "workflows", "sync-reusable.yml");
     const syncWorkflow = await fs.readFile(syncWorkflowPath, "utf-8");
-    expect(syncWorkflow).toContain("npm install -g agent-conf\n");
-    expect(syncWorkflow).not.toContain("npm install -g agent-conf@");
+    expect(syncWorkflow).toContain("npm install -g agconf\n");
+    expect(syncWorkflow).not.toContain("npm install -g agconf@");
 
     // Check check workflow uses unpinned version
     const checkWorkflowPath = path.join(tempDir, ".github", "workflows", "check-reusable.yml");
     const checkWorkflow = await fs.readFile(checkWorkflowPath, "utf-8");
-    expect(checkWorkflow).toContain("npm install -g agent-conf\n");
-    expect(checkWorkflow).not.toContain("npm install -g agent-conf@");
+    expect(checkWorkflow).toContain("npm install -g agconf\n");
+    expect(checkWorkflow).not.toContain("npm install -g agconf@");
   });
 
   it("should include repo full name with organization in workflow comments", async () => {

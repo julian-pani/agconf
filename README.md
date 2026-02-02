@@ -45,7 +45,7 @@ When you're using AI coding agents like Claude Code across multiple repositories
 ## Installation
 
 ```bash
-npm install -g agent-conf
+npm install -g agconf
 ```
 
 ### From source (SSH)

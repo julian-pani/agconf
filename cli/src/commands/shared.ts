@@ -502,12 +502,18 @@ export async function performSync(options: PerformSyncOptions): Promise<void> {
       const updatedSkills = result.skills.modified.filter((s) => previousSkills.includes(s)).sort();
       const removedSkills = orphanResult.deleted.sort();
 
+      // Determine if skills had any changes
+      const skillsHadChanges =
+        newSkills.length > 0 || updatedSkills.length > 0 || removedSkills.length > 0;
+      const skillsStatusIcon = skillsHadChanges ? pc.green("+") : pc.dim("-");
+      const skillsStatusLabel = skillsHadChanges ? "(updated)" : "(unchanged)";
+
       // Summary line for skills directory
       console.log(
-        `  ${pc.green("+")} ${skillsPath}/ ${pc.dim(`(${result.skills.synced.length} skills, ${targetResult.skills.copied} files)`)}`,
+        `  ${skillsStatusIcon} ${skillsPath}/ ${pc.dim(`(total: ${result.skills.synced.length} skills, ${targetResult.skills.copied} files) ${skillsStatusLabel}`)}`,
       );
       summaryLines.push(
-        `- \`${skillsRelPath}\` (${result.skills.synced.length} skills, ${targetResult.skills.copied} files)`,
+        `- \`${skillsRelPath}\` (total: ${result.skills.synced.length} skills, ${targetResult.skills.copied} files) ${skillsStatusLabel}`,
       );
 
       // Helper to display skill list with truncation
@@ -570,13 +576,20 @@ export async function performSync(options: PerformSyncOptions): Promise<void> {
         const rulesRelPath = `${config.dir}/rules/`;
         const rulesCount = result.rules.claudeFiles.length;
 
-        console.log(`  ${pc.green("+")} ${rulesPath}/ ${pc.dim(`(${rulesCount} rules)`)}`);
-        summaryLines.push(`- \`${rulesRelPath}\` (${rulesCount} rules)`);
-
         // Compute new vs actually modified rules
         const newRules = result.rules.synced.filter((r) => !previousRules.includes(r)).sort();
         // Only show as "updated" if content actually changed (not just re-synced)
         const updatedRules = result.rules.modified.filter((r) => previousRules.includes(r)).sort();
+
+        // Determine if rules had any changes
+        const rulesHadChanges = newRules.length > 0 || updatedRules.length > 0;
+        const rulesStatusIcon = rulesHadChanges ? pc.green("+") : pc.dim("-");
+        const rulesStatusLabel = rulesHadChanges ? "(updated)" : "(unchanged)";
+
+        console.log(
+          `  ${rulesStatusIcon} ${rulesPath}/ ${pc.dim(`(total: ${rulesCount} rules) ${rulesStatusLabel}`)}`,
+        );
+        summaryLines.push(`- \`${rulesRelPath}\` (total: ${rulesCount} rules) ${rulesStatusLabel}`);
 
         // Helper to display rule list with truncation
         const formatRuleList = (
@@ -616,9 +629,11 @@ export async function performSync(options: PerformSyncOptions): Promise<void> {
       if (result.rules?.codexUpdated && targetResult.target === "codex") {
         const rulesCount = result.rules.synced.length;
         console.log(
-          `  ${pc.green("+")} ${pc.dim("AGENTS.md rules section")} ${pc.dim(`(${rulesCount} rules concatenated)`)}`,
+          `  ${pc.green("+")} ${pc.dim("AGENTS.md rules section")} ${pc.dim(`(total: ${rulesCount} rules concatenated) (updated)`)}`,
         );
-        summaryLines.push(`- AGENTS.md rules section (${rulesCount} rules concatenated)`);
+        summaryLines.push(
+          `- AGENTS.md rules section (total: ${rulesCount} rules concatenated) (updated)`,
+        );
 
         // Compute new vs actually modified rules for Codex
         const newRules = result.rules.synced.filter((r) => !previousRules.includes(r)).sort();

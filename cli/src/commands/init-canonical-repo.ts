@@ -4,12 +4,11 @@ import * as path from "node:path";
 import * as prompts from "@clack/prompts";
 import pc from "picocolors";
 import { stringify as stringifyYaml } from "yaml";
-import { CURRENT_CONFIG_VERSION } from "../config/schema.js";
 import { directoryExists, ensureDir, fileExists } from "../utils/fs.js";
 import { getGitOrganization, getGitProjectName, isGitRoot } from "../utils/git.js";
 import { createLogger, formatPath } from "../utils/logger.js";
 
-export interface CanonicalInitOptions {
+export interface InitCanonicalRepoOptions {
   /** Canonical repo name */
   name?: string | undefined;
   /** Organization name */
@@ -20,8 +19,6 @@ export interface CanonicalInitOptions {
   markerPrefix?: string | undefined;
   /** Include example skill (default: true) */
   includeExamples?: boolean | undefined;
-  /** Rules directory (omit or empty to skip rules) */
-  rulesDir?: string | undefined;
   /** Non-interactive mode */
   yes?: boolean | undefined;
 }
@@ -32,29 +29,21 @@ interface ResolvedOptions {
   targetDir: string;
   markerPrefix: string;
   includeExamples: boolean;
-  rulesDir?: string | undefined;
 }
 
 /**
  * Generates the agent-conf.yaml configuration file content.
  */
 function generateConfigYaml(options: ResolvedOptions): string {
-  const content: Record<string, unknown> = {
-    instructions: "instructions/AGENTS.md",
-    skills_dir: "skills",
-  };
-
-  // Add rules_dir if specified
-  if (options.rulesDir) {
-    content.rules_dir = options.rulesDir;
-  }
-
   const config: Record<string, unknown> = {
-    version: CURRENT_CONFIG_VERSION,
+    version: "1",
     meta: {
       name: options.name,
     },
-    content,
+    content: {
+      instructions: "instructions/AGENTS.md",
+      skills_dir: "skills",
+    },
     targets: ["claude"],
     markers: {
       prefix: options.markerPrefix,
@@ -68,14 +57,7 @@ function generateConfigYaml(options: ResolvedOptions): string {
     (config.meta as Record<string, unknown>).organization = options.organization;
   }
 
-  let yaml = stringifyYaml(config, { lineWidth: 0 });
-
-  // If no rules_dir specified, add commented-out example after skills_dir
-  if (!options.rulesDir) {
-    yaml = yaml.replace(/skills_dir: skills\n/, "skills_dir: skills\n  # rules_dir: rules\n");
-  }
-
-  return yaml;
+  return stringifyYaml(config, { lineWidth: 0 });
 }
 
 /**
@@ -411,11 +393,11 @@ jobs:
 `;
 }
 
-export async function canonicalInitCommand(options: CanonicalInitOptions): Promise<void> {
+export async function initCanonicalRepoCommand(options: InitCanonicalRepoOptions): Promise<void> {
   const logger = createLogger();
 
   console.log();
-  prompts.intro(pc.bold("agent-conf canonical init"));
+  prompts.intro(pc.bold("agent-conf init-canonical-repo"));
 
   // Determine target directory
   const targetDir = options.dir ? path.resolve(options.dir) : process.cwd();
@@ -486,7 +468,6 @@ export async function canonicalInitCommand(options: CanonicalInitOptions): Promi
       targetDir,
       markerPrefix: options.markerPrefix ?? "agent-conf",
       includeExamples: options.includeExamples !== false,
-      rulesDir: options.rulesDir || undefined,
     };
   } else {
     // Interactive mode: prompt for values
@@ -548,46 +529,12 @@ export async function canonicalInitCommand(options: CanonicalInitOptions): Promi
       process.exit(0);
     }
 
-    // Ask about rules
-    const includeRules = await prompts.confirm({
-      message: "Include rules directory?",
-      initialValue: false,
-    });
-
-    if (prompts.isCancel(includeRules)) {
-      prompts.cancel("Operation cancelled");
-      process.exit(0);
-    }
-
-    let rulesDir: string | undefined;
-    if (includeRules) {
-      const rulesDirInput = await prompts.text({
-        message: "Rules directory name:",
-        placeholder: "rules",
-        defaultValue: "rules",
-        validate: (value) => {
-          if (!value.trim()) return "Directory name is required";
-          if (!/^[a-z0-9-_/]+$/.test(value))
-            return "Directory name must be lowercase alphanumeric with hyphens, underscores, or slashes";
-          return undefined;
-        },
-      });
-
-      if (prompts.isCancel(rulesDirInput)) {
-        prompts.cancel("Operation cancelled");
-        process.exit(0);
-      }
-
-      rulesDir = rulesDirInput as string;
-    }
-
     resolvedOptions = {
       name: name as string,
       organization: (organization as string) || undefined,
       targetDir,
       markerPrefix: markerPrefix as string,
       includeExamples: includeExamples as boolean,
-      rulesDir,
     };
   }
 
@@ -607,14 +554,6 @@ export async function canonicalInitCommand(options: CanonicalInitOptions): Promi
     await ensureDir(instructionsDir);
     await ensureDir(skillsDir);
     await ensureDir(workflowsDir);
-
-    // Create rules directory if specified
-    if (resolvedOptions.rulesDir) {
-      const rulesDir = path.join(resolvedOptions.targetDir, resolvedOptions.rulesDir);
-      await ensureDir(rulesDir);
-      // Add a .gitkeep to the rules directory
-      await fs.writeFile(path.join(rulesDir, ".gitkeep"), "", "utf-8");
-    }
 
     // Write agent-conf.yaml
     const configPath = path.join(resolvedOptions.targetDir, "agent-conf.yaml");
@@ -669,11 +608,6 @@ export async function canonicalInitCommand(options: CanonicalInitOptions): Promi
         `  ${pc.green("+")} ${formatPath(path.join(skillsDir, "example-skill/SKILL.md"))}`,
       );
     }
-    if (resolvedOptions.rulesDir) {
-      console.log(
-        `  ${pc.green("+")} ${formatPath(path.join(resolvedOptions.targetDir, resolvedOptions.rulesDir))}/`,
-      );
-    }
     console.log(`  ${pc.green("+")} ${formatPath(syncWorkflowPath)}`);
     console.log(`  ${pc.green("+")} ${formatPath(checkWorkflowPath)}`);
 
@@ -688,12 +622,7 @@ export async function canonicalInitCommand(options: CanonicalInitOptions): Promi
     console.log(pc.bold("Next steps:"));
     console.log(`  1. Edit ${pc.cyan("instructions/AGENTS.md")} with your engineering standards`);
     console.log(`  2. Add skills to ${pc.cyan("skills/")} directory`);
-    if (resolvedOptions.rulesDir) {
-      console.log(`  3. Add rules to ${pc.cyan(`${resolvedOptions.rulesDir}/`)} directory`);
-      console.log(`  4. Commit and push to create your canonical repository`);
-    } else {
-      console.log(`  3. Commit and push to create your canonical repository`);
-    }
+    console.log(`  3. Commit and push to create your canonical repository`);
     console.log();
     console.log(
       pc.dim(

@@ -48,7 +48,7 @@ export function checkSchemaCompatibility(contentVersion: string): SchemaCompatib
   if (contentMajor > supportedMajor) {
     return {
       compatible: false,
-      error: `Schema version ${contentVersion} requires a newer CLI. Run: npm install -g agent-conf@latest`,
+      error: `Schema version ${contentVersion} requires a newer CLI. Run: npm install -g agconf@latest`,
     };
   }
 
@@ -63,7 +63,7 @@ export function checkSchemaCompatibility(contentVersion: string): SchemaCompatib
   if (contentMinor > supportedMinor) {
     return {
       compatible: true,
-      warning: `Content uses schema ${contentVersion}, CLI supports ${SUPPORTED_SCHEMA_VERSION}. Some features may not work. Consider upgrading: npm install -g agent-conf@latest`,
+      warning: `Content uses schema ${contentVersion}, CLI supports ${SUPPORTED_SCHEMA_VERSION}. Some features may not work. Consider upgrading: npm install -g agconf@latest`,
     };
   }
 

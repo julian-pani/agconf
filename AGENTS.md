@@ -10,7 +10,7 @@ This file provides guidance to coding agents - such as Claude Code, Codex, etc -
 
 This is a monorepo with the CLI package in `/cli`:
 - Root: Git hooks setup (husky), workspace config
-- `/cli`: The main npm package (published as `agent-conf`)
+- `/cli`: The main npm package (published as `agconf`)
 
 ## Development Commands
 

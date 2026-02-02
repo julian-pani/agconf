@@ -12,7 +12,7 @@ aux_links:
   "GitHub":
     - "https://github.com/julian-pani/agent-conf"
   "npm":
-    - "https://www.npmjs.com/package/agent-conf"
+    - "https://www.npmjs.com/package/agconf"
 
 aux_links_new_tab: true
 

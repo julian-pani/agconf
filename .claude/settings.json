@@ -8,7 +8,15 @@
       "Bash(pnpm build:*)",
       "Bash(npm pack:*)",
       "Bash(pnpm typecheck:*)",
-      "Edit(/tmp/**)"
+      "Bash(pnpm exec biome:*)",
+      "Edit(/tmp/**)",
+      "WebFetch(domain:results-receiver.actions.githubusercontent.com)",
+      "Bash(gh run view:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(pnpm check:fix:*)",
+      "Bash(find:*)",
+      "Bash(pnpm start:*)",
+      "Bash(ls:*)"
     ],
     "ask": [
       "Bash(git push:*)"
