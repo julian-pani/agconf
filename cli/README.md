@@ -1,9 +1,3 @@
----
-layout: default
-title: agconf cli
-nav_order: 8
----
-
 # agconf
 
 [![npm version](https://img.shields.io/npm/v/agconf.svg)](https://www.npmjs.com/package/agconf)
