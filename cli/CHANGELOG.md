@@ -1,3 +1,9 @@
+## [0.3.4](https://github.com/julian-pani/agconf/compare/v0.3.3...v0.3.4) (2026-02-02)
+
+### Bug Fixes
+
+* **cli:** pass markerPrefix to syncWorkflows ([fcec3de](https://github.com/julian-pani/agconf/commit/fcec3dea8098260682a6bfe06f3330a3606000ad))
+
 ## [0.3.3](https://github.com/julian-pani/agconf/compare/v0.3.2...v0.3.3) (2026-02-02)
 
 ### Bug Fixes
