@@ -113,7 +113,8 @@ export function createCli(): Command {
     .command("check")
     .description("Check if managed files have been modified")
     .option("-q, --quiet", "Minimal output, just exit code")
-    .action(async (options: { quiet?: boolean }) => {
+    .option("--debug", "Show detailed debug information for hash computation")
+    .action(async (options: { quiet?: boolean; debug?: boolean }) => {
       await checkCommand(options);
     });
 

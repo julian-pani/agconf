@@ -8,6 +8,7 @@ import {
   type Rule,
   updateAgentsMdWithRules,
 } from "../../src/core/rules.js";
+import { computeContentHash } from "../../src/core/skill-metadata.js";
 
 // =============================================================================
 // Test Data
@@ -651,5 +652,76 @@ describe("addRuleMetadata", () => {
     // Verify the metadata is present
     expect(hashMatch1).not.toBeNull();
     expect(hashMatch2).not.toBeNull();
+  });
+
+  it("produces hash that matches check command verification (sync-check consistency)", () => {
+    // This test ensures that the hash stored during sync matches what the check
+    // command will compute when verifying the file. This is critical because:
+    // 1. sync calls addRuleMetadata and writes the result to disk
+    // 2. check reads the file and calls computeContentHash to verify
+    // If these don't match, check will always report files as modified.
+    //
+    // BUG BEING TESTED: The parseSimpleYaml function in skill-metadata.ts doesn't
+    // handle arrays properly - it treats `paths:` as an empty object. This causes:
+    // 1. During sync: addRuleMetadata hashes rawContent which has paths array
+    //    but stripManagedMetadata (in skill-metadata.ts) loses the array data
+    // 2. During check: computeContentHash parses the synced file which now has
+    //    the properly serialized paths array, resulting in a different hash
+    //
+    // The fix should ensure that the content being hashed during sync matches
+    // the content that will be hashed during check.
+
+    // Rule with paths array - this is the format that causes the bug
+    const rawContent = `---
+paths:
+  - src/api/**/*.ts
+  - lib/api/**/*.ts
+---
+
+# API Rules
+
+All API endpoints must be secure.`;
+
+    const rule = parseRule(rawContent, "api-rules.md");
+
+    // Step 1: Sync - get the content that would be written to disk
+    const syncedContent = addRuleMetadata(rule, "agconf");
+
+    // Extract the stored hash from the synced content
+    const hashMatch = syncedContent.match(/agconf_content_hash: "?(sha256:[a-f0-9]+)"?/);
+    expect(hashMatch).not.toBeNull();
+    const storedHash = hashMatch![1];
+
+    // Step 2: Check - simulate what check command does
+    // It reads the file (syncedContent) and computes the hash
+    // The metadataPrefix uses dashes (agconf converts underscores to dashes)
+    const checkHash = computeContentHash(syncedContent, { metadataPrefix: "agconf" });
+
+    // These MUST match, otherwise check will always report the file as modified
+    expect(checkHash).toBe(storedHash);
+  });
+
+  it("preserves paths array in synced content", () => {
+    // This test verifies that the paths array is preserved when syncing rules.
+    // If paths are lost or corrupted, the rule files won't work correctly for
+    // path-scoped rules in Claude.
+
+    const rawContent = `---
+paths:
+  - src/api/**/*.ts
+  - lib/api/**/*.ts
+---
+
+# API Rules
+
+Content here.`;
+
+    const rule = parseRule(rawContent, "api-rules.md");
+    const syncedContent = addRuleMetadata(rule, "agconf");
+
+    // The synced content should still contain the paths
+    expect(syncedContent).toContain("paths:");
+    expect(syncedContent).toContain("src/api/**/*.ts");
+    expect(syncedContent).toContain("lib/api/**/*.ts");
   });
 });

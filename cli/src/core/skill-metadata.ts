@@ -251,7 +251,14 @@ export function stripManagedMetadata(content: string, options: MetadataOptions =
     }
   }
 
-  // Rebuild content
+  // If frontmatter is now empty after stripping, return just the body
+  // This ensures content that originally had no frontmatter hashes the same
+  // after having managed metadata added and then stripped
+  if (Object.keys(frontmatter).length === 0) {
+    return body;
+  }
+
+  // Rebuild content with remaining frontmatter
   const yamlContent = serializeFrontmatter(frontmatter);
   return `---\n${yamlContent}\n---\n${body}`;
 }

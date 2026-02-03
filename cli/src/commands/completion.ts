@@ -21,7 +21,7 @@ const COMMANDS = {
   },
   check: {
     description: "Check if managed files have been modified",
-    options: ["-q", "--quiet"],
+    options: ["-q", "--quiet", "--debug"],
   },
   config: {
     description: "Manage global CLI configuration",

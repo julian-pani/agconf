@@ -16,10 +16,12 @@ import {
   checkAllManagedFiles,
   computeContentHash,
   parseFrontmatter,
+  stripManagedMetadata,
 } from "../core/skill-metadata.js";
 
 export interface CheckOptions {
   quiet?: boolean;
+  debug?: boolean;
 }
 
 export interface CheckResult {
@@ -141,6 +143,32 @@ export async function checkCommand(options: CheckOptions = {}): Promise<void> {
         content,
         markerPrefix ? { metadataPrefix: markerPrefix } : undefined,
       );
+
+      // Debug logging for rule hash computation
+      if (options.debug) {
+        console.log(pc.cyan(`\n[DEBUG] Rule: ${file.path}`));
+        console.log(pc.dim(`  Marker prefix: ${markerPrefix}`));
+        console.log(pc.dim(`  Key prefix: ${keyPrefix}`));
+        console.log(pc.dim(`  Stored hash: ${storedHash}`));
+        console.log(pc.dim(`  Computed hash: ${currentHash}`));
+        console.log(pc.dim(`  Frontmatter keys: ${Object.keys(frontmatter).join(", ")}`));
+        if (frontmatter.metadata) {
+          console.log(
+            pc.dim(`  Metadata keys: ${Object.keys(frontmatter.metadata as object).join(", ")}`),
+          );
+        }
+
+        // Show what content is being hashed
+        const strippedContent = stripManagedMetadata(
+          content,
+          markerPrefix ? { metadataPrefix: markerPrefix } : undefined,
+        );
+        console.log(
+          pc.dim(
+            `  Stripped content (for hashing):\n${pc.gray(strippedContent.slice(0, 500))}${strippedContent.length > 500 ? "..." : ""}`,
+          ),
+        );
+      }
 
       const ruleInfo: ModifiedFileInfo = {
         path: file.path,

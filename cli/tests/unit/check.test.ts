@@ -734,9 +734,11 @@ ${globalContent}
 
       // Create managed rule file with correct hash
       // Hash is computed on the file with managed metadata stripped
-      // When only managed metadata exists, the stripped content is "---\n\n---\n<body>"
+      // When only managed metadata exists, the stripped content is just the body
+      // (no empty frontmatter delimiters - this ensures content that originally
+      // had no frontmatter hashes the same after adding/stripping managed metadata)
       const ruleBody = "\n# Test Rule\n\nSome rule content\n";
-      const strippedContent = `---\n\n---\n${ruleBody}`;
+      const strippedContent = ruleBody; // Just the body, no frontmatter wrapper
       const { createHash } = await import("node:crypto");
       const hash = createHash("sha256").update(strippedContent).digest("hex");
       const contentHash = `sha256:${hash.slice(0, 12)}`;

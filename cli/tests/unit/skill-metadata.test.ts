@@ -139,6 +139,39 @@ describe("skill-metadata", () => {
       // Hashes should be the same - agconf metadata is stripped before hashing
       expect(hashOriginal).toBe(hashWithMetadata);
     });
+
+    it("produces same hash for content with no frontmatter after adding/stripping metadata", () => {
+      // BUG TEST: When original content has NO frontmatter, after sync the file has
+      // frontmatter with only managed metadata. When stripped for hashing, we should
+      // NOT add empty frontmatter delimiters (---\n\n---\n).
+      //
+      // This is the bug that causes sync+check hash mismatch:
+      // - During sync: hash of "# Content" (no frontmatter)
+      // - During check: hash of "---\n\n---\n# Content" (empty frontmatter block)
+      const contentWithNoFrontmatter = `# Documentation Standards
+
+This is the content without any frontmatter.
+
+## Section
+
+More content here.
+`;
+
+      // Simulate what happens during sync: add managed metadata
+      const withMetadata = addManagedMetadata(contentWithNoFrontmatter);
+
+      // The synced file should have frontmatter with managed metadata
+      expect(withMetadata).toContain("---");
+      expect(withMetadata).toContain("agconf_managed");
+
+      // Hash of original (no frontmatter) should match hash of synced file
+      // (after stripping managed metadata)
+      const hashOriginal = computeContentHash(contentWithNoFrontmatter);
+      const hashWithMetadata = computeContentHash(withMetadata);
+
+      // These MUST be equal - this is the bug fix test
+      expect(hashWithMetadata).toBe(hashOriginal);
+    });
   });
 
   describe("hasManualChanges", () => {
