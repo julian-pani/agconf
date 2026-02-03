@@ -131,6 +131,28 @@ jobs:
       });
       expect(config.secretName).toBe("ACME_TOKEN");
     });
+
+    it("derives workflowPrefix from markerPrefix", () => {
+      const config = getWorkflowConfig(SOURCE_REPO, { markerPrefix: "fbagents" });
+      expect(config.workflowPrefix).toBe("fbagents");
+    });
+
+    it("uses markerPrefix for workflowPrefix independent of name", () => {
+      const config = getWorkflowConfig(SOURCE_REPO, {
+        name: "acme-standards",
+        markerPrefix: "acme",
+      });
+      expect(config.workflowPrefix).toBe("acme");
+    });
+  });
+
+  describe("getWorkflowFiles", () => {
+    it("uses workflowPrefix for filenames", () => {
+      const config = getWorkflowConfig(SOURCE_REPO, { markerPrefix: "fbagents" });
+      const files = getWorkflowFiles(config);
+      expect(files[0].filename).toBe("fbagents-sync.yml");
+      expect(files[1].filename).toBe("fbagents-check.yml");
+    });
   });
 
   describe("generateSyncWorkflow", () => {
@@ -168,6 +190,15 @@ jobs:
       expect(content).toContain("secrets.FBAGENTS_TOKEN");
       expect(content).not.toContain("secrets.AGCONF_TOKEN");
     });
+
+    it("uses markerPrefix for workflow name and identifiers", () => {
+      const customConfig = getWorkflowConfig(SOURCE_REPO, { markerPrefix: "fbagents" });
+      const content = generateSyncWorkflow("v1.0.0", customConfig);
+      expect(content).toContain("name: fbagents Sync");
+      expect(content).toContain("group: fbagents-sync");
+      expect(content).toContain("types: [fbagents-release]");
+      expect(content).not.toContain("name: agconf Sync");
+    });
   });
 
   describe("generateCheckWorkflow", () => {
@@ -197,6 +228,13 @@ jobs:
       expect(content).toContain(".claude/skills/**");
       expect(content).toContain(".codex/skills/**");
       expect(content).toContain("AGENTS.md");
+    });
+
+    it("uses markerPrefix for workflow name", () => {
+      const customConfig = getWorkflowConfig(SOURCE_REPO, { markerPrefix: "fbagents" });
+      const content = generateCheckWorkflow("v1.0.0", customConfig);
+      expect(content).toContain("name: fbagents Check");
+      expect(content).not.toContain("name: agconf Check");
     });
   });
 

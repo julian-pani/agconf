@@ -36,7 +36,6 @@ export function getWorkflowConfig(
   sourceRepo: string,
   config?: Partial<ResolvedConfig>,
 ): WorkflowConfig {
-  const name = config?.name ?? DEFAULT_CLI_NAME;
   const markerPrefix = config?.markerPrefix ?? DEFAULT_CLI_NAME;
   // Convert markerPrefix to uppercase for secret name (e.g., "agconf" -> "AGCONF")
   const secretName = `${markerPrefix.toUpperCase().replace(/-/g, "_")}_TOKEN`;
@@ -45,7 +44,7 @@ export function getWorkflowConfig(
     sourceRepo,
     cliName: config?.cliName ?? DEFAULT_CLI_NAME,
     secretName,
-    workflowPrefix: name,
+    workflowPrefix: markerPrefix,
   };
 }
 
@@ -158,9 +157,9 @@ export function updateWorkflowRef(
  * Generates the content for the sync workflow file.
  */
 export function generateSyncWorkflow(versionRef: string, config: WorkflowConfig): string {
-  const { sourceRepo, cliName, secretName } = config;
+  const { sourceRepo, cliName, secretName, workflowPrefix } = config;
 
-  return `# ${cliName} Auto-Sync Workflow
+  return `# ${workflowPrefix} Auto-Sync Workflow
 # Managed by ${cliName} CLI - do not edit the version ref manually
 #
 # This workflow syncs standards from the central repository.
@@ -169,8 +168,9 @@ export function generateSyncWorkflow(versionRef: string, config: WorkflowConfig)
 # TOKEN: Requires a PAT with read access to the source repository.
 # Create a fine-grained PAT at https://github.com/settings/tokens?type=beta
 # with read access to ${sourceRepo}, then add it as ${secretName} secret.
+# Alternatively, set up a github app. See https://github.com/julian-pani/agconf/blob/master/cli/docs/CANONICAL_REPOSITORY_SETUP.md#cross-repository-authentication for more details
 
-name: ${cliName} Sync
+name: ${workflowPrefix} Sync
 
 on:
   schedule:
@@ -185,10 +185,10 @@ on:
         type: boolean
 
   repository_dispatch:
-    types: [${cliName.replace(/-/g, "_")}-release]
+    types: [${workflowPrefix.replace(/-/g, "_")}-release]
 
 concurrency:
-  group: ${cliName}-sync
+  group: ${workflowPrefix}-sync
   cancel-in-progress: false
 
 jobs:
@@ -206,15 +206,15 @@ jobs:
  * Generates the content for the check workflow file.
  */
 export function generateCheckWorkflow(versionRef: string, config: WorkflowConfig): string {
-  const { sourceRepo, cliName } = config;
+  const { sourceRepo, cliName, workflowPrefix } = config;
 
-  return `# ${cliName} File Integrity Check
+  return `# ${workflowPrefix} File Integrity Check
 # Managed by ${cliName} CLI - do not edit the version ref manually
 #
-# This workflow checks that ${cliName}-managed files haven't been modified.
+# This workflow checks that ${workflowPrefix}-managed files haven't been modified.
 # Version changes should be made using: ${cliName} sync --ref <version>
 
-name: ${cliName} Check
+name: ${workflowPrefix} Check
 
 on:
   pull_request:
