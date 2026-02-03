@@ -1,3 +1,13 @@
+## [0.4.0](https://github.com/julian-pani/agconf/compare/v0.3.5...v0.4.0) (2026-02-03)
+
+### Features
+
+* **cli:** consolidate both CLAUDE.md locations during sync ([f744fb4](https://github.com/julian-pani/agconf/commit/f744fb4dac471702ff401f40be6a07133dc4991d))
+
+### Bug Fixes
+
+* **cli:** remove confusing status command ([52e07d3](https://github.com/julian-pani/agconf/commit/52e07d305e0533c6e27569f917d85b941101a154))
+
 ## [0.3.5](https://github.com/julian-pani/agconf/compare/v0.3.4...v0.3.5) (2026-02-03)
 
 ### Bug Fixes
