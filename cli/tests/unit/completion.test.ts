@@ -160,7 +160,6 @@ describe("completion", () => {
         expect.arrayContaining([
           expect.objectContaining({ name: "init" }),
           expect.objectContaining({ name: "sync" }),
-          expect.objectContaining({ name: "status" }),
           expect.objectContaining({ name: "config" }),
           expect.objectContaining({ name: "completion" }),
         ]),
@@ -324,7 +323,7 @@ describe("completion", () => {
 
       expect(handleCompletion()).toBe(true);
       expect(tabtab.log).toHaveBeenCalledWith(
-        expect.arrayContaining(["init", "sync", "status", "config", "completion"]),
+        expect.arrayContaining(["init", "sync", "config", "completion"]),
       );
     });
   });

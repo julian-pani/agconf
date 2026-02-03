@@ -19,14 +19,6 @@ const COMMANDS = {
     description: "Sync agconf standards",
     options: ["-s", "--source", "--local", "-y", "--yes", "--override", "--ref", "-t", "--target"],
   },
-  status: {
-    description: "Show current sync status",
-    options: ["-c", "--check"],
-  },
-  update: {
-    description: "Check for and apply updates",
-    options: ["-y", "--yes", "-t", "--target"],
-  },
   check: {
     description: "Check if managed files have been modified",
     options: ["-q", "--quiet"],

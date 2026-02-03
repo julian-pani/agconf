@@ -5,7 +5,6 @@ import { checkCommand } from "./commands/check.js";
 import { handleCompletion, installCompletion, uninstallCompletion } from "./commands/completion.js";
 import { configGetCommand, configSetCommand, configShowCommand } from "./commands/config.js";
 import { initCommand } from "./commands/init.js";
-import { statusCommand } from "./commands/status.js";
 import { syncCommand } from "./commands/sync.js";
 import { upgradeCliCommand } from "./commands/upgrade-cli.js";
 import { checkCliVersionMismatch, getCliVersion } from "./core/lockfile.js";
@@ -109,14 +108,6 @@ export function createCli(): Command {
         await syncCommand(options);
       },
     );
-
-  program
-    .command("status")
-    .description("Show current sync status")
-    .option("-c, --check", "Check for manually modified skill files")
-    .action(async (options: { check?: boolean }) => {
-      await statusCommand(options);
-    });
 
   program
     .command("check")

@@ -107,7 +107,6 @@ GitHub Actions workflows are created automatically to keep downstream repos in s
 |---------|-------------|
 | `init` | Initialize repo from a canonical source |
 | `sync` | Sync content from canonical repo (fetches latest by default) |
-| `status` | Show current sync status |
 | `check` | Verify managed files are unchanged |
 | `upgrade-cli` | Upgrade the CLI to the latest version |
 | `canonical init` | Scaffold a new canonical repository |
@@ -160,15 +159,6 @@ agconf sync --summary-file sync-report.md
 
 # Show all changed items in output (default shows first 5)
 agconf sync --expand-changes
-```
-
-### `agconf status`
-
-Show current sync status.
-
-```bash
-agconf status                  # Show status
-agconf status --check          # Also check for modified files
 ```
 
 ### `agconf check`

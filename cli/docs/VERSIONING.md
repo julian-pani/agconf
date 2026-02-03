@@ -134,23 +134,6 @@ Checks if managed files have been modified.
 
 **Schema compatibility check:** The CLI checks the lockfile's schema version before proceeding.
 
-### `agconf status`
-
-Shows current sync status including version info.
-
-**Example output:**
-```
-agconf status
-
-Sync Status:
-  Schema: 1.0.0
-  Version: 1.2.0
-  Synced: 2024-01-15T10:30:00Z
-  Source: github:acme/engineering-standards@v1.2.0
-
-Skills: 5 synced
-```
-
 ## CLI Version (Diagnostics Only)
 
 The CLI version is tracked in the lockfile (`cli_version`) for diagnostic purposes only. It does **not** affect compatibility.
