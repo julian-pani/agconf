@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { WorkflowConfig as WorkflowConfigSchema } from "../../src/config/schema.js";
 import {
   extractWorkflowRef,
   formatWorkflowRef,
@@ -14,7 +15,9 @@ import {
   getWorkflowStatus,
   getWorkflowsDir,
   syncWorkflows,
+  toWorkflowSettings,
   updateWorkflowRef,
+  type WorkflowSettings,
 } from "../../src/core/workflows.js";
 
 const SOURCE_REPO = "org/agconf";
@@ -198,6 +201,79 @@ jobs:
       expect(content).toContain("group: fbagents-sync");
       expect(content).toContain("types: [fbagents-release]");
       expect(content).not.toContain("name: agconf Sync");
+    });
+
+    describe("with WorkflowSettings", () => {
+      it("includes commit_strategy when provided", () => {
+        const settings: WorkflowSettings = { commit_strategy: "direct" };
+        const content = generateSyncWorkflow("v1.0.0", DEFAULT_CONFIG, settings);
+        expect(content).toContain("commit_strategy: 'direct'");
+      });
+
+      it("includes pr_branch_prefix when provided", () => {
+        const settings: WorkflowSettings = { pr_branch_prefix: "agconf/update" };
+        const content = generateSyncWorkflow("v1.0.0", DEFAULT_CONFIG, settings);
+        expect(content).toContain("pr_branch_prefix: 'agconf/update'");
+      });
+
+      it("includes pr_title when provided", () => {
+        const settings: WorkflowSettings = { pr_title: "chore(agconf): sync standards" };
+        const content = generateSyncWorkflow("v1.0.0", DEFAULT_CONFIG, settings);
+        expect(content).toContain("pr_title: 'chore(agconf): sync standards'");
+      });
+
+      it("includes commit_message when provided", () => {
+        const settings: WorkflowSettings = { commit_message: "chore: sync engineering standards" };
+        const content = generateSyncWorkflow("v1.0.0", DEFAULT_CONFIG, settings);
+        expect(content).toContain("commit_message: 'chore: sync engineering standards'");
+      });
+
+      it("includes static reviewers when provided", () => {
+        const settings: WorkflowSettings = { reviewers: "alice,bob" };
+        const content = generateSyncWorkflow("v1.0.0", DEFAULT_CONFIG, settings);
+        expect(content).toContain("reviewers: 'alice,bob'");
+        // Should not use vars when static reviewers are provided
+        expect(content).not.toContain("vars.AGCONF_REVIEWERS");
+      });
+
+      it("uses vars for reviewers when not provided in settings", () => {
+        const settings: WorkflowSettings = { commit_strategy: "pr" };
+        const content = generateSyncWorkflow("v1.0.0", DEFAULT_CONFIG, settings);
+        expect(content).toContain("vars.AGCONF_REVIEWERS");
+      });
+
+      it("includes all settings together", () => {
+        const settings: WorkflowSettings = {
+          commit_strategy: "direct",
+          pr_branch_prefix: "sync/update",
+          pr_title: "Update standards",
+          commit_message: "chore: sync",
+          reviewers: "admin",
+        };
+        const content = generateSyncWorkflow("v1.0.0", DEFAULT_CONFIG, settings);
+        expect(content).toContain("commit_strategy: 'direct'");
+        expect(content).toContain("pr_branch_prefix: 'sync/update'");
+        expect(content).toContain("pr_title: 'Update standards'");
+        expect(content).toContain("commit_message: 'chore: sync'");
+        expect(content).toContain("reviewers: 'admin'");
+      });
+
+      it("generates default workflow when settings is undefined", () => {
+        const content = generateSyncWorkflow("v1.0.0", DEFAULT_CONFIG, undefined);
+        expect(content).toContain("vars.AGCONF_REVIEWERS");
+        expect(content).not.toContain("commit_strategy:");
+        expect(content).not.toContain("pr_branch_prefix:");
+        expect(content).not.toContain("pr_title:");
+        expect(content).not.toContain("commit_message:");
+      });
+
+      it("generates default workflow when settings is empty object", () => {
+        const settings: WorkflowSettings = {};
+        const content = generateSyncWorkflow("v1.0.0", DEFAULT_CONFIG, settings);
+        expect(content).toContain("vars.AGCONF_REVIEWERS");
+        expect(content).not.toContain("commit_strategy:");
+        expect(content).not.toContain("pr_branch_prefix:");
+      });
     });
   });
 
@@ -419,6 +495,111 @@ jobs: {}`;
         const version = await getCurrentWorkflowVersion(tempDir, SOURCE_REPO);
         expect(version).toBeUndefined();
       });
+    });
+
+    describe("syncWorkflows with settings", () => {
+      it("applies workflow settings when creating workflows", async () => {
+        const settings: WorkflowSettings = {
+          commit_strategy: "direct",
+          commit_message: "chore: sync",
+        };
+        await syncWorkflows(tempDir, "v1.0.0", SOURCE_REPO, {
+          workflowSettings: settings,
+        });
+
+        const syncWorkflowPath = path.join(tempDir, ".github/workflows/agconf-sync.yml");
+        const content = await fs.readFile(syncWorkflowPath, "utf-8");
+        expect(content).toContain("commit_strategy: 'direct'");
+        expect(content).toContain("commit_message: 'chore: sync'");
+      });
+
+      it("applies workflow settings when updating workflows", async () => {
+        // First sync without settings
+        await syncWorkflows(tempDir, "v1.0.0", SOURCE_REPO);
+
+        // Second sync with settings - should update
+        const settings: WorkflowSettings = { commit_strategy: "direct" };
+        const result = await syncWorkflows(tempDir, "v1.0.0", SOURCE_REPO, {
+          workflowSettings: settings,
+        });
+
+        // sync workflow should be updated (settings changed), check workflow unchanged
+        expect(result.updated).toContain("agconf-sync.yml");
+        expect(result.unchanged).toContain("agconf-check.yml");
+
+        const syncWorkflowPath = path.join(tempDir, ".github/workflows/agconf-sync.yml");
+        const content = await fs.readFile(syncWorkflowPath, "utf-8");
+        expect(content).toContain("commit_strategy: 'direct'");
+      });
+
+      it("supports both resolvedConfig and workflowSettings", async () => {
+        const settings: WorkflowSettings = { commit_strategy: "direct" };
+        await syncWorkflows(tempDir, "v1.0.0", SOURCE_REPO, {
+          resolvedConfig: { markerPrefix: "custom" },
+          workflowSettings: settings,
+        });
+
+        // Should use custom prefix for filenames
+        const syncWorkflowPath = path.join(tempDir, ".github/workflows/custom-sync.yml");
+        const content = await fs.readFile(syncWorkflowPath, "utf-8");
+        expect(content).toContain("commit_strategy: 'direct'");
+        expect(content).toContain("name: custom Sync");
+      });
+
+      it("maintains backward compatibility with old signature", async () => {
+        // Old signature: syncWorkflows(repoRoot, ref, sourceRepo, resolvedConfig)
+        await syncWorkflows(tempDir, "v1.0.0", SOURCE_REPO, {
+          markerPrefix: "legacy",
+        });
+
+        const syncWorkflowPath = path.join(tempDir, ".github/workflows/legacy-sync.yml");
+        const content = await fs.readFile(syncWorkflowPath, "utf-8");
+        expect(content).toContain("name: legacy Sync");
+      });
+    });
+  });
+
+  describe("toWorkflowSettings", () => {
+    it("returns undefined when config is undefined", () => {
+      expect(toWorkflowSettings(undefined)).toBeUndefined();
+    });
+
+    it("converts full config to settings", () => {
+      const config: WorkflowConfigSchema = {
+        commit_strategy: "direct",
+        pr_branch_prefix: "agconf/sync",
+        pr_title: "Sync standards",
+        commit_message: "chore: sync",
+        reviewers: "alice,bob",
+      };
+      const settings = toWorkflowSettings(config);
+      expect(settings).toEqual({
+        commit_strategy: "direct",
+        pr_branch_prefix: "agconf/sync",
+        pr_title: "Sync standards",
+        commit_message: "chore: sync",
+        reviewers: "alice,bob",
+      });
+    });
+
+    it("only includes defined properties", () => {
+      const config: WorkflowConfigSchema = {
+        commit_strategy: "pr",
+      };
+      const settings = toWorkflowSettings(config);
+      expect(settings).toEqual({ commit_strategy: "pr" });
+      expect(settings).not.toHaveProperty("pr_branch_prefix");
+      expect(settings).not.toHaveProperty("pr_title");
+      expect(settings).not.toHaveProperty("commit_message");
+      expect(settings).not.toHaveProperty("reviewers");
+    });
+
+    it("handles default commit_strategy value", () => {
+      const config: WorkflowConfigSchema = {
+        commit_strategy: "pr", // default value from schema
+      };
+      const settings = toWorkflowSettings(config);
+      expect(settings?.commit_strategy).toBe("pr");
     });
   });
 });

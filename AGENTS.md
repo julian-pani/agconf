@@ -66,6 +66,24 @@ Commands: init, sync, status, check, upgrade-cli, canonical (init, update), conf
 - **Lockfile pinning**: `.agconf/lockfile.json` tracks sync state and versions
 - **Merge strategy**: Global content updates while preserving repo-specific sections in AGENTS.md
 - **Plugin architecture**: Targets and providers are extensible
+- **Downstream config**: `.agconf/config.yaml` in downstream repos for user preferences (workflow settings)
+
+### Downstream Config
+
+Downstream repositories can optionally create `.agconf/config.yaml` to customize sync behavior:
+- **Location**: `.agconf/config.yaml` (NOT the root `agconf.yaml` which is for canonical repos)
+- **Schema**: `DownstreamConfigSchema` in `cli/src/config/schema.ts`
+- **Loader**: `loadDownstreamConfig()` in `cli/src/config/loader.ts`
+
+Key distinction:
+- **Canonical config (`agconf.yaml`)**: Defines content structure, targets, markers - what to sync
+- **Downstream config (`.agconf/config.yaml`)**: User preferences for how sync operates - workflow settings
+
+The `workflow` key in downstream config controls:
+- `commit_strategy`: "pr" (default) or "direct"
+- `pr_branch_prefix`, `pr_title`: PR-specific settings
+- `commit_message`: Custom commit message
+- `reviewers`: Comma-separated GitHub usernames
 
 ### Rules Sync
 

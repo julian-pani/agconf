@@ -154,6 +154,38 @@ For Claude targets, the `paths` frontmatter is preserved. For Codex targets (whi
 
 The `rules_dir` configuration is optional. Existing canonical repositories without rules continue to work unchanged.
 
+## Downstream Configuration
+
+Each downstream repository can customize sync behavior by creating `.agconf/config.yaml`. This file is optional and is never overwritten by sync.
+
+### Available Settings
+
+```yaml
+# .agconf/config.yaml - Downstream repo configuration
+
+workflow:
+  # Commit strategy: "pr" (default) creates a pull request, "direct" commits directly
+  commit_strategy: direct
+
+  # Custom commit message for sync commits
+  commit_message: "chore: sync engineering standards"
+
+  # PR-specific settings (only used when commit_strategy: pr)
+  pr_branch_prefix: "agconf/sync"
+  pr_title: "chore(agconf): sync agent configuration"
+
+  # Comma-separated list of reviewers for PRs
+  reviewers: "alice,bob"
+```
+
+### When to Use
+
+- **`commit_strategy: direct`**: For repos where you want updates applied immediately without PR review
+- **`commit_strategy: pr`** (default): For repos where you want to review changes before merging
+- **`reviewers`**: Automatically request reviews from specific team members
+
+This config is separate from the canonical config (`agconf.yaml`) - downstream config only contains user preferences for how sync operates.
+
 ## License
 
 MIT

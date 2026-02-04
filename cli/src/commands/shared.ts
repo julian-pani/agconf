@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as prompts from "@clack/prompts";
 import pc from "picocolors";
+import { loadDownstreamConfig } from "../config/loader.js";
 import { installPreCommitHook } from "../core/hooks.js";
 import { readLockfile } from "../core/lockfile.js";
 import { getModifiedManagedFiles } from "../core/skill-metadata.js";
@@ -16,7 +17,7 @@ import {
   parseVersion,
   type ReleaseInfo,
 } from "../core/version.js";
-import { syncWorkflows, type WorkflowSyncResult } from "../core/workflows.js";
+import { syncWorkflows, toWorkflowSettings, type WorkflowSyncResult } from "../core/workflows.js";
 import { createTempDir, removeTempDir, resolvePath } from "../utils/fs.js";
 import { getGitRoot } from "../utils/git.js";
 import { createLogger, formatPath } from "../utils/logger.js";
@@ -340,6 +341,10 @@ export async function performSync(options: PerformSyncOptions): Promise<void> {
 
   const logger = createLogger();
 
+  // Load downstream config for workflow settings (optional - file may not exist)
+  const downstreamConfig = await loadDownstreamConfig(targetDir);
+  const workflowSettings = toWorkflowSettings(downstreamConfig?.workflow);
+
   // Read previous lockfile to detect orphaned skills/rules later
   const previousLockfileResult = await readLockfile(targetDir);
   const previousSkills = previousLockfileResult?.lockfile.content.skills ?? [];
@@ -436,7 +441,8 @@ export async function performSync(options: PerformSyncOptions): Promise<void> {
           ? formatTag(resolvedVersion.version)
           : resolvedVersion.ref;
       workflowResult = await syncWorkflows(targetDir, workflowRef, options.sourceRepo, {
-        markerPrefix: resolvedSource.markerPrefix,
+        resolvedConfig: { markerPrefix: resolvedSource.markerPrefix },
+        workflowSettings,
       });
       workflowSpinner.stop();
     }

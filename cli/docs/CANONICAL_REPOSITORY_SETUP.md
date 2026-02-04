@@ -51,7 +51,16 @@ my-standards/
 
 ## Configuration Files
 
-### `agconf.yaml`
+agconf uses two distinct configuration files:
+
+| File | Location | Purpose |
+|------|----------|---------|
+| `agconf.yaml` | Canonical repo | Defines content structure, targets, markers |
+| `.agconf/config.yaml` | Downstream repos | User preferences for how sync operates |
+
+The canonical config defines **what** content exists and how it's organized. The downstream config defines **how** sync operations behave. They serve different purposes and are never mixed.
+
+### `agconf.yaml` (Canonical Config)
 
 This is the main configuration file for your canonical repository:
 
@@ -238,6 +247,10 @@ In each downstream repository:
 ```bash
 agconf init --source my-org/engineering-standards
 ```
+
+### 5. Configure Downstream Workflow Settings (Optional)
+
+Each downstream repository can optionally customize sync behavior (commit strategy, PR settings, reviewers). See [Downstream Repository Configuration](./DOWNSTREAM_REPOSITORY_CONFIGURATION.md) for details.
 
 ## Cross-Repository Authentication
 
@@ -468,5 +481,6 @@ agconf init --source my-org/engineering-standards
 
 ## Next Steps
 
+- [Downstream Repository Configuration](./DOWNSTREAM_REPOSITORY_CONFIGURATION.md) - Customizing sync behavior in downstream repos
 - [Versioning Documentation](./VERSIONING.md) - How version management works
 - [File Integrity Checking](./CHECK_FILE_INTEGRITY.md) - How file integrity is enforced
