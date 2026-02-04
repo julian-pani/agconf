@@ -223,10 +223,17 @@ on:
       - '.codex/skills/**'
       - 'AGENTS.md'
   push:
+    branches:
+      - main
+      - master
     paths:
       - '.claude/skills/**'
       - '.codex/skills/**'
       - 'AGENTS.md'
+
+concurrency:
+  group: ${workflowPrefix}-check-\${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   check:
