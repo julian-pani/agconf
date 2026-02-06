@@ -1,3 +1,10 @@
+## [0.6.2](https://github.com/julian-pani/agconf/compare/v0.6.1...v0.6.2) (2026-02-06)
+
+### Bug Fixes
+
+* **cli:** remove dead code and fix hash format inconsistency ([7f1cd0d](https://github.com/julian-pani/agconf/commit/7f1cd0dba42006f9b68895008c6633e80f06aac3))
+* **cli:** remove unused getModifiedSkillFiles and getModifiedRuleFiles ([9e9bd50](https://github.com/julian-pani/agconf/commit/9e9bd501efab8bf21bc01034d6a957b7195139ee))
+
 ## [0.6.1](https://github.com/julian-pani/agconf/compare/v0.6.0...v0.6.1) (2026-02-06)
 
 ### Bug Fixes
