@@ -1,3 +1,9 @@
+## [0.6.1](https://github.com/julian-pani/agconf/compare/v0.6.0...v0.6.1) (2026-02-06)
+
+### Bug Fixes
+
+* **cli:** simplify sync workflow branch management ([025861e](https://github.com/julian-pani/agconf/commit/025861ec192688696d7210c29f656baebbcfd34d))
+
 ## [0.6.0](https://github.com/julian-pani/agconf/compare/v0.5.0...v0.6.0) (2026-02-06)
 
 ### Features
