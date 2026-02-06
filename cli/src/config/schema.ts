@@ -89,8 +89,27 @@ export const SourceConfigSchema = z.object({
 });
 
 /**
- * Configuration schema for downstream repositories (.agconf.yaml).
+ * Workflow configuration for downstream repositories.
+ * Controls how the sync workflow behaves (PR vs direct commit, etc.)
+ */
+export const WorkflowConfigSchema = z.object({
+  /** Commit strategy: "pr" creates a pull request, "direct" commits directly to branch */
+  commit_strategy: z.enum(["pr", "direct"]).default("pr"),
+  /** Branch prefix for PR branches (only used with commit_strategy: "pr") */
+  pr_branch_prefix: z.string().optional(),
+  /** Custom PR title (only used with commit_strategy: "pr") */
+  pr_title: z.string().optional(),
+  /** Custom commit message */
+  commit_message: z.string().optional(),
+  /** Comma-separated list of GitHub usernames for PR reviewers */
+  reviewers: z.string().optional(),
+});
+
+/**
+ * Configuration schema for downstream repositories (.agconf/config.yaml).
  * This file lives in repos that consume content from canonical repos.
+ * Unlike the canonical config (agconf.yaml), this contains user preferences
+ * for how sync operates, not content definitions.
  */
 export const DownstreamConfigSchema = z.object({
   /**
@@ -100,9 +119,12 @@ export const DownstreamConfigSchema = z.object({
   sources: z.array(SourceConfigSchema).min(1).optional(),
   /** Override which targets to sync to (defaults to source repo's targets) */
   targets: z.array(z.string()).optional(),
+  /** Workflow configuration (commit strategy, PR settings, etc.) */
+  workflow: WorkflowConfigSchema.optional(),
 });
 
 export type SourceConfig = z.infer<typeof SourceConfigSchema>;
+export type WorkflowConfig = z.infer<typeof WorkflowConfigSchema>;
 export type DownstreamConfig = z.infer<typeof DownstreamConfigSchema>;
 
 // =============================================================================

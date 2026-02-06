@@ -7,8 +7,42 @@
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import type { ResolvedConfig } from "../config/schema.js";
+import type { ResolvedConfig, WorkflowConfig as WorkflowConfigSchema } from "../config/schema.js";
 import { formatTag } from "./version.js";
+
+/**
+ * Per-downstream-repo workflow settings from .agconf/config.yaml.
+ * These settings customize how the sync workflow behaves.
+ */
+export interface WorkflowSettings {
+  /** Commit strategy: "pr" creates a pull request, "direct" commits directly */
+  commit_strategy?: "pr" | "direct";
+  /** Branch prefix for PR branches (only used with commit_strategy: "pr") */
+  pr_branch_prefix?: string;
+  /** Custom PR title (only used with commit_strategy: "pr") */
+  pr_title?: string;
+  /** Custom commit message */
+  commit_message?: string;
+  /** Comma-separated list of GitHub usernames for PR reviewers */
+  reviewers?: string;
+}
+
+/**
+ * Converts WorkflowConfig from schema to WorkflowSettings.
+ * Only includes properties that are defined (for exactOptionalPropertyTypes).
+ */
+export function toWorkflowSettings(
+  config: WorkflowConfigSchema | undefined,
+): WorkflowSettings | undefined {
+  if (!config) return undefined;
+  const result: WorkflowSettings = {};
+  if (config.commit_strategy !== undefined) result.commit_strategy = config.commit_strategy;
+  if (config.pr_branch_prefix !== undefined) result.pr_branch_prefix = config.pr_branch_prefix;
+  if (config.pr_title !== undefined) result.pr_title = config.pr_title;
+  if (config.commit_message !== undefined) result.commit_message = config.commit_message;
+  if (config.reviewers !== undefined) result.reviewers = config.reviewers;
+  return result;
+}
 
 // Default values
 const DEFAULT_CLI_NAME = "agconf";
@@ -156,8 +190,38 @@ export function updateWorkflowRef(
 /**
  * Generates the content for the sync workflow file.
  */
-export function generateSyncWorkflow(versionRef: string, config: WorkflowConfig): string {
+export function generateSyncWorkflow(
+  versionRef: string,
+  config: WorkflowConfig,
+  settings?: WorkflowSettings,
+): string {
   const { sourceRepo, cliName, secretName, workflowPrefix } = config;
+
+  // Build the 'with' section lines
+  const withLines: string[] = [`      force: \${{ inputs.force || false }}`];
+
+  // Add workflow settings if provided
+  if (settings?.commit_strategy) {
+    withLines.push(`      commit_strategy: '${settings.commit_strategy}'`);
+  }
+  if (settings?.pr_branch_prefix) {
+    withLines.push(`      pr_branch_prefix: '${settings.pr_branch_prefix}'`);
+  }
+  if (settings?.pr_title) {
+    withLines.push(`      pr_title: '${settings.pr_title}'`);
+  }
+  if (settings?.commit_message) {
+    withLines.push(`      commit_message: '${settings.commit_message}'`);
+  }
+
+  // Reviewers: use settings value if provided, otherwise fall back to vars
+  if (settings?.reviewers) {
+    withLines.push(`      reviewers: '${settings.reviewers}'`);
+  } else {
+    withLines.push(
+      `      reviewers: \${{ vars.${secretName.replace(/_TOKEN$/, "_REVIEWERS")} || '' }}`,
+    );
+  }
 
   return `# ${workflowPrefix} Auto-Sync Workflow
 # Managed by ${cliName} CLI - do not edit the version ref manually
@@ -195,8 +259,7 @@ jobs:
   sync:
     uses: ${sourceRepo}/.github/workflows/sync-reusable.yml@${versionRef}
     with:
-      force: \${{ inputs.force || false }}
-      reviewers: \${{ vars.${secretName.replace(/_TOKEN$/, "_REVIEWERS")} || '' }}
+${withLines.join("\n")}
     secrets:
       token: \${{ secrets.${secretName} }}
 `;
@@ -248,10 +311,11 @@ export function generateWorkflow(
   workflow: WorkflowFile,
   versionRef: string,
   config: WorkflowConfig,
+  settings?: WorkflowSettings,
 ): string {
   switch (workflow.name) {
     case "sync":
-      return generateSyncWorkflow(versionRef, config);
+      return generateSyncWorkflow(versionRef, config, settings);
     case "check":
       return generateCheckWorkflow(versionRef, config);
     default:
@@ -275,10 +339,11 @@ export async function writeWorkflow(
   workflow: WorkflowFile,
   versionRef: string,
   config: WorkflowConfig,
+  settings?: WorkflowSettings,
 ): Promise<void> {
   await ensureWorkflowsDir(repoRoot);
   const filePath = getWorkflowPath(repoRoot, workflow.filename);
-  const content = generateWorkflow(workflow, versionRef, config);
+  const content = generateWorkflow(workflow, versionRef, config, settings);
   await fs.writeFile(filePath, content, "utf-8");
 }
 
@@ -326,6 +391,16 @@ export interface WorkflowSyncResult {
 }
 
 /**
+ * Options for syncing workflow files.
+ */
+export interface SyncWorkflowsOptions {
+  /** Resolved config (for marker prefix, cli name, etc.) */
+  resolvedConfig?: Partial<ResolvedConfig> | undefined;
+  /** Workflow settings from downstream config */
+  workflowSettings?: WorkflowSettings | undefined;
+}
+
+/**
  * Syncs all workflow files to a specific version.
  * Always overwrites existing workflow files if they differ from the expected content.
  */
@@ -333,8 +408,16 @@ export async function syncWorkflows(
   repoRoot: string,
   versionRef: string,
   sourceRepo: string,
-  resolvedConfig?: Partial<ResolvedConfig>,
+  options?: Partial<ResolvedConfig> | SyncWorkflowsOptions,
 ): Promise<WorkflowSyncResult> {
+  // Support both old signature (just resolvedConfig) and new signature (options object)
+  const resolvedConfig =
+    options && "resolvedConfig" in options
+      ? options.resolvedConfig
+      : (options as Partial<ResolvedConfig> | undefined);
+  const workflowSettings =
+    options && "workflowSettings" in options ? options.workflowSettings : undefined;
+
   const config = getWorkflowConfig(sourceRepo, resolvedConfig);
   const workflowFiles = getWorkflowFiles(config);
 
@@ -346,7 +429,7 @@ export async function syncWorkflows(
 
   for (const workflow of workflowFiles) {
     const filePath = getWorkflowPath(repoRoot, workflow.filename);
-    const expectedContent = generateWorkflow(workflow, versionRef, config);
+    const expectedContent = generateWorkflow(workflow, versionRef, config, workflowSettings);
 
     let existingContent: string | null = null;
     try {
@@ -357,11 +440,11 @@ export async function syncWorkflows(
 
     if (existingContent === null) {
       // File doesn't exist, create it
-      await writeWorkflow(repoRoot, workflow, versionRef, config);
+      await writeWorkflow(repoRoot, workflow, versionRef, config, workflowSettings);
       result.created.push(workflow.filename);
     } else if (existingContent !== expectedContent) {
       // File exists but differs from expected content, overwrite it
-      await writeWorkflow(repoRoot, workflow, versionRef, config);
+      await writeWorkflow(repoRoot, workflow, versionRef, config, workflowSettings);
       result.updated.push(workflow.filename);
     } else {
       // File exists and matches expected content
