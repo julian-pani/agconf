@@ -168,18 +168,6 @@ export type ResolvedConfig = z.infer<typeof ResolvedConfigSchema>;
 // Default Configuration
 // =============================================================================
 
-export const DEFAULT_CONFIG: ResolvedConfig = {
-  name: "agconf",
-  instructionsPath: "instructions/AGENTS.md",
-  skillsDir: "skills",
-  markerPrefix: "agconf",
-  targets: ["claude"],
-  preserveRepoContent: true,
-  cliName: "agconf",
-  configDir: ".agconf",
-  lockfileName: "lockfile.json",
-};
-
 // =============================================================================
 // Marker Generation Helpers
 // =============================================================================
@@ -206,15 +194,5 @@ export function getMetadataKeys(prefix: string) {
   return {
     managed: `${keyPrefix}_managed`,
     contentHash: `${keyPrefix}_content_hash`,
-  };
-}
-
-/**
- * Generate rules marker strings based on the configured prefix.
- */
-export function getRulesMarkers(prefix: string) {
-  return {
-    rulesStart: `<!-- ${prefix}:rules:start -->`,
-    rulesEnd: `<!-- ${prefix}:rules:end -->`,
   };
 }

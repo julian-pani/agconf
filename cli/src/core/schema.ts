@@ -70,13 +70,3 @@ export function checkSchemaCompatibility(contentVersion: string): SchemaCompatib
   // Fully compatible (same major, same or older minor)
   return { compatible: true };
 }
-
-/**
- * Validates that a string is a valid semver format.
- *
- * @param version - The version string to validate
- * @returns true if the version is valid semver format
- */
-export function isValidSemver(version: string): boolean {
-  return /^\d+\.\d+\.\d+$/.test(version);
-}

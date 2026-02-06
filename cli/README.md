@@ -17,7 +17,6 @@ Full documentation, setup guides, and FAQ available on GitHub:
 |---------|-------------|
 | `init` | Initialize repo from a canonical source |
 | `sync` | Sync content from canonical repo (fetches latest by default) |
-| `status` | Show current sync status |
 | `check` | Verify managed files are unchanged |
 | `upgrade-cli` | Upgrade the CLI to latest version from npm |
 | `canonical init` | Scaffold a new canonical repository |

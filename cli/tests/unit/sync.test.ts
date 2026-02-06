@@ -598,9 +598,9 @@ Use secure patterns.`,
           agentsMdContent,
         });
 
-        // Should return a content hash
+        // Should return a content hash in standard format
         expect(result.contentHash).toBeDefined();
-        expect(result.contentHash).toMatch(/^[a-f0-9]{16}$/);
+        expect(result.contentHash).toMatch(/^sha256:[a-f0-9]{12}$/);
       });
 
       it("should use custom marker prefix", async () => {

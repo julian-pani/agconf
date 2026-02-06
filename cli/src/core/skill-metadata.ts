@@ -297,8 +297,9 @@ export async function checkSkillFiles(
 
 /**
  * Get only the modified skill files.
+ * @internal - Not exported; use getModifiedManagedFiles instead
  */
-export async function getModifiedSkillFiles(
+async function getModifiedSkillFiles(
   targetDir: string,
   targets: string[] = ["claude"],
   options: MetadataOptions = {},
@@ -367,8 +368,9 @@ export async function checkRuleFiles(
 
 /**
  * Get only the modified rule files.
+ * @internal - Not exported; use getModifiedManagedFiles instead
  */
-export async function getModifiedRuleFiles(
+async function getModifiedRuleFiles(
   targetDir: string,
   targets: string[] = ["claude"],
   options: MetadataOptions = {},

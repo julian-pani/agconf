@@ -266,7 +266,3 @@ export function formatSourceString(source: Source): string {
   }
   return `local:${source.path}`;
 }
-
-export function getDefaultRef(): string {
-  return DEFAULT_REF;
-}
