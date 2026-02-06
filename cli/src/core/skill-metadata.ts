@@ -482,17 +482,19 @@ export async function getModifiedRuleFiles(
 
 /**
  * Result of checking a managed file for modifications.
- * Used for skill files, rule files, and AGENTS.md.
+ * Used for skill files, rule files, agent files, and AGENTS.md.
  */
 export interface ManagedFileCheckResult {
   /** Relative path to the file */
   path: string;
   /** Type of file */
-  type: "skill" | "agents" | "rule" | "rules-section";
+  type: "skill" | "agents" | "rule" | "rules-section" | "agent";
   /** Skill name if type is skill */
   skillName?: string;
   /** Rule source path if type is rule (e.g., "security/auth.md") */
   rulePath?: string;
+  /** Agent path if type is agent (e.g., "code-reviewer.md") */
+  agentPath?: string;
   /** Whether the file is managed by agconf */
   isManaged: boolean;
   /** Whether the file has been manually modified */
@@ -515,6 +517,81 @@ export interface RuleFileCheckResult {
   isManaged: boolean;
   /** Whether the file has been manually modified */
   hasChanges: boolean;
+}
+
+/**
+ * Result of checking an agent file for modifications.
+ */
+export interface AgentFileCheckResult {
+  /** Relative path to the agent file (from target dir) */
+  path: string;
+  /** Agent file name (e.g., "code-reviewer.md") */
+  agentPath: string;
+  /** Whether the file is managed by agconf */
+  isManaged: boolean;
+  /** Whether the file has been manually modified */
+  hasChanges: boolean;
+}
+
+/**
+ * Check all synced agent files in a target directory for manual modifications.
+ * Returns information about each managed agent file found.
+ */
+export async function checkAgentFiles(
+  targetDir: string,
+  options: MetadataOptions = {},
+): Promise<AgentFileCheckResult[]> {
+  const results: AgentFileCheckResult[] = [];
+
+  // Agents are only synced to Claude target
+  const agentsDir = path.join(targetDir, ".claude", "agents");
+
+  // Check if agents directory exists
+  try {
+    await fs.access(agentsDir);
+  } catch {
+    // Expected: agents directory may not exist
+    return results;
+  }
+
+  // Find all .md files (agents are flat, not nested)
+  const agentFiles = await fg("*.md", {
+    cwd: agentsDir,
+    absolute: false,
+  });
+
+  for (const agentFile of agentFiles) {
+    const fullPath = path.join(agentsDir, agentFile);
+    const relativePath = path.join(".claude", "agents", agentFile);
+
+    try {
+      const content = await fs.readFile(fullPath, "utf-8");
+      const fileIsManaged = isManaged(content, options);
+      const hasChanges = fileIsManaged && hasManualChanges(content, options);
+
+      results.push({
+        path: relativePath,
+        agentPath: agentFile,
+        isManaged: fileIsManaged,
+        hasChanges,
+      });
+    } catch (_error) {
+      // Expected: file read may fail, skip this agent file
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Get only the modified agent files.
+ */
+export async function getModifiedAgentFiles(
+  targetDir: string,
+  options: MetadataOptions = {},
+): Promise<AgentFileCheckResult[]> {
+  const allFiles = await checkAgentFiles(targetDir, options);
+  return allFiles.filter((f) => f.hasChanges);
 }
 
 /**
@@ -619,6 +696,22 @@ export async function checkAllManagedFiles(
         isManaged: rule.isManaged,
         hasChanges: rule.hasChanges,
       });
+    }
+  }
+
+  // Check agent files (for Claude target only)
+  if (targets.includes("claude")) {
+    const agentFiles = await checkAgentFiles(targetDir, metadataOptions);
+    for (const agent of agentFiles) {
+      if (agent.isManaged) {
+        results.push({
+          path: agent.path,
+          type: "agent",
+          agentPath: agent.agentPath,
+          isManaged: agent.isManaged,
+          hasChanges: agent.hasChanges,
+        });
+      }
     }
   }
 

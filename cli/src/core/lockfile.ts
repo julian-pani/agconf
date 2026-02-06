@@ -65,6 +65,11 @@ export interface WriteLockfileOptions {
     files: string[];
     content_hash: string;
   };
+  /** Agents content for lockfile tracking */
+  agents?: {
+    files: string[];
+    content_hash: string;
+  };
 }
 
 export async function writeLockfile(
@@ -87,6 +92,7 @@ export async function writeLockfile(
       targets: options.targets ?? ["claude"],
       marker_prefix: options.markerPrefix,
       rules: options.rules,
+      agents: options.agents,
     },
     cli_version: getCliVersion(),
   };
