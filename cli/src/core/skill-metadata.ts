@@ -296,18 +296,6 @@ export async function checkSkillFiles(
 }
 
 /**
- * Get only the modified skill files.
- */
-export async function getModifiedSkillFiles(
-  targetDir: string,
-  targets: string[] = ["claude"],
-  options: MetadataOptions = {},
-): Promise<SkillFileCheckResult[]> {
-  const allFiles = await checkSkillFiles(targetDir, targets, options);
-  return allFiles.filter((f) => f.hasChanges);
-}
-
-/**
  * Check all synced rule files in a target directory for manual modifications.
  * Returns information about each managed rule file found.
  */
@@ -363,18 +351,6 @@ export async function checkRuleFiles(
   }
 
   return results;
-}
-
-/**
- * Get only the modified rule files.
- */
-export async function getModifiedRuleFiles(
-  targetDir: string,
-  targets: string[] = ["claude"],
-  options: MetadataOptions = {},
-): Promise<RuleFileCheckResult[]> {
-  const allFiles = await checkRuleFiles(targetDir, targets, options);
-  return allFiles.filter((f) => f.hasChanges);
 }
 
 /**

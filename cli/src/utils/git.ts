@@ -15,16 +15,6 @@ async function directoryExistsForGit(dir: string): Promise<boolean> {
   }
 }
 
-export async function isGitRepo(dir: string): Promise<boolean> {
-  const git: SimpleGit = simpleGit(dir);
-  try {
-    return await git.checkIsRepo();
-  } catch {
-    // Expected: not a git repo or git not available
-    return false;
-  }
-}
-
 export async function getGitRoot(dir: string): Promise<string | null> {
   if (!(await directoryExistsForGit(dir))) {
     return null;

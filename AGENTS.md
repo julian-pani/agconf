@@ -55,7 +55,7 @@ pnpm install:global       # Build + install globally
 - `providers/` - Content providers (GitHub API)
 
 ### Commands (`cli/src/commands/`)
-Commands: init, sync, status, check, upgrade-cli, canonical (init, update), config, completion
+Commands: init, sync, check, upgrade-cli, canonical (init, update), config, completion
 
 ### Configuration (`cli/src/config/`)
 - Zod schemas for canonical config (`agconf.yaml`) and lockfile validation
@@ -91,7 +91,7 @@ Rules are modular, topic-specific instruction files (e.g., `security/api-auth.md
 
 **Key functions in `cli/src/core/rules.ts`:**
 - `adjustHeadingLevels(content, increment)` - Shifts markdown heading levels (respects code blocks, caps at h6)
-- `parseRule(content, relativePath)` - Parses frontmatter and body using `gray-matter`
+- `parseRule(content, relativePath)` - Parses frontmatter and body using custom YAML parser
 - `generateRulesSection(rules, markerPrefix)` - Concatenates rules into a marked section for Codex
 - `syncRules(sourceDir, targetDir, options)` - Main entry point for rules sync
 

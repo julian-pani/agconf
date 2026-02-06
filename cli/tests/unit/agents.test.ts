@@ -311,7 +311,7 @@ describe("syncAgents", () => {
     expect(result.agents.length).toBe(2);
     expect(result.syncedFiles).toContain("code-reviewer.md");
     expect(result.syncedFiles).toContain("test-writer.md");
-    expect(result.contentHash.length).toBe(16);
+    expect(result.contentHash).toMatch(/^sha256:[a-f0-9]{12}$/);
 
     // Check files were written to target
     const targetAgents = await fs.readdir(path.join(targetDir, ".claude", "agents"));

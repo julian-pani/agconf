@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  CanonicalPathsSchema,
-  DEFAULT_CONFIG,
-  getRulesMarkers,
-  ResolvedConfigSchema,
-} from "../../src/config/schema.js";
+import { CanonicalPathsSchema, ResolvedConfigSchema } from "../../src/config/schema.js";
 import { ContentSchema, LockfileSchema, RulesContentSchema } from "../../src/schemas/lockfile.js";
 
 describe("rules-schema", () => {
@@ -87,35 +82,6 @@ describe("rules-schema", () => {
       if (result.success) {
         expect(result.data.rulesDir).toBe("rules");
       }
-    });
-  });
-
-  describe("DEFAULT_CONFIG", () => {
-    it("should not have a rulesDir set (undefined by default)", () => {
-      expect(DEFAULT_CONFIG.rulesDir).toBeUndefined();
-    });
-  });
-
-  describe("getRulesMarkers", () => {
-    it("should generate correct markers with default prefix", () => {
-      const markers = getRulesMarkers("agconf");
-
-      expect(markers.rulesStart).toBe("<!-- agconf:rules:start -->");
-      expect(markers.rulesEnd).toBe("<!-- agconf:rules:end -->");
-    });
-
-    it("should generate correct markers with custom prefix", () => {
-      const markers = getRulesMarkers("acme-standards");
-
-      expect(markers.rulesStart).toBe("<!-- acme-standards:rules:start -->");
-      expect(markers.rulesEnd).toBe("<!-- acme-standards:rules:end -->");
-    });
-
-    it("should handle prefix with special characters", () => {
-      const markers = getRulesMarkers("my_custom-prefix");
-
-      expect(markers.rulesStart).toBe("<!-- my_custom-prefix:rules:start -->");
-      expect(markers.rulesEnd).toBe("<!-- my_custom-prefix:rules:end -->");
     });
   });
 

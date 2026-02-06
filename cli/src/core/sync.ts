@@ -112,7 +112,7 @@ function computeRulesHash(rules: Rule[]): string {
   const sorted = [...rules].sort((a, b) => a.relativePath.localeCompare(b.relativePath));
   const combined = sorted.map((r) => `${r.relativePath}:${r.body}`).join("\n---\n");
   const hash = createHash("sha256").update(combined).digest("hex");
-  return hash.slice(0, 16);
+  return `sha256:${hash.slice(0, 12)}`;
 }
 
 /**
@@ -223,7 +223,7 @@ function computeAgentsHash(agents: Agent[]): string {
   const sorted = [...agents].sort((a, b) => a.relativePath.localeCompare(b.relativePath));
   const combined = sorted.map((a) => `${a.relativePath}:${a.body}`).join("\n---\n");
   const hash = createHash("sha256").update(combined).digest("hex");
-  return hash.slice(0, 16);
+  return `sha256:${hash.slice(0, 12)}`;
 }
 
 /**
