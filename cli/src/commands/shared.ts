@@ -777,7 +777,16 @@ export async function performSync(options: PerformSyncOptions): Promise<void> {
     // Git hook status
     const hookPath = formatPath(path.join(targetDir, ".git/hooks/pre-commit"));
     if (hookResult.installed) {
-      if (hookResult.alreadyExisted && !hookResult.wasUpdated) {
+      if (hookResult.wasAppended && hookResult.wasUpdated) {
+        console.log(`  ${pc.yellow("~")} ${hookPath} ${pc.dim("(updated in existing hook)")}`);
+        summaryLines.push("- `.git/hooks/pre-commit` (updated in existing hook)");
+      } else if (hookResult.wasAppended && hookResult.alreadyExisted && !hookResult.wasUpdated) {
+        console.log(`  ${pc.dim("-")} ${hookPath} ${pc.dim("(unchanged)")}`);
+        summaryLines.push("- `.git/hooks/pre-commit` (unchanged)");
+      } else if (hookResult.wasAppended && !hookResult.wasUpdated) {
+        console.log(`  ${pc.green("+")} ${hookPath} ${pc.dim("(appended to existing hook)")}`);
+        summaryLines.push("- `.git/hooks/pre-commit` (appended to existing hook)");
+      } else if (hookResult.alreadyExisted && !hookResult.wasUpdated) {
         console.log(`  ${pc.dim("-")} ${hookPath} ${pc.dim("(unchanged)")}`);
         summaryLines.push("- `.git/hooks/pre-commit` (unchanged)");
       } else if (hookResult.wasUpdated) {
