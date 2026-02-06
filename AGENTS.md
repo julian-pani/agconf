@@ -190,3 +190,9 @@ Each synced content type needs:
 - `computeRulesSectionHash()` from `cli/src/core/markers.ts` - for AGENTS.md rules section
 
 All these functions return `sha256:${hash.slice(0, 12)}` format. When adding new content types, import and use these existing functions rather than computing hashes inline. This prevents hash length mismatches (e.g., 12 vs 16 chars) that cause check to fail immediately after sync.
+
+### Parallel Worktrees
+When working on multiple tasks in parallel, create git worktrees in the `.worktrees/` directory inside the workspace (this directory is gitignored). For example:
+```bash
+git worktree add .worktrees/feat-foo -b feat/foo
+```
