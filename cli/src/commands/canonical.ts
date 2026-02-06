@@ -302,21 +302,16 @@ jobs:
         run: |
           BRANCH_NAME="\${{ inputs.pr_branch_prefix }}"
 
-          # Check if remote branch exists
-          if git ls-remote --exit-code --heads origin "\$BRANCH_NAME" >/dev/null 2>&1; then
-            # Branch exists - fetch and reset to it, then apply our changes
-            git fetch origin "\$BRANCH_NAME"
-            git checkout -B "\$BRANCH_NAME" origin/"\$BRANCH_NAME"
-            # Reset to match the base branch, then apply changes
-            git reset --soft \${{ github.ref_name }}
-          else
-            # Create new branch
-            git checkout -b "\$BRANCH_NAME"
-          fi
+          # Create branch from current HEAD (base branch with sync changes in working dir)
+          # -B handles the case where a local branch with this name might already exist
+          git checkout -B "\$BRANCH_NAME"
 
           git add -A
           git commit -m "\${{ inputs.pr_title }}" || echo "No changes to commit"
-          git push --force-with-lease -u origin "\$BRANCH_NAME"
+
+          # Force push to overwrite any existing remote branch
+          # This ensures the PR only contains changes from the current sync run
+          git push --force -u origin "\$BRANCH_NAME"
 
       - name: Create or update pull request
         id: create-pr
