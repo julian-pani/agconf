@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import fg from "fast-glob";
 import { getMetadataKeys } from "../config/schema.js";
+import { parseFrontmatter as parseFrontmatterShared, serializeFrontmatter } from "./frontmatter.js";
 import {
   hasGlobalBlockChanges,
   hasRulesSectionChanges,
@@ -43,113 +44,24 @@ export interface ManagedMetadata {
   content_hash: string; // e.g., "sha256:abc123..."
 }
 
-const FRONTMATTER_REGEX = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
-
 /**
  * Parse YAML frontmatter from markdown content.
  * Returns the frontmatter object and the body content.
+ *
+ * Note: This wrapper ensures backward compatibility by returning
+ * an empty object instead of null when no frontmatter exists.
  */
 export function parseFrontmatter(content: string): {
   frontmatter: Record<string, unknown>;
   body: string;
   raw: string;
 } {
-  const match = content.match(FRONTMATTER_REGEX);
-  if (!match || !match[1]) {
-    return { frontmatter: {}, body: content, raw: "" };
-  }
-
-  const rawYaml = match[1];
-  const body = content.slice(match[0].length);
-  const frontmatter = parseSimpleYaml(rawYaml);
-
-  return { frontmatter, body, raw: rawYaml };
-}
-
-/**
- * Simple YAML parser for frontmatter.
- * Handles basic key-value pairs and nested metadata objects.
- */
-function parseSimpleYaml(yaml: string): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-  const lines = yaml.split("\n");
-  let currentKey: string | null = null;
-  let nestedObject: Record<string, string> | null = null;
-
-  for (const line of lines) {
-    // Skip empty lines
-    if (line.trim() === "") continue;
-
-    // Check for nested content (indented lines)
-    if (line.startsWith("  ") && currentKey && nestedObject !== null) {
-      const nestedMatch = line.match(/^\s+(\w+):\s*["']?(.*)["']?$/);
-      if (nestedMatch?.[1] && nestedMatch[2] !== undefined) {
-        const key = nestedMatch[1];
-        const value = nestedMatch[2];
-        nestedObject[key] = value.replace(/^["']|["']$/g, "");
-      }
-      continue;
-    }
-
-    // Save previous nested object if we're moving to a new key
-    if (currentKey && nestedObject !== null) {
-      result[currentKey] = nestedObject;
-      nestedObject = null;
-    }
-
-    // Parse top-level key-value
-    const match = line.match(/^(\w+):\s*(.*)$/);
-    if (match?.[1] && match[2] !== undefined) {
-      const key = match[1];
-      const value = match[2];
-      currentKey = key;
-
-      if (value.trim() === "") {
-        // This is a nested object (like metadata:)
-        nestedObject = {};
-      } else {
-        // Simple value - remove quotes if present
-        result[key] = value.replace(/^["']|["']$/g, "");
-      }
-    }
-  }
-
-  // Don't forget the last nested object
-  if (currentKey && nestedObject !== null) {
-    result[currentKey] = nestedObject;
-  }
-
-  return result;
-}
-
-/**
- * Serialize frontmatter object back to YAML string.
- */
-function serializeFrontmatter(frontmatter: Record<string, unknown>): string {
-  const lines: string[] = [];
-
-  for (const [key, value] of Object.entries(frontmatter)) {
-    if (typeof value === "object" && value !== null) {
-      lines.push(`${key}:`);
-      for (const [nestedKey, nestedValue] of Object.entries(value as Record<string, string>)) {
-        // Quote values that might need it
-        const quotedValue = needsQuoting(String(nestedValue))
-          ? `"${String(nestedValue)}"`
-          : String(nestedValue);
-        lines.push(`  ${nestedKey}: ${quotedValue}`);
-      }
-    } else {
-      // Handle multiline descriptions
-      const strValue = String(value);
-      if (strValue.length > 80 || strValue.includes("\n")) {
-        lines.push(`${key}: ${strValue}`);
-      } else {
-        lines.push(`${key}: ${strValue}`);
-      }
-    }
-  }
-
-  return lines.join("\n");
+  const result = parseFrontmatterShared(content);
+  return {
+    frontmatter: result.frontmatter ?? {},
+    body: result.body,
+    raw: result.raw,
+  };
 }
 
 /**
@@ -190,21 +102,6 @@ export function validateSkillFrontmatter(
     return { skillName, path: filePath, errors };
   }
   return null;
-}
-
-/**
- * Check if a YAML value needs quoting.
- */
-function needsQuoting(value: string): boolean {
-  // Quote if contains special characters or looks like a boolean/number
-  return (
-    value.includes(":") ||
-    value.includes("#") ||
-    value.includes("@") ||
-    value === "true" ||
-    value === "false" ||
-    /^\d+$/.test(value)
-  );
 }
 
 /**
