@@ -31,11 +31,13 @@ export interface CheckResult {
 
 export interface ModifiedFileInfo {
   path: string;
-  type: "skill" | "agents" | "rule" | "rules-section";
+  type: "skill" | "agents" | "rule" | "rules-section" | "agent";
   expectedHash: string;
   currentHash: string;
   /** Rule source path if type is rule */
   rulePath?: string;
+  /** Agent path if type is agent */
+  agentPath?: string;
 }
 
 /**
@@ -201,6 +203,29 @@ export async function checkCommand(options: CheckOptions = {}): Promise<void> {
           currentHash,
         });
       }
+    } else if (file.type === "agent") {
+      // Get hash info for agent file
+      const agentFilePath = path.join(targetDir, file.path);
+      const content = await fs.readFile(agentFilePath, "utf-8");
+      const { frontmatter } = parseFrontmatter(content);
+
+      const metadata = frontmatter.metadata as Record<string, string> | undefined;
+      const storedHash = metadata?.[`${keyPrefix}content_hash`] ?? "unknown";
+      const currentHash = computeContentHash(
+        content,
+        markerPrefix ? { metadataPrefix: markerPrefix } : undefined,
+      );
+
+      const agentInfo: ModifiedFileInfo = {
+        path: file.path,
+        type: "agent",
+        expectedHash: storedHash,
+        currentHash,
+      };
+      if (file.agentPath) {
+        agentInfo.agentPath = file.agentPath;
+      }
+      modifiedFiles.push(agentInfo);
     }
   }
 
@@ -256,6 +281,8 @@ export async function checkCommand(options: CheckOptions = {}): Promise<void> {
       label = " (rules section)";
     } else if (file.type === "rule" && file.rulePath) {
       label = ` (rule: ${file.rulePath})`;
+    } else if (file.type === "agent" && file.agentPath) {
+      label = ` (agent: ${file.agentPath})`;
     }
     console.log(`  ${file.path}${pc.dim(label)}`);
     console.log(`    Expected hash: ${pc.dim(file.expectedHash)}`);

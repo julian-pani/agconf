@@ -103,6 +103,23 @@ Rules are modular, topic-specific instruction files (e.g., `security/api-auth.md
 - `rules_dir` in canonical `agconf.yaml` (optional) - path to rules directory
 - Rules tracked in lockfile under `content.rules` with file list and content hash
 
+### Agents Sync
+
+Agents are Claude Code sub-agents (markdown files with YAML frontmatter) synced from a canonical repository. The `agents.ts` module handles discovery, parsing, and metadata.
+
+**Key functions in `cli/src/core/agents.ts`:**
+- `parseAgent(content, relativePath)` - Parses frontmatter and body
+- `validateAgentFrontmatter(content, path)` - Validates required fields (name, description)
+- `addAgentMetadata(agent, prefix)` - Adds `{prefix}_managed` and `{prefix}_content_hash` metadata
+
+**Target-specific behavior:**
+- **Claude**: Copies agent files to `.claude/agents/` as flat files. Adds metadata frontmatter for change tracking.
+- **Codex**: **Not supported.** Codex does not have sub-agents. When agents exist in canonical but only Codex target is configured, a warning is displayed and agents are skipped.
+
+**Configuration:**
+- `agents_dir` in canonical `agconf.yaml` (optional) - path to agents directory
+- Agents tracked in lockfile under `content.agents` with file list and content hash
+
 ## Commit Conventions
 
 Uses Conventional Commits with commitlint enforcement:
@@ -137,17 +154,32 @@ When adding or modifying CLI commands, always update the shell completions in `c
 - For commands that use `process.cwd()`, add a `cwd` option for testability
 
 ### Check Command Integrity Requirement
-**Critical:** The `check` command must verify the integrity of ALL synced content. When adding new content types to sync or modifying sync behavior:
-- The `check` command MUST detect manual modifications to any synced file or section
-- Each synced content type needs a content hash stored during sync and verified during check
-- The check must fail (exit code 1) if any managed content has been modified
-- Write tests that verify: (1) check passes immediately after sync, (2) check fails when content is modified
+**Critical:** The `check` command must verify the integrity of ALL synced content.
+
+**IMPORTANT: When modifying sync behavior, you MUST also update AND TEST the check command.**
+
+When adding new content types to sync or modifying sync behavior:
+1. Update `sync.ts` to sync the new content with proper metadata/hashes
+2. Update `skill-metadata.ts` to add checking functions for the new content type
+3. Update `check.ts` to handle the new content type in the check loop
+4. **Write tests in `check.test.ts`** that verify:
+   - Check passes immediately after sync (hash consistency)
+   - Check detects unmodified managed files
+   - Check fails (exit code 1) when managed content is modified
+   - Non-managed files of the same type are ignored
+   - Output shows proper file paths and labels
+
+Each synced content type needs:
+- A content hash stored during sync (in file metadata or markers)
+- Hash verification during check using the same hash function
+- Proper type handling in `ManagedFileCheckResult` and `ModifiedFileInfo`
 
 **Current content types verified by check:**
 - AGENTS.md global block (`<!-- agconf:global:start/end -->`)
 - AGENTS.md rules section for Codex (`<!-- agconf:rules:start/end -->`)
 - Individual skill files (`.claude/skills/*/SKILL.md`) via frontmatter metadata
 - Individual rule files for Claude (`.claude/rules/**/*.md`) via frontmatter metadata
+- Individual agent files for Claude (`.claude/agents/*.md`) via frontmatter metadata
 
 ### Content Hash Consistency
 **Critical:** All content hashes MUST use the same format: `sha256:` prefix + 12 hex characters.

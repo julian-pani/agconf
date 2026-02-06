@@ -3,6 +3,13 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import fg from "fast-glob";
 import type { Lockfile } from "../schemas/lockfile.js";
+import {
+  type Agent,
+  type AgentValidationError,
+  addAgentMetadata,
+  parseAgent,
+  validateAgentFrontmatter,
+} from "./agents.js";
 import { readLockfile, writeLockfile } from "./lockfile.js";
 import { consolidateClaudeMd, mergeAgentsMd, writeAgentsMd } from "./merge.js";
 import {
@@ -46,6 +53,24 @@ export interface RulesSyncResult {
   claudeFiles: string[];
   modifiedRules: string[];
   contentHash: string;
+}
+
+// =============================================================================
+// Agents Sync
+// =============================================================================
+
+export interface AgentsSyncOptions {
+  sourceAgentsPath: string;
+  targetDir: string;
+  metadataPrefix: string;
+}
+
+export interface AgentsSyncResult {
+  agents: Agent[];
+  syncedFiles: string[];
+  modifiedFiles: string[];
+  contentHash: string;
+  validationErrors: AgentValidationError[];
 }
 
 /**
@@ -158,6 +183,186 @@ export async function syncRules(options: RulesSyncOptions): Promise<RulesSyncRes
   return result;
 }
 
+/**
+ * Discover all markdown agent files in a directory (flat, not recursive).
+ */
+async function discoverAgents(agentsDir: string): Promise<Agent[]> {
+  try {
+    await fs.access(agentsDir);
+  } catch {
+    // Directory doesn't exist - return empty array
+    return [];
+  }
+
+  // Agents are flat files (no nested directories)
+  const agentFiles = await fg("*.md", {
+    cwd: agentsDir,
+    absolute: false,
+  });
+
+  const agents: Agent[] = [];
+  for (const relativePath of agentFiles) {
+    const fullPath = path.join(agentsDir, relativePath);
+    const content = await fs.readFile(fullPath, "utf-8");
+    agents.push(parseAgent(content, relativePath));
+  }
+
+  // Sort by path for deterministic order in lockfile and outputs
+  agents.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+
+  return agents;
+}
+
+/**
+ * Compute aggregate hash for a list of agents.
+ * Agents are sorted by path for determinism.
+ */
+function computeAgentsHash(agents: Agent[]): string {
+  if (agents.length === 0) return "";
+
+  const sorted = [...agents].sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  const combined = sorted.map((a) => `${a.relativePath}:${a.body}`).join("\n---\n");
+  const hash = createHash("sha256").update(combined).digest("hex");
+  return hash.slice(0, 16);
+}
+
+/**
+ * Sync agents from a canonical source to target directory.
+ * Only Claude target supports agents (Codex does not have sub-agents).
+ */
+export async function syncAgents(options: AgentsSyncOptions): Promise<AgentsSyncResult> {
+  const { sourceAgentsPath, targetDir, metadataPrefix } = options;
+
+  // Discover all agents
+  const agents = await discoverAgents(sourceAgentsPath);
+
+  const result: AgentsSyncResult = {
+    agents,
+    syncedFiles: [],
+    modifiedFiles: [],
+    contentHash: "",
+    validationErrors: [],
+  };
+
+  // No agents - return early
+  if (agents.length === 0) {
+    return result;
+  }
+
+  // Validate all agents have required frontmatter
+  for (const agent of agents) {
+    const error = validateAgentFrontmatter(agent.rawContent, agent.relativePath);
+    if (error) {
+      result.validationErrors.push(error);
+    }
+  }
+
+  // Compute content hash for lockfile
+  result.contentHash = computeAgentsHash(agents);
+
+  // Sync to Claude target (agents directory is .claude/agents/)
+  const claudeAgentsDir = path.join(targetDir, ".claude", "agents");
+
+  for (const agent of agents) {
+    const targetPath = path.join(claudeAgentsDir, agent.relativePath);
+
+    // Ensure directory exists
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+
+    // Add metadata and write file
+    const contentWithMetadata = addAgentMetadata(agent, metadataPrefix);
+
+    // Check if file exists and has same content
+    let existingContent: string | null = null;
+    try {
+      existingContent = await fs.readFile(targetPath, "utf-8");
+    } catch {
+      // File doesn't exist
+    }
+
+    if (existingContent !== contentWithMetadata) {
+      await fs.writeFile(targetPath, contentWithMetadata, "utf-8");
+      result.modifiedFiles.push(agent.relativePath);
+    }
+
+    result.syncedFiles.push(agent.relativePath);
+  }
+
+  return result;
+}
+
+/**
+ * Find agents that were previously synced but are no longer in the current sync.
+ */
+export function findOrphanedAgents(previousAgents: string[], currentAgents: string[]): string[] {
+  return previousAgents.filter((agent) => !currentAgents.includes(agent));
+}
+
+/**
+ * Delete orphaned agent files from the Claude agents directory.
+ * Only deletes agents that are managed (have managed metadata).
+ */
+export async function deleteOrphanedAgents(
+  targetDir: string,
+  orphanedAgents: string[],
+  previouslyTrackedAgents: string[],
+  options: { metadataPrefix?: string } = {},
+): Promise<{ deleted: string[]; skipped: string[] }> {
+  const deleted: string[] = [];
+  const skipped: string[] = [];
+  const metadataOptions = options.metadataPrefix
+    ? { metadataPrefix: options.metadataPrefix }
+    : undefined;
+
+  const agentsDir = path.join(targetDir, ".claude", "agents");
+
+  for (const agentPath of orphanedAgents) {
+    const fullPath = path.join(agentsDir, agentPath);
+
+    // Check if file exists
+    try {
+      await fs.access(fullPath);
+    } catch {
+      // File doesn't exist
+      continue;
+    }
+
+    // Check if the agent is managed before deleting
+    try {
+      const content = await fs.readFile(fullPath, "utf-8");
+      const { isManaged, hasManualChanges } = await import("./skill-metadata.js");
+
+      if (!isManaged(content, metadataOptions)) {
+        // Not managed, skip deletion
+        skipped.push(agentPath);
+        continue;
+      }
+
+      // Additional safety check: only delete if either:
+      // 1. The agent was in the previous lockfile (confirming it was synced), OR
+      // 2. The content hash matches (agent hasn't been modified)
+      const wasInPreviousLockfile = previouslyTrackedAgents.includes(agentPath);
+      const isUnmodified = !hasManualChanges(content, metadataOptions);
+
+      if (!wasInPreviousLockfile && !isUnmodified) {
+        // Agent is managed but wasn't in lockfile and has been modified
+        skipped.push(agentPath);
+        continue;
+      }
+    } catch {
+      // Can't read file, skip deletion to be safe
+      skipped.push(agentPath);
+      continue;
+    }
+
+    // Delete the agent file
+    await fs.unlink(fullPath);
+    deleted.push(agentPath);
+  }
+
+  return { deleted, skipped };
+}
+
 export interface TargetResult {
   target: Target;
   skills: {
@@ -189,6 +394,14 @@ export interface SyncResult {
     contentHash: string;
     claudeFiles: string[];
     codexUpdated: boolean;
+  };
+  agents?: {
+    synced: string[];
+    modified: string[];
+    contentHash: string;
+    validationErrors: AgentValidationError[];
+    /** True if agents were skipped due to Codex-only target */
+    skipped?: boolean;
   };
 }
 
@@ -285,6 +498,29 @@ export async function sync(
     }
   }
 
+  // Sync agents if canonical has agents configured
+  // Only Claude target supports agents (Codex does not have sub-agents)
+  let agentsResult: AgentsSyncResult | null = null;
+  let agentsSkipped = false;
+
+  if (resolvedSource.agentsPath) {
+    // Check if Claude target is included
+    const hasClaudeTarget = options.targets.includes("claude");
+
+    if (hasClaudeTarget) {
+      agentsResult = await syncAgents({
+        sourceAgentsPath: resolvedSource.agentsPath,
+        targetDir,
+        metadataPrefix: markerPrefix.replace(/-/g, "_"),
+      });
+    } else {
+      // Agents exist but only Codex target - skip with warning
+      // Note: In interactive mode, the caller should prompt the user
+      // For now, we just skip and set the flag
+      agentsSkipped = true;
+    }
+  }
+
   // Write lockfile
   const lockfileOptions: Parameters<typeof writeLockfile>[1] = {
     source: resolvedSource.source,
@@ -300,6 +536,12 @@ export async function sync(
     lockfileOptions.rules = {
       files: rulesResult.rules.map((r) => r.relativePath),
       content_hash: rulesResult.contentHash,
+    };
+  }
+  if (agentsResult && agentsResult.agents.length > 0) {
+    lockfileOptions.agents = {
+      files: agentsResult.agents.map((a) => a.relativePath),
+      content_hash: agentsResult.contentHash,
     };
   }
   const lockfile = await writeLockfile(targetDir, lockfileOptions);
@@ -331,6 +573,23 @@ export async function sync(
       contentHash: rulesResult.contentHash,
       claudeFiles: rulesResult.claudeFiles,
       codexUpdated: rulesResult.updatedAgentsMd !== null,
+    };
+  }
+
+  if (agentsResult && agentsResult.agents.length > 0) {
+    result.agents = {
+      synced: agentsResult.syncedFiles,
+      modified: agentsResult.modifiedFiles,
+      contentHash: agentsResult.contentHash,
+      validationErrors: agentsResult.validationErrors,
+    };
+  } else if (agentsSkipped) {
+    result.agents = {
+      synced: [],
+      modified: [],
+      contentHash: "",
+      validationErrors: [],
+      skipped: true,
     };
   }
 

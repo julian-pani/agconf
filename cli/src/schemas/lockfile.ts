@@ -18,6 +18,13 @@ export const RulesContentSchema = z.object({
   content_hash: z.string(),
 });
 
+export const AgentsContentSchema = z.object({
+  /** List of agent file paths synced (relative to agents dir) */
+  files: z.array(z.string()),
+  /** Hash of all agents content */
+  content_hash: z.string(),
+});
+
 export const SourceSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("github"),
@@ -43,6 +50,8 @@ export const ContentSchema = z.object({
   marker_prefix: z.string().optional(),
   /** Rules content tracking - optional for backward compat */
   rules: RulesContentSchema.optional(),
+  /** Agents content tracking - optional */
+  agents: AgentsContentSchema.optional(),
 });
 
 export const LockfileSchema = z.object({
@@ -61,3 +70,4 @@ export type Source = z.infer<typeof SourceSchema>;
 export type Content = z.infer<typeof ContentSchema>;
 export type Lockfile = z.infer<typeof LockfileSchema>;
 export type RulesContent = z.infer<typeof RulesContentSchema>;
+export type AgentsContent = z.infer<typeof AgentsContentSchema>;

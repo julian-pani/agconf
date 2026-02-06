@@ -15,6 +15,8 @@ export interface ResolvedSource {
   skillsPath: string;
   /** Path to rules directory (null if no rules_dir configured) */
   rulesPath: string | null;
+  /** Path to agents directory (null if no agents_dir configured) */
+  agentsPath: string | null;
   /** Marker prefix from canonical config (default: "agconf") */
   markerPrefix: string;
 }
@@ -53,10 +55,11 @@ export async function resolveLocalSource(
     // Expected: not a git repo or git not available, commit SHA is optional
   }
 
-  // Load canonical config to get marker prefix and rules_dir
+  // Load canonical config to get marker prefix, rules_dir, and agents_dir
   const canonicalConfig = await loadCanonicalRepoConfig(basePath);
   const markerPrefix = canonicalConfig?.markers.prefix ?? "agconf";
   const rulesDir = canonicalConfig?.content.rules_dir;
+  const agentsDir = canonicalConfig?.content.agents_dir;
 
   const source: Source = {
     type: "local",
@@ -70,6 +73,7 @@ export async function resolveLocalSource(
     agentsMdPath: path.join(basePath, "instructions", "AGENTS.md"),
     skillsPath: path.join(basePath, "skills"),
     rulesPath: rulesDir ? path.join(basePath, rulesDir) : null,
+    agentsPath: agentsDir ? path.join(basePath, agentsDir) : null,
     markerPrefix,
   };
 }
@@ -86,10 +90,11 @@ export async function resolveGithubSource(
   const log = await clonedGit.log({ maxCount: 1 });
   const commitSha = log.latest?.hash ?? "";
 
-  // Load canonical config to get marker prefix and rules_dir
+  // Load canonical config to get marker prefix, rules_dir, and agents_dir
   const canonicalConfig = await loadCanonicalRepoConfig(tempDir);
   const markerPrefix = canonicalConfig?.markers.prefix ?? "agconf";
   const rulesDir = canonicalConfig?.content.rules_dir;
+  const agentsDir = canonicalConfig?.content.agents_dir;
 
   const source: Source = {
     type: "github",
@@ -104,6 +109,7 @@ export async function resolveGithubSource(
     agentsMdPath: path.join(tempDir, "instructions", "AGENTS.md"),
     skillsPath: path.join(tempDir, "skills"),
     rulesPath: rulesDir ? path.join(tempDir, rulesDir) : null,
+    agentsPath: agentsDir ? path.join(tempDir, agentsDir) : null,
     markerPrefix,
   };
 }

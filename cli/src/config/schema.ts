@@ -34,6 +34,8 @@ export const CanonicalPathsSchema = z.object({
   skills_dir: z.string().default("skills"),
   /** Path to the rules directory (e.g., "rules") - optional for backward compat */
   rules_dir: z.string().optional(),
+  /** Path to the agents directory (e.g., "agents") - optional */
+  agents_dir: z.string().optional(),
 });
 
 export const MarkersConfigSchema = z.object({
@@ -144,6 +146,8 @@ export const ResolvedConfigSchema = z.object({
   skillsDir: z.string(),
   /** Path to rules directory within source - optional for backward compat */
   rulesDir: z.string().optional(),
+  /** Path to agents directory within source - optional */
+  agentsDir: z.string().optional(),
   /** Marker prefix for managed content */
   markerPrefix: z.string(),
   /** Target agents to sync to */

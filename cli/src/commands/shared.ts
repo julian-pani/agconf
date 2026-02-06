@@ -345,10 +345,11 @@ export async function performSync(options: PerformSyncOptions): Promise<void> {
   const downstreamConfig = await loadDownstreamConfig(targetDir);
   const workflowSettings = toWorkflowSettings(downstreamConfig?.workflow);
 
-  // Read previous lockfile to detect orphaned skills/rules later
+  // Read previous lockfile to detect orphaned skills/rules/agents later
   const previousLockfileResult = await readLockfile(targetDir);
   const previousSkills = previousLockfileResult?.lockfile.content.skills ?? [];
   const previousRules = previousLockfileResult?.lockfile.content.rules?.files ?? [];
+  const previousAgents = previousLockfileResult?.lockfile.content.agents?.files ?? [];
   const previousTargets = previousLockfileResult?.lockfile.content.targets ?? ["claude"];
 
   const syncSpinner = logger.spinner("Syncing...");
@@ -680,6 +681,72 @@ export async function performSync(options: PerformSyncOptions): Promise<void> {
 
         // Show updated rules
         formatCodexRuleList(updatedRules, "~", pc.yellow, "updated", "updated");
+      }
+
+      // Agents status for Claude target (agents are only synced to Claude)
+      if (result.agents && result.agents.synced.length > 0 && targetResult.target === "claude") {
+        const agentsPath = formatPath(path.join(targetDir, config.dir, "agents"));
+        const agentsRelPath = `${config.dir}/agents/`;
+        const agentsCount = result.agents.synced.length;
+
+        // Compute new vs actually modified agents
+        const newAgents = result.agents.synced.filter((a) => !previousAgents.includes(a)).sort();
+        const updatedAgents = result.agents.modified
+          .filter((a) => previousAgents.includes(a))
+          .sort();
+
+        // Determine if agents had any changes
+        const agentsHadChanges = newAgents.length > 0 || updatedAgents.length > 0;
+        const agentsStatusIcon = agentsHadChanges ? pc.green("+") : pc.dim("-");
+        const agentsStatusLabel = agentsHadChanges ? "(updated)" : "(unchanged)";
+
+        console.log(
+          `  ${agentsStatusIcon} ${agentsPath}/ ${pc.dim(`(total: ${agentsCount} agents) ${agentsStatusLabel}`)}`,
+        );
+        summaryLines.push(
+          `- \`${agentsRelPath}\` (total: ${agentsCount} agents) ${agentsStatusLabel}`,
+        );
+
+        // Helper to display agent list with truncation
+        const formatAgentList = (
+          agents: string[],
+          icon: string,
+          colorFn: (s: string) => string,
+          label: string,
+          mdLabel: string,
+        ) => {
+          if (agents.length === 0) return;
+
+          const maxDisplay = shouldExpand ? agents.length : MAX_ITEMS_DEFAULT;
+          const displayAgents = agents.slice(0, maxDisplay);
+          const hiddenCount = agents.length - displayAgents.length;
+
+          for (const agent of displayAgents) {
+            const agentPath = formatPath(path.join(targetDir, config.dir, "agents", agent));
+            const agentRelPath = `${config.dir}/agents/${agent}`;
+            console.log(`    ${colorFn(icon)} ${agentPath} ${pc.dim(`(${label})`)}`);
+            summaryLines.push(`  - \`${agentRelPath}\` (${mdLabel})`);
+          }
+
+          if (hiddenCount > 0) {
+            console.log(`    ${pc.dim(`  ... ${hiddenCount} more ${label}`)}`);
+            summaryLines.push(`  - ... ${hiddenCount} more ${mdLabel}`);
+          }
+        };
+
+        // Show new agents
+        formatAgentList(newAgents, "+", pc.green, "new", "new");
+
+        // Show updated agents
+        formatAgentList(updatedAgents, "~", pc.yellow, "updated", "updated");
+      }
+
+      // Warning when agents were skipped due to Codex-only target
+      if (result.agents?.skipped && targetResult.target === "codex") {
+        console.log(
+          `  ${pc.yellow("!")} ${pc.dim("Agents skipped")} ${pc.yellow("(Codex does not support sub-agents)")}`,
+        );
+        summaryLines.push("- Agents skipped (Codex does not support sub-agents)");
       }
     }
 

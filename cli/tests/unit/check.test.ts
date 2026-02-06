@@ -633,6 +633,359 @@ ${rulesSection}
     });
   });
 
+  describe("agents checking", () => {
+    beforeEach(async () => {
+      // Create agents directory
+      await fs.mkdir(path.join(tempDir, ".claude", "agents"), { recursive: true });
+    });
+
+    it("should pass check immediately after sync for agent files", async () => {
+      // Import the functions used during sync
+      const { addAgentMetadata, parseAgent } = await import("../../src/core/agents.js");
+      const { createHash } = await import("node:crypto");
+
+      // Simulate what the canonical repo has - an agent file
+      const sourceContent = `---
+name: code-reviewer
+description: Reviews code for quality issues
+tools:
+  - read
+  - grep
+---
+
+# Code Reviewer Agent
+
+This agent reviews code for potential issues.
+`;
+
+      // Parse and add metadata like sync does
+      const agent = parseAgent(sourceContent, "code-reviewer.md");
+      const fileContent = addAgentMetadata(agent, "agconf");
+
+      // Create lockfile with agents
+      const lockfile = {
+        version: "1.0.0",
+        synced_at: new Date().toISOString(),
+        source: { type: "local", path: "/some/path", ref: "abc123" },
+        content: {
+          agents_md: { global_block_hash: "sha256:abc123def456", merged: true },
+          skills: [],
+          agents: { files: ["code-reviewer.md"], content_hash: "sha256:abc123" },
+          targets: ["claude"],
+        },
+        cli_version: "1.0.0",
+      };
+      await fs.writeFile(
+        path.join(tempDir, ".agconf", "lockfile.json"),
+        JSON.stringify(lockfile, null, 2),
+      );
+
+      // Write the file exactly as sync would
+      await fs.writeFile(path.join(tempDir, ".claude", "agents", "code-reviewer.md"), fileContent);
+
+      // Create managed AGENTS.md to satisfy check requirements
+      const globalContent = "# Global Standards";
+      const globalHash = createHash("sha256").update(globalContent.trim()).digest("hex");
+      const agentsMd = `<!-- agconf:global:start -->
+<!-- DO NOT EDIT THIS SECTION - Managed by agconf -->
+<!-- Content hash: sha256:${globalHash.slice(0, 12)} -->
+
+${globalContent}
+
+<!-- agconf:global:end -->
+`;
+      await fs.writeFile(path.join(tempDir, "AGENTS.md"), agentsMd);
+
+      // Check should pass - the file hasn't been modified
+      await checkCommand({});
+
+      expect(consoleLogSpy).toHaveBeenCalledWith(
+        expect.stringContaining("All managed files are unchanged"),
+      );
+      expect(mockExit).not.toHaveBeenCalled();
+    });
+
+    it("should detect unmodified agent files", async () => {
+      // Import the functions used during sync to ensure hash consistency
+      const { addAgentMetadata, parseAgent } = await import("../../src/core/agents.js");
+      const { createHash } = await import("node:crypto");
+
+      // Create the original source content (without managed metadata)
+      const sourceContent = `---
+name: test-agent
+description: A test agent
+---
+
+# Test Agent
+
+Some agent content
+`;
+
+      // Parse and add metadata like sync does - this ensures hash consistency
+      const agent = parseAgent(sourceContent, "test-agent.md");
+      const fileContent = addAgentMetadata(agent, "agconf");
+
+      // Create a lockfile with agents
+      const lockfile = {
+        version: "1.0.0",
+        synced_at: new Date().toISOString(),
+        source: { type: "local", path: "/some/path", ref: "abc123" },
+        content: {
+          agents_md: { global_block_hash: "sha256:abc123def456", merged: true },
+          skills: [],
+          agents: { files: ["test-agent.md"], content_hash: "sha256:abc123" },
+          targets: ["claude"],
+        },
+        cli_version: "1.0.0",
+      };
+      await fs.writeFile(
+        path.join(tempDir, ".agconf", "lockfile.json"),
+        JSON.stringify(lockfile, null, 2),
+      );
+
+      // Write the file exactly as sync would (with properly computed hash)
+      await fs.writeFile(path.join(tempDir, ".claude", "agents", "test-agent.md"), fileContent);
+
+      // Create AGENTS.md (required for check to pass)
+      const globalContent = "# Global Standards";
+      const globalHash = createHash("sha256").update(globalContent.trim()).digest("hex");
+      const agentsMd = `<!-- agconf:global:start -->
+<!-- DO NOT EDIT THIS SECTION - Managed by agconf -->
+<!-- Content hash: sha256:${globalHash.slice(0, 12)} -->
+
+${globalContent}
+
+<!-- agconf:global:end -->
+`;
+      await fs.writeFile(path.join(tempDir, "AGENTS.md"), agentsMd);
+
+      await checkCommand({});
+
+      expect(consoleLogSpy).toHaveBeenCalledWith(
+        expect.stringContaining("All managed files are unchanged"),
+      );
+      expect(mockExit).not.toHaveBeenCalled();
+    });
+
+    it("should detect modified agent files", async () => {
+      // Create a lockfile with agents
+      const lockfile = {
+        version: "1.0.0",
+        synced_at: new Date().toISOString(),
+        source: { type: "local", path: "/some/path", ref: "abc123" },
+        content: {
+          agents_md: { global_block_hash: "sha256:abc123def456", merged: true },
+          skills: [],
+          agents: { files: ["test-agent.md"], content_hash: "sha256:abc123" },
+          targets: ["claude"],
+        },
+        cli_version: "1.0.0",
+      };
+      await fs.writeFile(
+        path.join(tempDir, ".agconf", "lockfile.json"),
+        JSON.stringify(lockfile, null, 2),
+      );
+
+      // Create managed agent file with a hash that won't match (content was modified)
+      const agentContent = `---
+name: test-agent
+description: A test agent
+metadata:
+  agconf_managed: "true"
+  agconf_content_hash: "sha256:originalHash"
+---
+
+# Test Agent - MODIFIED
+
+This content has been changed!
+`;
+      await fs.writeFile(path.join(tempDir, ".claude", "agents", "test-agent.md"), agentContent);
+
+      // Create AGENTS.md without markers (not managed)
+      await fs.writeFile(path.join(tempDir, "AGENTS.md"), "# AGENTS.md\n\nSome content");
+
+      await expect(checkCommand({})).rejects.toThrow("process.exit called");
+
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("have been modified"));
+      expect(mockExit).toHaveBeenCalledWith(1);
+    });
+
+    it("should ignore non-managed agent files", async () => {
+      // Create a lockfile
+      const lockfile = {
+        version: "1.0.0",
+        synced_at: new Date().toISOString(),
+        source: { type: "local", path: "/some/path", ref: "abc123" },
+        content: {
+          agents_md: { global_block_hash: "sha256:abc123def456", merged: true },
+          skills: [],
+          targets: ["claude"],
+        },
+        cli_version: "1.0.0",
+      };
+      await fs.writeFile(
+        path.join(tempDir, ".agconf", "lockfile.json"),
+        JSON.stringify(lockfile, null, 2),
+      );
+
+      // Create non-managed agent file (no metadata)
+      const agentContent = `---
+name: local-agent
+description: A local agent
+---
+
+# Local Agent
+
+This is a repo-specific agent, not managed by agconf.
+`;
+      await fs.writeFile(path.join(tempDir, ".claude", "agents", "local-agent.md"), agentContent);
+
+      // Create managed AGENTS.md
+      const { createHash } = await import("node:crypto");
+      const globalContent = "# Global Standards";
+      const globalHash = createHash("sha256").update(globalContent.trim()).digest("hex");
+      const agentsMd = `<!-- agconf:global:start -->
+<!-- DO NOT EDIT THIS SECTION - Managed by agconf -->
+<!-- Content hash: sha256:${globalHash.slice(0, 12)} -->
+
+${globalContent}
+
+<!-- agconf:global:end -->
+`;
+      await fs.writeFile(path.join(tempDir, "AGENTS.md"), agentsMd);
+
+      await checkCommand({});
+
+      // Should pass because the only managed file (AGENTS.md) is unchanged
+      // The non-managed agent should be ignored
+      expect(consoleLogSpy).toHaveBeenCalledWith(
+        expect.stringContaining("All managed files are unchanged"),
+      );
+      expect(mockExit).not.toHaveBeenCalled();
+    });
+
+    it("should show agent path in output for modified agent files", async () => {
+      // Create a lockfile with agents
+      const lockfile = {
+        version: "1.0.0",
+        synced_at: new Date().toISOString(),
+        source: { type: "local", path: "/some/path", ref: "abc123" },
+        content: {
+          agents_md: { global_block_hash: "sha256:abc123def456", merged: true },
+          skills: [],
+          agents: { files: ["code-reviewer.md"], content_hash: "sha256:abc123" },
+          targets: ["claude"],
+        },
+        cli_version: "1.0.0",
+      };
+      await fs.writeFile(
+        path.join(tempDir, ".agconf", "lockfile.json"),
+        JSON.stringify(lockfile, null, 2),
+      );
+
+      // Create managed agent file with hash that won't match
+      const agentContent = `---
+name: code-reviewer
+description: Reviews code
+metadata:
+  agconf_managed: "true"
+  agconf_content_hash: "sha256:originalHash"
+---
+
+# Code Reviewer - MODIFIED
+`;
+      await fs.writeFile(path.join(tempDir, ".claude", "agents", "code-reviewer.md"), agentContent);
+
+      // Create AGENTS.md without markers
+      await fs.writeFile(path.join(tempDir, "AGENTS.md"), "# AGENTS.md\n\nSome content");
+
+      await expect(checkCommand({})).rejects.toThrow("process.exit called");
+
+      // Should show the agent path
+      expect(consoleLogSpy).toHaveBeenCalledWith(
+        expect.stringContaining(".claude/agents/code-reviewer.md"),
+      );
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("agent:"));
+      expect(mockExit).toHaveBeenCalledWith(1);
+    });
+
+    it("should include agents in checkAllManagedFiles with skills and rules", async () => {
+      // Create rules directory too
+      await fs.mkdir(path.join(tempDir, ".claude", "rules"), { recursive: true });
+
+      // Create a lockfile with skills, rules, and agents
+      const lockfile = {
+        version: "1.0.0",
+        synced_at: new Date().toISOString(),
+        source: { type: "local", path: "/some/path", ref: "abc123" },
+        content: {
+          agents_md: { global_block_hash: "sha256:abc123def456", merged: true },
+          skills: ["test-skill"],
+          rules: { files: ["test-rule.md"], content_hash: "sha256:abc123" },
+          agents: { files: ["test-agent.md"], content_hash: "sha256:abc123" },
+          targets: ["claude"],
+        },
+        cli_version: "1.0.0",
+      };
+      await fs.writeFile(
+        path.join(tempDir, ".agconf", "lockfile.json"),
+        JSON.stringify(lockfile, null, 2),
+      );
+
+      // Create managed skill with hash that won't match
+      const skillContent = `---
+name: test-skill
+description: A test skill
+metadata:
+  agconf_managed: "true"
+  agconf_content_hash: "sha256:originalHash"
+---
+
+# Test Skill - MODIFIED
+`;
+      await fs.writeFile(
+        path.join(tempDir, ".claude", "skills", "test-skill", "SKILL.md"),
+        skillContent,
+      );
+
+      // Create managed rule with hash that won't match
+      const ruleContent = `---
+metadata:
+  agconf_managed: "true"
+  agconf_content_hash: "sha256:originalHash"
+  agconf_source_path: "test-rule.md"
+---
+
+# Test Rule - MODIFIED
+`;
+      await fs.writeFile(path.join(tempDir, ".claude", "rules", "test-rule.md"), ruleContent);
+
+      // Create managed agent with hash that won't match
+      const agentContent = `---
+name: test-agent
+description: A test agent
+metadata:
+  agconf_managed: "true"
+  agconf_content_hash: "sha256:originalHash"
+---
+
+# Test Agent - MODIFIED
+`;
+      await fs.writeFile(path.join(tempDir, ".claude", "agents", "test-agent.md"), agentContent);
+
+      // Create AGENTS.md without markers
+      await fs.writeFile(path.join(tempDir, "AGENTS.md"), "# AGENTS.md\n\nSome content");
+
+      await expect(checkCommand({})).rejects.toThrow("process.exit called");
+
+      // Should report all three as modified
+      expect(consoleLogSpy).toHaveBeenCalledWith(
+        expect.stringContaining("3 managed file(s) have been modified"),
+      );
+      expect(mockExit).toHaveBeenCalledWith(1);
+    });
+  });
+
   describe("rules checking", () => {
     beforeEach(async () => {
       // Create rules directory
