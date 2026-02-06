@@ -1,3 +1,9 @@
+## [0.6.0](https://github.com/julian-pani/agconf/compare/v0.5.0...v0.6.0) (2026-02-06)
+
+### Features
+
+* **cli:** add agents sync support ([2e99f19](https://github.com/julian-pani/agconf/commit/2e99f19371d4d72dbabb16eaeedc01413a023824))
+
 ## [0.5.0](https://github.com/julian-pani/agconf/compare/v0.4.4...v0.5.0) (2026-02-06)
 
 ### Features

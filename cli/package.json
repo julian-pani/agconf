@@ -1,6 +1,6 @@
 {
   "name": "agconf",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "CLI utility to sync AI agent configurations across repositories",
   "author": "Julian Pani",
   "type": "module",
