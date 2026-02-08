@@ -243,4 +243,3 @@ function needsQuoting(value: string): boolean {
     /^\d+$/.test(value)
   );
 }
-

@@ -62,11 +62,6 @@ content:
   skills_dir: "skills"
 `;
 
-const INVALID_AGCONF_YAML_BAD_VERSION = `version: "not-semver"
-meta:
-  name: "test"
-`;
-
 const MALFORMED_YAML = `
 version: 1.0.0
   meta
@@ -230,7 +225,10 @@ describe("resolveLocalSource", () => {
   let tempDir: string;
 
   beforeEach(async () => {
-    tempDir = path.join(process.cwd(), `.test-source-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+    tempDir = path.join(
+      process.cwd(),
+      `.test-source-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    );
     await fs.mkdir(tempDir, { recursive: true });
   });
 
@@ -406,7 +404,10 @@ describe("validateCanonicalRepo (via resolveLocalSource)", () => {
   let tempDir: string;
 
   beforeEach(async () => {
-    tempDir = path.join(process.cwd(), `.test-validate-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+    tempDir = path.join(
+      process.cwd(),
+      `.test-validate-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    );
     await fs.mkdir(tempDir, { recursive: true });
   });
 
@@ -443,18 +444,14 @@ describe("validateCanonicalRepo (via resolveLocalSource)", () => {
     await fs.writeFile(path.join(dir, "agconf.yaml"), VALID_AGCONF_YAML);
     // No skills/
 
-    await expect(resolveLocalSource({ path: dir })).rejects.toThrow(
-      /missing skills\/ directory/,
-    );
+    await expect(resolveLocalSource({ path: dir })).rejects.toThrow(/missing skills\/ directory/);
   });
 
   it("rejects completely empty directory", async () => {
     const dir = path.join(tempDir, "empty");
     await fs.mkdir(dir, { recursive: true });
 
-    await expect(resolveLocalSource({ path: dir })).rejects.toThrow(
-      /Invalid canonical repository/,
-    );
+    await expect(resolveLocalSource({ path: dir })).rejects.toThrow(/Invalid canonical repository/);
   });
 });
 
@@ -467,7 +464,10 @@ describe("findCanonicalRepo (via resolveLocalSource without explicit path)", () 
   let cwdSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(async () => {
-    tempDir = path.join(process.cwd(), `.test-find-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+    tempDir = path.join(
+      process.cwd(),
+      `.test-find-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    );
     await fs.mkdir(tempDir, { recursive: true });
   });
 
@@ -531,9 +531,7 @@ describe("findCanonicalRepo (via resolveLocalSource without explicit path)", () 
 
     cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(isolatedDir);
 
-    await expect(resolveLocalSource({})).rejects.toThrow(
-      /Could not find canonical repository/,
-    );
+    await expect(resolveLocalSource({})).rejects.toThrow(/Could not find canonical repository/);
   });
 });
 
@@ -585,7 +583,10 @@ describe("ResolvedSource structure consistency", () => {
   let tempDir: string;
 
   beforeEach(async () => {
-    tempDir = path.join(process.cwd(), `.test-structure-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+    tempDir = path.join(
+      process.cwd(),
+      `.test-structure-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    );
     await fs.mkdir(tempDir, { recursive: true });
   });
 
@@ -652,7 +653,9 @@ describe("ResolvedSource structure consistency", () => {
     if (resolved.source.type === "local") {
       // commit_sha might be undefined or a string (if running inside a git repo)
       // The key point is it doesn't throw
-      expect(typeof resolved.source.commit_sha === "string" || resolved.source.commit_sha === undefined).toBe(true);
+      expect(
+        typeof resolved.source.commit_sha === "string" || resolved.source.commit_sha === undefined,
+      ).toBe(true);
     }
   });
 
@@ -685,7 +688,10 @@ describe("source resolution edge cases", () => {
   let tempDir: string;
 
   beforeEach(async () => {
-    tempDir = path.join(process.cwd(), `.test-edge-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+    tempDir = path.join(
+      process.cwd(),
+      `.test-edge-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    );
     await fs.mkdir(tempDir, { recursive: true });
   });
 

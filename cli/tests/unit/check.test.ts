@@ -174,7 +174,9 @@ metadata:
     });
 
     it("should exit with code 1 in quiet mode", async () => {
-      await expect(checkCommand({ quiet: true, cwd: tempDir })).rejects.toThrow("process.exit called");
+      await expect(checkCommand({ quiet: true, cwd: tempDir })).rejects.toThrow(
+        "process.exit called",
+      );
 
       expect(mockExit).toHaveBeenCalledWith(1);
     });
@@ -409,7 +411,9 @@ description: A test skill
     });
 
     it("should exit with code 1 in quiet mode", async () => {
-      await expect(checkCommand({ quiet: true, cwd: tempDir })).rejects.toThrow("process.exit called");
+      await expect(checkCommand({ quiet: true, cwd: tempDir })).rejects.toThrow(
+        "process.exit called",
+      );
 
       expect(mockExit).toHaveBeenCalledWith(1);
     });

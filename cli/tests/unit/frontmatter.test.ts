@@ -363,7 +363,7 @@ Second paragraph.
   });
 
   it("parses frontmatter with quoted array items", () => {
-    const content = '---\npaths:\n  - "src/**/*.ts"\n  - \'lib/**/*.js\'\n---\n\nBody.';
+    const content = "---\npaths:\n  - \"src/**/*.ts\"\n  - 'lib/**/*.js'\n---\n\nBody.";
     const result = parseFrontmatter(content);
 
     expect(result.frontmatter).not.toBeNull();

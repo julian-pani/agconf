@@ -1,4 +1,3 @@
-import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -23,9 +22,7 @@ vi.mock("../../src/core/version.js", () => ({
     return /^\d+\.\d+\.\d+(-[\w.]+)?$/.test(normalized);
   }),
   parseVersion: vi.fn((tag: string) => (tag.startsWith("v") ? tag.slice(1) : tag)),
-  formatTag: vi.fn((version: string) =>
-    version.startsWith("v") ? version : `v${version}`,
-  ),
+  formatTag: vi.fn((version: string) => (version.startsWith("v") ? version : `v${version}`)),
 }));
 
 vi.mock("../../src/core/managed-content.js", () => ({
@@ -45,23 +42,22 @@ vi.mock("@clack/prompts", () => ({
   isCancel: vi.fn(() => false),
 }));
 
-import { getGitRoot } from "../../src/utils/git.js";
-import { resolveLocalSource, resolveGithubSource } from "../../src/core/source.js";
-import { getLatestRelease } from "../../src/core/version.js";
-import { getModifiedManagedFiles } from "../../src/core/managed-content.js";
-import { createTempDir, removeTempDir } from "../../src/utils/fs.js";
 import * as prompts from "@clack/prompts";
-
+import type { ResolvedVersion, SharedSyncOptions } from "../../src/commands/shared.js";
 import {
+  checkModifiedFilesBeforeSync,
   parseAndValidateTargets,
+  promptMergeOrOverride,
+  resolveSource,
   resolveTargetDirectory,
   resolveVersion,
-  resolveSource,
-  checkModifiedFilesBeforeSync,
-  promptMergeOrOverride,
 } from "../../src/commands/shared.js";
+import { getModifiedManagedFiles } from "../../src/core/managed-content.js";
+import { resolveGithubSource, resolveLocalSource } from "../../src/core/source.js";
 import type { SyncStatus } from "../../src/core/sync.js";
-import type { SharedSyncOptions, ResolvedVersion } from "../../src/commands/shared.js";
+import { getLatestRelease } from "../../src/core/version.js";
+import { createTempDir, removeTempDir } from "../../src/utils/fs.js";
+import { getGitRoot } from "../../src/utils/git.js";
 
 describe("shared command utilities", () => {
   let mockExit: ReturnType<typeof vi.spyOn>;
@@ -158,7 +154,9 @@ describe("shared command utilities", () => {
       const result = await resolveTargetDirectory();
       expect(result).toBe(mockGitRoot);
       // Should have logged an info message about syncing to root
-      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("Syncing to repository root"));
+      expect(consoleLogSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Syncing to repository root"),
+      );
 
       cwdSpy.mockRestore();
     });
@@ -410,7 +408,12 @@ describe("shared command utilities", () => {
 
     it("resolves GitHub source with temp dir", async () => {
       const mockSource = {
-        source: { type: "github" as const, repository: "org/repo", commit_sha: "abc", ref: "v1.0.0" },
+        source: {
+          type: "github" as const,
+          repository: "org/repo",
+          commit_sha: "abc",
+          ref: "v1.0.0",
+        },
         basePath: "/tmp/agconf-xyz",
         agentsMdPath: "/tmp/agconf-xyz/instructions/AGENTS.md",
         skillsPath: "/tmp/agconf-xyz/skills",
@@ -464,12 +467,7 @@ describe("shared command utilities", () => {
     it("returns true when no modified files", async () => {
       vi.mocked(getModifiedManagedFiles).mockResolvedValue([]);
 
-      const result = await checkModifiedFilesBeforeSync(
-        "/target",
-        ["claude"],
-        {},
-        null,
-      );
+      const result = await checkModifiedFilesBeforeSync("/target", ["claude"], {}, null);
       expect(result).toBe(true);
     });
 
@@ -484,17 +482,10 @@ describe("shared command utilities", () => {
         },
       ]);
 
-      const result = await checkModifiedFilesBeforeSync(
-        "/target",
-        ["claude"],
-        { yes: true },
-        null,
-      );
+      const result = await checkModifiedFilesBeforeSync("/target", ["claude"], { yes: true }, null);
       expect(result).toBe(true);
       // Should have logged the modified file path
-      expect(consoleLogSpy).toHaveBeenCalledWith(
-        expect.stringContaining("1 managed file(s)"),
-      );
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("1 managed file(s)"));
     });
 
     it("displays modified files when they exist", async () => {
@@ -517,16 +508,9 @@ describe("shared command utilities", () => {
       // Mock confirm to return true (user says yes)
       vi.mocked(prompts.confirm).mockResolvedValue(true);
 
-      const result = await checkModifiedFilesBeforeSync(
-        "/target",
-        ["claude"],
-        {},
-        null,
-      );
+      const result = await checkModifiedFilesBeforeSync("/target", ["claude"], {}, null);
       expect(result).toBe(true);
-      expect(consoleLogSpy).toHaveBeenCalledWith(
-        expect.stringContaining("2 managed file(s)"),
-      );
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("2 managed file(s)"));
     });
 
     it("calls process.exit(0) when user cancels confirmation", async () => {
@@ -542,9 +526,9 @@ describe("shared command utilities", () => {
       // User declines
       vi.mocked(prompts.confirm).mockResolvedValue(false);
 
-      await expect(
-        checkModifiedFilesBeforeSync("/target", ["claude"], {}, null),
-      ).rejects.toThrow("process.exit called");
+      await expect(checkModifiedFilesBeforeSync("/target", ["claude"], {}, null)).rejects.toThrow(
+        "process.exit called",
+      );
       expect(mockExit).toHaveBeenCalledWith(0);
     });
 
@@ -580,9 +564,9 @@ describe("shared command utilities", () => {
       vi.mocked(prompts.isCancel).mockReturnValue(true);
       vi.mocked(prompts.confirm).mockResolvedValue(Symbol("cancel") as unknown as boolean);
 
-      await expect(
-        checkModifiedFilesBeforeSync("/target", ["claude"], {}, null),
-      ).rejects.toThrow("process.exit called");
+      await expect(checkModifiedFilesBeforeSync("/target", ["claude"], {}, null)).rejects.toThrow(
+        "process.exit called",
+      );
       expect(mockExit).toHaveBeenCalledWith(0);
     });
 
@@ -600,9 +584,7 @@ describe("shared command utilities", () => {
 
       await checkModifiedFilesBeforeSync("/target", ["claude"], {}, null);
       // The "(global block)" label should appear for type "agents"
-      expect(consoleLogSpy).toHaveBeenCalledWith(
-        expect.stringContaining("(global block)"),
-      );
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("(global block)"));
     });
   });
 
@@ -698,9 +680,7 @@ describe("shared command utilities", () => {
       vi.mocked(prompts.isCancel).mockReturnValue(true);
       vi.mocked(prompts.select).mockResolvedValue(Symbol("cancel") as unknown as string);
 
-      await expect(promptMergeOrOverride(status, {}, null)).rejects.toThrow(
-        "process.exit called",
-      );
+      await expect(promptMergeOrOverride(status, {}, null)).rejects.toThrow("process.exit called");
       expect(mockExit).toHaveBeenCalledWith(0);
     });
 
@@ -717,9 +697,9 @@ describe("shared command utilities", () => {
       vi.mocked(prompts.isCancel).mockReturnValue(true);
       vi.mocked(prompts.select).mockResolvedValue(Symbol("cancel") as unknown as string);
 
-      await expect(
-        promptMergeOrOverride(status, {}, "/tmp/should-cleanup"),
-      ).rejects.toThrow("process.exit called");
+      await expect(promptMergeOrOverride(status, {}, "/tmp/should-cleanup")).rejects.toThrow(
+        "process.exit called",
+      );
       expect(removeTempDir).toHaveBeenCalledWith("/tmp/should-cleanup");
     });
 

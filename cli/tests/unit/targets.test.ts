@@ -1,12 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  SUPPORTED_TARGETS,
-  TARGET_CONFIGS,
   getTargetConfig,
   isValidTarget,
   parseTargets,
-  type Target,
-  type TargetConfig,
+  SUPPORTED_TARGETS,
+  TARGET_CONFIGS,
 } from "../../src/core/targets.js";
 
 // =============================================================================
@@ -248,9 +246,9 @@ describe("TARGET_CONFIGS", () => {
     for (const target of SUPPORTED_TARGETS) {
       const config = TARGET_CONFIGS[target];
       expect(typeof config.dir).toBe("string");
-      expect(
-        config.instructionsFile === null || typeof config.instructionsFile === "string",
-      ).toBe(true);
+      expect(config.instructionsFile === null || typeof config.instructionsFile === "string").toBe(
+        true,
+      );
     }
   });
 });

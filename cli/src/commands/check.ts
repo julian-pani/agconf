@@ -3,6 +3,12 @@ import * as path from "node:path";
 import pc from "picocolors";
 import { readLockfile } from "../core/lockfile.js";
 import {
+  checkAllManagedFiles,
+  computeContentHash,
+  parseFrontmatter,
+  stripManagedMetadata,
+} from "../core/managed-content.js";
+import {
   computeGlobalBlockHash,
   computeRulesSectionHash,
   parseAgentsMd,
@@ -12,12 +18,6 @@ import {
   stripMetadataComments,
   stripRulesSectionMetadata,
 } from "../core/markers.js";
-import {
-  checkAllManagedFiles,
-  computeContentHash,
-  parseFrontmatter,
-  stripManagedMetadata,
-} from "../core/managed-content.js";
 
 export interface CheckOptions {
   quiet?: boolean;

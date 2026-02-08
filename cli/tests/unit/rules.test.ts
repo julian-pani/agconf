@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { computeContentHash } from "../../src/core/managed-content.js";
 import {
   addRuleMetadata,
   adjustHeadingLevels,
@@ -8,7 +9,6 @@ import {
   type Rule,
   updateAgentsMdWithRules,
 } from "../../src/core/rules.js";
-import { computeContentHash } from "../../src/core/managed-content.js";
 
 // =============================================================================
 // Test Data

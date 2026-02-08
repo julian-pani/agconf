@@ -11,6 +11,13 @@ import {
   validateAgentFrontmatter,
 } from "./agents.js";
 import { readLockfile, writeLockfile } from "./lockfile.js";
+import {
+  addManagedMetadata,
+  hasManualChanges,
+  isManaged,
+  type SkillValidationError,
+  validateSkillFrontmatter,
+} from "./managed-content.js";
 import { consolidateClaudeMd, mergeAgentsMd, writeAgentsMd } from "./merge.js";
 import {
   addRuleMetadata,
@@ -19,13 +26,6 @@ import {
   type Rule,
   updateAgentsMdWithRules,
 } from "./rules.js";
-import {
-  addManagedMetadata,
-  hasManualChanges,
-  isManaged,
-  type SkillValidationError,
-  validateSkillFrontmatter,
-} from "./managed-content.js";
 import type { ResolvedSource } from "./source.js";
 import { getTargetConfig, type Target, type TargetConfig } from "./targets.js";
 
