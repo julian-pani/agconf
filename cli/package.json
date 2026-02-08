@@ -32,7 +32,7 @@
     "release:dry-run": "semantic-release --dry-run"
   },
   "dependencies": {
-    "@clack/prompts": "^0.7.0",
+    "@clack/prompts": "^1.0.0",
     "commander": "^14.0.3",
     "fast-glob": "^3.3.2",
     "ora": "^9.3.0",
