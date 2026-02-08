@@ -67,7 +67,4 @@ export const LockfileSchema = z.object({
 });
 
 export type Source = z.infer<typeof SourceSchema>;
-export type Content = z.infer<typeof ContentSchema>;
 export type Lockfile = z.infer<typeof LockfileSchema>;
-export type RulesContent = z.infer<typeof RulesContentSchema>;
-export type AgentsContent = z.infer<typeof AgentsContentSchema>;

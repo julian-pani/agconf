@@ -8,7 +8,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { ResolvedConfig, WorkflowConfig as WorkflowConfigSchema } from "../config/schema.js";
-import { formatTag } from "./version.js";
 
 /**
  * Per-downstream-repo workflow settings from .agconf/config.yaml.
@@ -480,18 +479,6 @@ export async function getCurrentWorkflowVersion(
   }
 
   return undefined;
-}
-
-/**
- * Formats a version for use as a workflow ref.
- * For version tags, uses the full tag (v1.2.0).
- * For branches, uses the branch name as-is.
- */
-export function formatWorkflowRef(ref: string, isVersion: boolean): string {
-  if (isVersion) {
-    return formatTag(ref);
-  }
-  return ref;
 }
 
 /**

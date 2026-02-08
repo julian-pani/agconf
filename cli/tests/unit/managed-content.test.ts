@@ -6,7 +6,7 @@ import {
   isManaged,
   parseFrontmatter,
   stripManagedMetadata,
-} from "../../src/core/skill-metadata.js";
+} from "../../src/core/managed-content.js";
 
 const SAMPLE_SKILL = `---
 name: test-skill
@@ -31,7 +31,7 @@ metadata:
 This is the skill content.
 `;
 
-describe("skill-metadata", () => {
+describe("managed-content", () => {
   describe("parseFrontmatter", () => {
     it("parses simple frontmatter", () => {
       const { frontmatter, body } = parseFrontmatter(SAMPLE_SKILL);

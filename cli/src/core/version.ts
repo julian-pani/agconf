@@ -95,29 +95,6 @@ export async function getLatestRelease(repo: string): Promise<ReleaseInfo> {
 }
 
 /**
- * Fetches a specific release by tag from a GitHub repository.
- */
-export async function getReleaseByTag(repo: string, tag: string): Promise<ReleaseInfo> {
-  // Ensure tag has 'v' prefix
-  const normalizedTag = tag.startsWith("v") ? tag : `v${tag}`;
-  const url = `${GITHUB_API_BASE}/repos/${repo}/releases/tags/${normalizedTag}`;
-
-  const response = await fetch(url, {
-    headers: getGitHubHeaders(),
-  });
-
-  if (!response.ok) {
-    if (response.status === 404) {
-      throw new Error(`Release ${normalizedTag} not found`);
-    }
-    throw new Error(`Failed to fetch release ${normalizedTag}: ${response.statusText}`);
-  }
-
-  const data: unknown = await response.json();
-  return parseReleaseResponse(data as Record<string, unknown>);
-}
-
-/**
  * Parses a GitHub release API response into ReleaseInfo.
  */
 function parseReleaseResponse(data: Record<string, unknown>): ReleaseInfo {

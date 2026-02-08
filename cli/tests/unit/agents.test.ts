@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addAgentMetadata, parseAgent, validateAgentFrontmatter } from "../../src/core/agents.js";
-import { computeContentHash, hasManualChanges, isManaged } from "../../src/core/skill-metadata.js";
+import { computeContentHash, hasManualChanges, isManaged } from "../../src/core/managed-content.js";
 import { deleteOrphanedAgents, findOrphanedAgents, syncAgents } from "../../src/core/sync.js";
 
 // =============================================================================

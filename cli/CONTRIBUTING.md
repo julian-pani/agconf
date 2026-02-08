@@ -164,8 +164,9 @@ it("should detect modified content", async () => {
 **Currently verified content types:**
 - AGENTS.md global block (hash in `<!-- Content hash: ... -->` comment)
 - AGENTS.md rules section for Codex (hash in rules section markers)
-- Skill files (hash in `metadata.agent_conf_content_hash` frontmatter)
-- Rule files for Claude (hash in `metadata.agent_conf_content_hash` frontmatter)
+- Skill files (hash in `agconf_content_hash` frontmatter)
+- Rule files for Claude (hash in `agconf_content_hash` frontmatter)
+- Agent files for Claude (hash in `agconf_content_hash` frontmatter)
 
 ### Content Hash Consistency
 
@@ -177,7 +178,7 @@ it("should detect modified content", async () => {
 
 ```typescript
 // For skill/rule file frontmatter metadata
-import { computeContentHash } from "../core/skill-metadata.js";
+import { computeContentHash } from "../core/managed-content.js";
 const hash = computeContentHash(content, { metadataPrefix: "agconf" });
 
 // For AGENTS.md global block
@@ -289,17 +290,7 @@ This ensures breaking changes are intentional and reviewed before release.
 2. Ensure code passes linting: `pnpm check`
 3. Ensure TypeScript compiles: `pnpm typecheck`
 4. Update documentation if needed
-5. Add a changeset if your change affects the public API
-
-### Creating a Changeset
-
-For changes that should be included in the changelog:
-
-```bash
-pnpm changeset
-```
-
-Follow the prompts to describe your changes. This creates a file in `.changeset/` that will be used to generate changelog entries.
+5. Use [Conventional Commits](#commit-conventions) so semantic-release can determine version bumps automatically
 
 ### PR Guidelines
 

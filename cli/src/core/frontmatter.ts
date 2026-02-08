@@ -37,7 +37,7 @@ export interface ParsedFrontmatter {
  * Regex to match YAML frontmatter at the start of a file.
  * Matches content between --- delimiters.
  */
-export const FRONTMATTER_REGEX = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
+const FRONTMATTER_REGEX = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
 
 // =============================================================================
 // Parsing
@@ -86,7 +86,7 @@ export function parseFrontmatter(content: string): ParsedFrontmatter {
  * - Block arrays: `items:\n  - item1\n  - item2`
  * - Inline arrays: `items: [a, b, c]`
  */
-export function parseSimpleYaml(yaml: string): Record<string, unknown> {
+function parseSimpleYaml(yaml: string): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   const lines = yaml.split("\n");
   let currentKey: string | null = null;
@@ -233,7 +233,7 @@ export function serializeFrontmatter(frontmatter: Record<string, unknown>): stri
  * Values need quoting if they contain special YAML characters
  * or could be interpreted as booleans/numbers.
  */
-export function needsQuoting(value: string): boolean {
+function needsQuoting(value: string): boolean {
   return (
     value.includes(":") ||
     value.includes("#") ||
@@ -242,33 +242,4 @@ export function needsQuoting(value: string): boolean {
     value === "false" ||
     /^\d+$/.test(value)
   );
-}
-
-// =============================================================================
-// Utilities
-// =============================================================================
-
-/**
- * Build a complete markdown file with frontmatter.
- *
- * @param frontmatter - Frontmatter object to serialize
- * @param body - Markdown body content
- * @returns Complete markdown content with frontmatter
- */
-export function buildMarkdownWithFrontmatter(
-  frontmatter: Record<string, unknown>,
-  body: string,
-): string {
-  const yamlContent = serializeFrontmatter(frontmatter);
-  return `---\n${yamlContent}\n---\n${body}`;
-}
-
-/**
- * Check if content has frontmatter.
- *
- * @param content - Raw markdown content
- * @returns True if content has valid frontmatter delimiters
- */
-export function hasFrontmatter(content: string): boolean {
-  return FRONTMATTER_REGEX.test(content);
 }

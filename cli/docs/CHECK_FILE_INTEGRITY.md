@@ -11,8 +11,8 @@ This document explains how agconf detects and prevents unauthorized modification
 ## Overview
 
 agconf manages certain files in your repository:
-- **AGENTS.md** (global block) - Company-wide engineering standards
-- **AGENTS.md** (rules section for Codex) - Concatenated rules for GitHub Copilot
+- **AGENTS.md** (global block) - Company-wide engineering standards (`<!-- agconf:global:start/end -->`)
+- **AGENTS.md** (rules section, Codex targets) - Concatenated rules (`<!-- agconf:rules:start/end -->`)
 - **Skill files** (`.claude/skills/*/SKILL.md`) - Synced skill definitions
 - **Rule files** (`.claude/rules/**/*.md`) - Modular project instructions (Claude only)
 - **Agent files** (`.claude/agents/*.md`) - Claude Code sub-agents (Claude only)
@@ -44,7 +44,7 @@ Each managed file stores a content hash that allows agconf to detect modificatio
 - Hash is computed from the global block content excluding metadata comments
 - Example: `<!-- Content hash: sha256:abc123def456 -->`
 
-**For AGENTS.md** (rules section for Codex):
+**For AGENTS.md** (rules section, Codex targets):
 - Hash is stored in an HTML comment within the rules section markers
 - Hash is computed from the concatenated rules content
 - Example: `<!-- Content hash: sha256:abc123def456 -->`

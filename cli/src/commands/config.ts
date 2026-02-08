@@ -2,8 +2,6 @@ import * as prompts from "@clack/prompts";
 import pc from "picocolors";
 import { createLogger } from "../utils/logger.js";
 
-export type ConfigOptions = Record<string, never>;
-
 export async function configShowCommand(): Promise<void> {
   console.log();
   prompts.intro(pc.bold("agconf config"));

@@ -5,7 +5,7 @@ import pc from "picocolors";
 import { loadDownstreamConfig } from "../config/loader.js";
 import { installPreCommitHook } from "../core/hooks.js";
 import { readLockfile } from "../core/lockfile.js";
-import { getModifiedManagedFiles } from "../core/skill-metadata.js";
+import { getModifiedManagedFiles } from "../core/managed-content.js";
 import type { ResolvedSource } from "../core/source.js";
 import { formatSourceString, resolveGithubSource, resolveLocalSource } from "../core/source.js";
 import { deleteOrphanedSkills, findOrphanedSkills, type SyncStatus, sync } from "../core/sync.js";

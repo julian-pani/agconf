@@ -3,9 +3,6 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { checkCommand } from "../../src/commands/check.js";
 
-// Mock process.cwd to return our test directory
-const originalCwd = process.cwd;
-
 describe("check command", () => {
   let tempDir: string;
   let mockExit: ReturnType<typeof vi.spyOn>;
@@ -16,9 +13,6 @@ describe("check command", () => {
     tempDir = path.join(process.cwd(), `.test-check-${Date.now()}`);
     await fs.mkdir(path.join(tempDir, ".agconf"), { recursive: true });
     await fs.mkdir(path.join(tempDir, ".claude", "skills", "test-skill"), { recursive: true });
-
-    // Mock process.cwd
-    process.cwd = () => tempDir;
 
     // Mock process.exit
     mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
@@ -31,7 +25,6 @@ describe("check command", () => {
 
   afterEach(async () => {
     // Restore mocks
-    process.cwd = originalCwd;
     mockExit.mockRestore();
     consoleLogSpy.mockRestore();
 
@@ -41,7 +34,7 @@ describe("check command", () => {
 
   describe("when not synced", () => {
     it("should exit cleanly with message when no lockfile exists", async () => {
-      await checkCommand({});
+      await checkCommand({ cwd: tempDir });
 
       // Should show "not synced" message
       expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("Not synced"));
@@ -51,7 +44,7 @@ describe("check command", () => {
     });
 
     it("should exit silently in quiet mode when no lockfile exists", async () => {
-      await checkCommand({ quiet: true });
+      await checkCommand({ quiet: true, cwd: tempDir });
 
       // Should not output anything
       expect(consoleLogSpy).not.toHaveBeenCalled();
@@ -119,7 +112,7 @@ description: A test skill
     });
 
     it("should report all files unchanged", async () => {
-      await checkCommand({});
+      await checkCommand({ cwd: tempDir });
 
       expect(consoleLogSpy).toHaveBeenCalledWith(
         expect.stringContaining("All managed files are unchanged"),
@@ -128,7 +121,7 @@ description: A test skill
     });
 
     it("should exit with code 0 in quiet mode", async () => {
-      await checkCommand({ quiet: true });
+      await checkCommand({ quiet: true, cwd: tempDir });
 
       expect(mockExit).not.toHaveBeenCalled();
     });
@@ -174,14 +167,16 @@ metadata:
     });
 
     it("should detect modified skill file", async () => {
-      await expect(checkCommand({})).rejects.toThrow("process.exit called");
+      await expect(checkCommand({ cwd: tempDir })).rejects.toThrow("process.exit called");
 
       expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("have been modified"));
       expect(mockExit).toHaveBeenCalledWith(1);
     });
 
     it("should exit with code 1 in quiet mode", async () => {
-      await expect(checkCommand({ quiet: true })).rejects.toThrow("process.exit called");
+      await expect(checkCommand({ quiet: true, cwd: tempDir })).rejects.toThrow(
+        "process.exit called",
+      );
 
       expect(mockExit).toHaveBeenCalledWith(1);
     });
@@ -228,14 +223,14 @@ metadata:
     });
 
     it("should detect modified AGENTS.md global block", async () => {
-      await expect(checkCommand({})).rejects.toThrow("process.exit called");
+      await expect(checkCommand({ cwd: tempDir })).rejects.toThrow("process.exit called");
 
       expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("have been modified"));
       expect(mockExit).toHaveBeenCalledWith(1);
     });
 
     it("should show hash details", async () => {
-      await expect(checkCommand({})).rejects.toThrow("process.exit called");
+      await expect(checkCommand({ cwd: tempDir })).rejects.toThrow("process.exit called");
 
       // Should show both expected and current hashes
       expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("Expected hash:"));
@@ -297,7 +292,7 @@ description: A test skill
 `,
       );
 
-      await expect(checkCommand({})).rejects.toThrow("process.exit called");
+      await expect(checkCommand({ cwd: tempDir })).rejects.toThrow("process.exit called");
 
       expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("have been modified"));
       expect(mockExit).toHaveBeenCalledWith(1);
@@ -323,7 +318,7 @@ metadata:
         skillContent,
       );
 
-      await expect(checkCommand({})).rejects.toThrow("process.exit called");
+      await expect(checkCommand({ cwd: tempDir })).rejects.toThrow("process.exit called");
 
       expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("have been modified"));
       expect(mockExit).toHaveBeenCalledWith(1);
@@ -365,7 +360,7 @@ metadata:
       );
 
       // Should fail because no files are managed with the custom prefix
-      await expect(checkCommand({})).rejects.toThrow("process.exit called");
+      await expect(checkCommand({ cwd: tempDir })).rejects.toThrow("process.exit called");
 
       expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("No managed files found"));
       expect(mockExit).toHaveBeenCalledWith(1);
@@ -409,14 +404,16 @@ description: A test skill
     });
 
     it("should fail with error when no managed files found", async () => {
-      await expect(checkCommand({})).rejects.toThrow("process.exit called");
+      await expect(checkCommand({ cwd: tempDir })).rejects.toThrow("process.exit called");
 
       expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("No managed files found"));
       expect(mockExit).toHaveBeenCalledWith(1);
     });
 
     it("should exit with code 1 in quiet mode", async () => {
-      await expect(checkCommand({ quiet: true })).rejects.toThrow("process.exit called");
+      await expect(checkCommand({ quiet: true, cwd: tempDir })).rejects.toThrow(
+        "process.exit called",
+      );
 
       expect(mockExit).toHaveBeenCalledWith(1);
     });
@@ -485,7 +482,7 @@ Always validate tokens.
       await fs.writeFile(path.join(tempDir, "AGENTS.md"), agentsMd);
 
       // Check should fail because the rules section hash doesn't match
-      await expect(checkCommand({})).rejects.toThrow("process.exit called");
+      await expect(checkCommand({ cwd: tempDir })).rejects.toThrow("process.exit called");
 
       expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("have been modified"));
       expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("rules section"));
@@ -555,7 +552,7 @@ ${rulesContent}
       await fs.writeFile(path.join(tempDir, "AGENTS.md"), agentsMd);
 
       // Check should pass
-      await checkCommand({});
+      await checkCommand({ cwd: tempDir });
 
       expect(consoleLogSpy).toHaveBeenCalledWith(
         expect.stringContaining("All managed files are unchanged"),
@@ -624,7 +621,7 @@ ${rulesSection}
       await fs.writeFile(path.join(tempDir, "AGENTS.md"), agentsMd);
 
       // Check should pass - we just synced, nothing was modified
-      await checkCommand({});
+      await checkCommand({ cwd: tempDir });
 
       expect(consoleLogSpy).toHaveBeenCalledWith(
         expect.stringContaining("All managed files are unchanged"),
@@ -697,7 +694,7 @@ ${globalContent}
       await fs.writeFile(path.join(tempDir, "AGENTS.md"), agentsMd);
 
       // Check should pass - the file hasn't been modified
-      await checkCommand({});
+      await checkCommand({ cwd: tempDir });
 
       expect(consoleLogSpy).toHaveBeenCalledWith(
         expect.stringContaining("All managed files are unchanged"),
@@ -759,7 +756,7 @@ ${globalContent}
 `;
       await fs.writeFile(path.join(tempDir, "AGENTS.md"), agentsMd);
 
-      await checkCommand({});
+      await checkCommand({ cwd: tempDir });
 
       expect(consoleLogSpy).toHaveBeenCalledWith(
         expect.stringContaining("All managed files are unchanged"),
@@ -804,7 +801,7 @@ This content has been changed!
       // Create AGENTS.md without markers (not managed)
       await fs.writeFile(path.join(tempDir, "AGENTS.md"), "# AGENTS.md\n\nSome content");
 
-      await expect(checkCommand({})).rejects.toThrow("process.exit called");
+      await expect(checkCommand({ cwd: tempDir })).rejects.toThrow("process.exit called");
 
       expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("have been modified"));
       expect(mockExit).toHaveBeenCalledWith(1);
@@ -854,7 +851,7 @@ ${globalContent}
 `;
       await fs.writeFile(path.join(tempDir, "AGENTS.md"), agentsMd);
 
-      await checkCommand({});
+      await checkCommand({ cwd: tempDir });
 
       // Should pass because the only managed file (AGENTS.md) is unchanged
       // The non-managed agent should be ignored
@@ -899,7 +896,7 @@ metadata:
       // Create AGENTS.md without markers
       await fs.writeFile(path.join(tempDir, "AGENTS.md"), "# AGENTS.md\n\nSome content");
 
-      await expect(checkCommand({})).rejects.toThrow("process.exit called");
+      await expect(checkCommand({ cwd: tempDir })).rejects.toThrow("process.exit called");
 
       // Should show the agent path
       expect(consoleLogSpy).toHaveBeenCalledWith(
@@ -976,7 +973,7 @@ metadata:
       // Create AGENTS.md without markers
       await fs.writeFile(path.join(tempDir, "AGENTS.md"), "# AGENTS.md\n\nSome content");
 
-      await expect(checkCommand({})).rejects.toThrow("process.exit called");
+      await expect(checkCommand({ cwd: tempDir })).rejects.toThrow("process.exit called");
 
       // Should report all three as modified
       expect(consoleLogSpy).toHaveBeenCalledWith(
@@ -1058,7 +1055,7 @@ ${globalContent}
       await fs.writeFile(path.join(tempDir, "AGENTS.md"), agentsMd);
 
       // Check should pass - the file hasn't been modified
-      await checkCommand({});
+      await checkCommand({ cwd: tempDir });
 
       expect(consoleLogSpy).toHaveBeenCalledWith(
         expect.stringContaining("All managed files are unchanged"),
@@ -1122,7 +1119,7 @@ ${globalContent}
 `;
       await fs.writeFile(path.join(tempDir, "AGENTS.md"), agentsMd);
 
-      await checkCommand({});
+      await checkCommand({ cwd: tempDir });
 
       expect(consoleLogSpy).toHaveBeenCalledWith(
         expect.stringContaining("All managed files are unchanged"),
@@ -1166,7 +1163,7 @@ This content has been changed!
       // Create AGENTS.md without markers (not managed)
       await fs.writeFile(path.join(tempDir, "AGENTS.md"), "# AGENTS.md\n\nSome content");
 
-      await expect(checkCommand({})).rejects.toThrow("process.exit called");
+      await expect(checkCommand({ cwd: tempDir })).rejects.toThrow("process.exit called");
 
       expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("have been modified"));
       expect(mockExit).toHaveBeenCalledWith(1);
@@ -1216,7 +1213,7 @@ ${globalContent}
 `;
       await fs.writeFile(path.join(tempDir, "AGENTS.md"), agentsMd);
 
-      await checkCommand({});
+      await checkCommand({ cwd: tempDir });
 
       // Should pass because the only managed file (AGENTS.md) is unchanged
       // The non-managed rule should be ignored
@@ -1265,7 +1262,7 @@ Modified content
       // Create AGENTS.md without markers
       await fs.writeFile(path.join(tempDir, "AGENTS.md"), "# AGENTS.md\n\nSome content");
 
-      await expect(checkCommand({})).rejects.toThrow("process.exit called");
+      await expect(checkCommand({ cwd: tempDir })).rejects.toThrow("process.exit called");
 
       expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("have been modified"));
       // Verify the path includes the subdirectory
@@ -1325,7 +1322,7 @@ metadata:
       // Create AGENTS.md without markers
       await fs.writeFile(path.join(tempDir, "AGENTS.md"), "# AGENTS.md\n\nSome content");
 
-      await expect(checkCommand({})).rejects.toThrow("process.exit called");
+      await expect(checkCommand({ cwd: tempDir })).rejects.toThrow("process.exit called");
 
       // Should report both the skill and the rule as modified
       expect(consoleLogSpy).toHaveBeenCalledWith(

@@ -50,10 +50,6 @@ pnpm install:global       # Build + install globally
 - `targets.ts` - Multi-agent target support
 - `rules.ts` - Sync modular rule files from canonical to downstream repos
 
-### Plugin System (`cli/src/plugins/`)
-- `targets/` - Agent implementations (Claude Code, GitHub Copilot)
-- `providers/` - Content providers (GitHub API)
-
 ### Commands (`cli/src/commands/`)
 Commands: init, sync, check, upgrade-cli, canonical (init, update), config, completion
 
@@ -65,7 +61,7 @@ Commands: init, sync, check, upgrade-cli, canonical (init, update), config, comp
 - **File markers**: HTML comments (`<!-- agconf:global:start -->`) separate global vs repo-specific content
 - **Lockfile pinning**: `.agconf/lockfile.json` tracks sync state and versions
 - **Merge strategy**: Global content updates while preserving repo-specific sections in AGENTS.md
-- **Plugin architecture**: Targets and providers are extensible
+- **Target support**: Multi-agent targets (Claude Code, Codex) defined in `cli/src/core/targets.ts`; source resolution (GitHub repos, local paths) in `cli/src/core/source.ts`
 - **Downstream config**: `.agconf/config.yaml` in downstream repos for user preferences (workflow settings)
 
 ### Downstream Config
@@ -160,7 +156,7 @@ When adding or modifying CLI commands, always update the shell completions in `c
 
 When adding new content types to sync or modifying sync behavior:
 1. Update `sync.ts` to sync the new content with proper metadata/hashes
-2. Update `skill-metadata.ts` to add checking functions for the new content type
+2. Update `managed-content.ts` to add checking functions for the new content type
 3. Update `check.ts` to handle the new content type in the check loop
 4. **Write tests in `check.test.ts`** that verify:
    - Check passes immediately after sync (hash consistency)
@@ -185,7 +181,7 @@ Each synced content type needs:
 **Critical:** All content hashes MUST use the same format: `sha256:` prefix + 12 hex characters.
 
 **Reuse existing hash functions - DO NOT create new ones:**
-- `computeContentHash()` from `cli/src/core/skill-metadata.ts` - for skill/rule file frontmatter
+- `computeContentHash()` from `cli/src/core/managed-content.ts` - for skill/rule file frontmatter
 - `computeGlobalBlockHash()` from `cli/src/core/markers.ts` - for AGENTS.md global block
 - `computeRulesSectionHash()` from `cli/src/core/markers.ts` - for AGENTS.md rules section
 

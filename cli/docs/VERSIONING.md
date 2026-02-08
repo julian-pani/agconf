@@ -204,6 +204,14 @@ The generated workflows use unpinned CLI installation:
       "merged": true
     },
     "skills": ["conventional-commits", "git-branch-naming"],
+    "rules": {
+      "files": ["code-style.md", "security/api-auth.md"],
+      "content_hash": "sha256:def456..."
+    },
+    "agents": {
+      "files": ["reviewer.md"],
+      "content_hash": "sha256:789abc..."
+    },
     "targets": ["claude"],
     "marker_prefix": "agconf"
   },

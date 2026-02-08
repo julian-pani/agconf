@@ -3,6 +3,12 @@ import * as path from "node:path";
 import pc from "picocolors";
 import { readLockfile } from "../core/lockfile.js";
 import {
+  checkAllManagedFiles,
+  computeContentHash,
+  parseFrontmatter,
+  stripManagedMetadata,
+} from "../core/managed-content.js";
+import {
   computeGlobalBlockHash,
   computeRulesSectionHash,
   parseAgentsMd,
@@ -12,21 +18,11 @@ import {
   stripMetadataComments,
   stripRulesSectionMetadata,
 } from "../core/markers.js";
-import {
-  checkAllManagedFiles,
-  computeContentHash,
-  parseFrontmatter,
-  stripManagedMetadata,
-} from "../core/skill-metadata.js";
 
 export interface CheckOptions {
   quiet?: boolean;
   debug?: boolean;
-}
-
-export interface CheckResult {
-  synced: boolean;
-  modifiedFiles: ModifiedFileInfo[];
+  cwd?: string;
 }
 
 export interface ModifiedFileInfo {
@@ -45,7 +41,7 @@ export interface ModifiedFileInfo {
  * Exits with code 0 if all files are unchanged, code 1 if changes detected.
  */
 export async function checkCommand(options: CheckOptions = {}): Promise<void> {
-  const targetDir = process.cwd();
+  const targetDir = options.cwd ?? process.cwd();
 
   // Check if synced (lockfile exists)
   const result = await readLockfile(targetDir);

@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { WorkflowConfig as WorkflowConfigSchema } from "../../src/config/schema.js";
 import {
   extractWorkflowRef,
-  formatWorkflowRef,
   generateCheckWorkflow,
   generateSyncWorkflow,
   generateWorkflow,
@@ -336,21 +335,6 @@ jobs:
       expect(() => generateWorkflow(unknownWorkflow, "v1.0.0", DEFAULT_CONFIG)).toThrow(
         "Unknown workflow",
       );
-    });
-  });
-
-  describe("formatWorkflowRef", () => {
-    it("formats version with v prefix", () => {
-      expect(formatWorkflowRef("1.2.3", true)).toBe("v1.2.3");
-    });
-
-    it("preserves existing v prefix for version", () => {
-      expect(formatWorkflowRef("v1.2.3", true)).toBe("v1.2.3");
-    });
-
-    it("returns branch name as-is", () => {
-      expect(formatWorkflowRef("master", false)).toBe("master");
-      expect(formatWorkflowRef("develop", false)).toBe("develop");
     });
   });
 

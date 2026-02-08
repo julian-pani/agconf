@@ -39,11 +39,6 @@ export function getMetadataKeyNames(prefix: string = DEFAULT_METADATA_PREFIX) {
  * Note: Source and sync timestamp are tracked in lockfile
  * to avoid unnecessary file changes on every sync.
  */
-export interface ManagedMetadata {
-  managed: string; // "true"
-  content_hash: string; // e.g., "sha256:abc123..."
-}
-
 /**
  * Parse YAML frontmatter from markdown content.
  * Returns the frontmatter object and the body content.
@@ -231,7 +226,7 @@ export function isManaged(content: string, options: MetadataOptions = {}): boole
 /**
  * Result of checking a skill file for modifications.
  */
-export interface SkillFileCheckResult {
+interface SkillFileCheckResult {
   /** Relative path to the skill file */
   path: string;
   /** Skill name (directory name) */
@@ -381,7 +376,7 @@ export interface ManagedFileCheckResult {
 /**
  * Result of checking a rule file for modifications.
  */
-export interface RuleFileCheckResult {
+interface RuleFileCheckResult {
   /** Relative path to the rule file (from target dir) */
   path: string;
   /** Original rule path (e.g., "security/auth.md") */
@@ -395,7 +390,7 @@ export interface RuleFileCheckResult {
 /**
  * Result of checking an agent file for modifications.
  */
-export interface AgentFileCheckResult {
+interface AgentFileCheckResult {
   /** Relative path to the agent file (from target dir) */
   path: string;
   /** Agent file name (e.g., "code-reviewer.md") */
@@ -454,17 +449,6 @@ export async function checkAgentFiles(
   }
 
   return results;
-}
-
-/**
- * Get only the modified agent files.
- */
-export async function getModifiedAgentFiles(
-  targetDir: string,
-  options: MetadataOptions = {},
-): Promise<AgentFileCheckResult[]> {
-  const allFiles = await checkAgentFiles(targetDir, options);
-  return allFiles.filter((f) => f.hasChanges);
 }
 
 /**

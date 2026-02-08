@@ -22,7 +22,9 @@ When you're using AI coding agents like Claude Code across multiple repositories
               ┌─────────────────────────────────┐
               │  your-org/engineering-standards │  ← Canonical repo
               │  ├── AGENTS.md                  │    (source of truth)
-              │  └── skills/                    │
+              │  ├── skills/                    │
+              │  ├── rules/                     │
+              │  └── agents/                    │
               └───────────────┬─────────────────┘
                               │
                               │ agconf sync
@@ -94,8 +96,10 @@ This will:
 1. Fetch the latest release from your canonical repository
 2. Create `AGENTS.md` with global engineering standards
 3. Copy all skills to `.claude/skills/`
-4. Create workflow files for CI integration
-5. Pin everything to the release version
+4. Copy all rules to `.claude/rules/` (if configured, Claude targets)
+5. Copy all agents to `.claude/agents/` (if configured, Claude targets)
+6. Create workflow files for CI integration
+7. Pin everything to the release version
 
 ### 3. Set up automatic sync (optional)
 
@@ -238,6 +242,10 @@ This creates the standard canonical repository structure:
 │   └── example-skill/       # Example skill (optional)
 │       ├── SKILL.md
 │       └── references/
+├── rules/                   # Modular rule files (optional)
+│   └── code-style.md
+├── agents/                  # Sub-agent definitions (optional)
+│   └── reviewer.md
 └── .github/
     └── workflows/
         ├── sync-reusable.yml
@@ -289,6 +297,8 @@ When you run `agconf init` or `agconf sync` in a downstream repository:
 | `AGENTS.md` | Global + repo-specific standards |
 | `.claude/CLAUDE.md` | Reference to AGENTS.md |
 | `.claude/skills/` | Skill definitions |
+| `.claude/rules/` | Modular, topic-specific instructions (Claude targets) |
+| `.claude/agents/` | Sub-agent definitions (Claude targets) |
 | `.agconf/lockfile.json` | Sync metadata |
 | `.github/workflows/agconf-sync.yml` | Auto-sync workflow (calls canonical's `sync-reusable.yml`) |
 | `.github/workflows/agconf-check.yml` | File integrity check (calls canonical's `check-reusable.yml`) |

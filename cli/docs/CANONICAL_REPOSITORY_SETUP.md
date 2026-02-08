@@ -43,6 +43,10 @@ my-standards/
 │   └── example-skill/           # Example skill (optional)
 │       ├── SKILL.md
 │       └── references/
+├── rules/                       # Modular rule files (optional)
+│   └── code-style.md
+├── agents/                      # Sub-agent definitions (optional)
+│   └── reviewer.md
 └── .github/
     └── workflows/
         ├── sync-reusable.yml    # Reusable workflow for syncing

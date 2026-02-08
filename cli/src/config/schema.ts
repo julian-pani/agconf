@@ -67,10 +67,6 @@ export const CanonicalRepoConfigSchema = z.object({
   merge: MergeConfigSchema.default({}),
 });
 
-export type CanonicalMeta = z.infer<typeof CanonicalMetaSchema>;
-export type CanonicalPaths = z.infer<typeof CanonicalPathsSchema>;
-export type MarkersConfig = z.infer<typeof MarkersConfigSchema>;
-export type MergeConfig = z.infer<typeof MergeConfigSchema>;
 export type CanonicalRepoConfig = z.infer<typeof CanonicalRepoConfigSchema>;
 
 // =============================================================================
@@ -125,7 +121,6 @@ export const DownstreamConfigSchema = z.object({
   workflow: WorkflowConfigSchema.optional(),
 });
 
-export type SourceConfig = z.infer<typeof SourceConfigSchema>;
 export type WorkflowConfig = z.infer<typeof WorkflowConfigSchema>;
 export type DownstreamConfig = z.infer<typeof DownstreamConfigSchema>;
 

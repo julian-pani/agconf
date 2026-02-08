@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { parseFrontmatter as parseFrontmatterShared, serializeFrontmatter } from "./frontmatter.js";
-import { computeContentHash as computeSkillContentHash } from "./skill-metadata.js";
+import { computeContentHash } from "./managed-content.js";
 
 // =============================================================================
 // Interfaces
@@ -326,9 +326,9 @@ export function addRuleMetadata(rule: Rule, metadataPrefix: string): string {
 
   // Compute hash using the same function that check will use
   // This ensures hash consistency between sync and check operations
-  // Convert underscore prefix to dash prefix for skill-metadata compatibility
+  // Convert underscore prefix to dash prefix for managed-content compatibility
   const hashMetadataPrefix = metadataPrefix.replace(/_/g, "-");
-  const contentHash = computeSkillContentHash(rule.rawContent, {
+  const contentHash = computeContentHash(rule.rawContent, {
     metadataPrefix: hashMetadataPrefix,
   });
 

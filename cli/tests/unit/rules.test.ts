@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { computeContentHash } from "../../src/core/managed-content.js";
 import {
   addRuleMetadata,
   adjustHeadingLevels,
@@ -8,7 +9,6 @@ import {
   type Rule,
   updateAgentsMdWithRules,
 } from "../../src/core/rules.js";
-import { computeContentHash } from "../../src/core/skill-metadata.js";
 
 // =============================================================================
 // Test Data
@@ -661,10 +661,10 @@ describe("addRuleMetadata", () => {
     // 2. check reads the file and calls computeContentHash to verify
     // If these don't match, check will always report files as modified.
     //
-    // BUG BEING TESTED: The parseSimpleYaml function in skill-metadata.ts doesn't
+    // BUG BEING TESTED: The parseSimpleYaml function in managed-content.ts doesn't
     // handle arrays properly - it treats `paths:` as an empty object. This causes:
     // 1. During sync: addRuleMetadata hashes rawContent which has paths array
-    //    but stripManagedMetadata (in skill-metadata.ts) loses the array data
+    //    but stripManagedMetadata (in managed-content.ts) loses the array data
     // 2. During check: computeContentHash parses the synced file which now has
     //    the properly serialized paths array, resulting in a different hash
     //
