@@ -7,22 +7,28 @@ CLI to sync AI agent configurations across repositories.
 
 ## Documentation
 
-Full documentation, setup guides, and FAQ available on GitHub:
+- [Canonical Repository Setup](./docs/CANONICAL_REPOSITORY_SETUP.md) - Setting up a source repository
+- [Downstream Repository Configuration](./docs/DOWNSTREAM_REPOSITORY_CONFIGURATION.md) - Customizing sync behavior
+- [Versioning](./docs/VERSIONING.md) - How version management works
+- [File Integrity Checking](./docs/CHECK_FILE_INTEGRITY.md) - How integrity is enforced
+- [Contributing](./CONTRIBUTING.md) - Contributing guidelines
 
-**https://github.com/julian-pani/agconf**
+Full documentation available on GitHub: https://github.com/julian-pani/agconf
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `init` | Initialize repo from a canonical source |
-| `sync` | Sync content from canonical repo (fetches latest by default) |
-| `check` | Verify managed files are unchanged |
-| `upgrade-cli` | Upgrade the CLI to latest version from npm |
-| `canonical init` | Scaffold a new canonical repository |
-| `canonical update` | Update CLI version in workflow files |
-| `config show` | Show current configuration |
-| `completion install` | Install shell completions |
+| Command | Description | Example |
+|---------|-------------|---------|
+| `init` | Initialize repo from a canonical source | `agconf init --source org/standards` |
+| `sync` | Sync content from canonical repo (fetches latest by default) | `agconf sync` or `agconf sync --pinned` |
+| `check` | Verify managed files are unchanged | `agconf check` |
+| `upgrade-cli` | Upgrade the CLI to latest version from npm | `agconf upgrade-cli` |
+| `canonical init` | Scaffold a new canonical repository | `agconf canonical init` |
+| `canonical update` | Update CLI version in workflow files | `agconf canonical update` |
+| `config show` | Show current configuration | `agconf config show` |
+| `completion install` | Install shell completions | `agconf completion install` |
+
+For detailed command documentation, see the [Canonical Repository Setup](./docs/CANONICAL_REPOSITORY_SETUP.md) and [Versioning](./docs/VERSIONING.md) guides.
 
 
 ## Quick Start
@@ -47,143 +53,57 @@ agconf init --source your-org/engineering-standards
 
 ## CLAUDE.md Handling
 
-During sync, agconf consolidates any existing `CLAUDE.md` files:
-
-1. **Both locations checked**: Root `CLAUDE.md` and `.claude/CLAUDE.md`
-2. **Content merged**: Content from both files (after stripping `@AGENTS.md` references) is merged into the AGENTS.md repo block
-3. **Files consolidated**: Root `CLAUDE.md` is deleted, `.claude/CLAUDE.md` is created/updated with `@../AGENTS.md` reference
-
-This happens regardless of target (Claude or Codex), ensuring:
-- Existing CLAUDE.md instructions become available in AGENTS.md (which Codex reads directly)
-- The repo is prepared for Claude usage (which reads `.claude/CLAUDE.md` and follows the reference)
-- Single source of truth for all agent instructions
+During sync, agconf consolidates any existing `CLAUDE.md` files into `AGENTS.md` and creates `.claude/CLAUDE.md` with a reference to it. This ensures a single source of truth while maintaining compatibility with both Claude Code and GitHub Copilot.
 
 
 ## Rules
 
-Rules are modular, topic-specific project instructions that live in `.claude/rules/` for Claude targets. They allow you to organize standards by topic (security, testing, code style) rather than putting everything in a single AGENTS.md file.
+Rules are modular, topic-specific project instructions synced from your canonical repository. For Claude Code, they're placed in `.claude/rules/` as separate files. For GitHub Copilot, they're concatenated into AGENTS.md under a "Project Rules" section.
 
-### Configuration
+Rules support subdirectory nesting and can include `paths` frontmatter for conditional loading (Claude only).
 
-Add `rules_dir` to your canonical `agconf.yaml`:
+**Configuration**: Add `rules_dir: "rules"` to your canonical `agconf.yaml`
 
-```yaml
-version: "1.0.0"
-content:
-  instructions: "instructions/AGENTS.md"
-  skills_dir: "skills"
-  rules_dir: "rules"  # Optional - path to rules directory
-targets: ["claude", "codex"]
-```
+For detailed information on rules setup, directory structure, and target-specific behavior, see the Rules section in [Canonical Repository Setup](./docs/CANONICAL_REPOSITORY_SETUP.md).
 
-### Directory Structure
+## Agents
 
-Rules support arbitrary subdirectory nesting:
+Agents are Claude Code sub-agents (markdown files with YAML frontmatter) synced from your canonical repository. They define specialized AI assistants that can be invoked for specific tasks.
 
-```
-canonical-repo/
-├── agconf.yaml
-├── instructions/
-│   └── AGENTS.md
-├── skills/
-└── rules/
-    ├── code-style.md
-    ├── security/
-    │   ├── api-auth.md
-    │   └── data-handling.md
-    └── testing/
-        └── unit-tests.md
-```
+**Target-specific behavior:**
+- **Claude Code**: Agents are copied to `.claude/agents/` as flat files with metadata for change tracking
+- **GitHub Copilot**: Not supported (Copilot does not have sub-agents)
 
-### Target-Specific Behavior
+**Configuration**: Add `agents_dir: "agents"` to your canonical `agconf.yaml`
 
-**Claude**: Rules are copied to `.claude/rules/` preserving the directory structure. Each rule file gets metadata added to track sync status.
-
-```
-downstream-repo/
-└── .claude/
-    └── rules/
-        ├── code-style.md
-        ├── security/
-        │   └── api-auth.md
-        └── testing/
-            └── unit-tests.md
-```
-
-**Codex**: Rules are concatenated into AGENTS.md under a `# Project Rules` section. Heading levels are automatically adjusted (h1 becomes h2, etc.) to nest under the section header.
-
-```markdown
-<!-- agconf:rules:start -->
-# Project Rules
-
-<!-- Rule: code-style.md -->
-## Code Style Guidelines
-...
-
-<!-- Rule: security/api-auth.md -->
-## API Authentication
-...
-<!-- agconf:rules:end -->
-```
-
-### Path-Specific Rules
-
-Rules can include `paths` frontmatter for conditional loading (a Claude feature):
+Each agent file requires frontmatter with `name` and `description` fields:
 
 ```markdown
 ---
-paths:
-  - "src/api/**/*.ts"
-  - "lib/api/**/*.ts"
+name: code-reviewer
+description: Reviews code changes for quality and best practices
 ---
 
-# API Authentication Rules
+# Code Reviewer Agent
+
+## Instructions
 ...
 ```
 
-For Claude targets, the `paths` frontmatter is preserved. For Codex targets (which don't support conditional loading), paths are included as comments in AGENTS.md:
-
-```markdown
-<!-- Rule: security/api-auth.md -->
-<!-- Applies to: src/api/**/*.ts, lib/api/**/*.ts -->
-## API Authentication Rules
-```
-
-### Backward Compatibility
-
-The `rules_dir` configuration is optional. Existing canonical repositories without rules continue to work unchanged.
+For detailed information on agents setup and file format, see the Agents section in [Canonical Repository Setup](./docs/CANONICAL_REPOSITORY_SETUP.md).
 
 ## Downstream Configuration
 
-Each downstream repository can customize sync behavior by creating `.agconf/config.yaml`. This file is optional and is never overwritten by sync.
+Downstream repositories can optionally customize sync behavior by creating `.agconf/config.yaml`. This allows you to control commit strategy (direct commits vs pull requests), commit messages, and PR reviewers.
 
-### Available Settings
-
+**Example**: Set direct commits instead of creating PRs:
 ```yaml
-# .agconf/config.yaml - Downstream repo configuration
-
 workflow:
-  # Commit strategy: "pr" (default) creates a pull request, "direct" commits directly
   commit_strategy: direct
-
-  # Custom commit message for sync commits
   commit_message: "chore: sync engineering standards"
-
-  # PR-specific settings (only used when commit_strategy: pr)
-  pr_branch_prefix: "agconf/sync"
-  pr_title: "chore(agconf): sync agent configuration"
-
-  # Comma-separated list of reviewers for PRs
-  reviewers: "alice,bob"
 ```
 
-### When to Use
-
-- **`commit_strategy: direct`**: For repos where you want updates applied immediately without PR review
-- **`commit_strategy: pr`** (default): For repos where you want to review changes before merging
-- **`reviewers`**: Automatically request reviews from specific team members
-
-This config is separate from the canonical config (`agconf.yaml`) - downstream config only contains user preferences for how sync operates.
+For complete configuration reference and available settings, see [Downstream Repository Configuration](./docs/DOWNSTREAM_REPOSITORY_CONFIGURATION.md).
 
 ## License
 

@@ -12,7 +12,10 @@ This document explains how agconf detects and prevents unauthorized modification
 
 agconf manages certain files in your repository:
 - **AGENTS.md** (global block) - Company-wide engineering standards
+- **AGENTS.md** (rules section for Codex) - Concatenated rules for GitHub Copilot
 - **Skill files** (`.claude/skills/*/SKILL.md`) - Synced skill definitions
+- **Rule files** (`.claude/rules/**/*.md`) - Modular project instructions (Claude only)
+- **Agent files** (`.claude/agents/*.md`) - Claude Code sub-agents (Claude only)
 
 These files should not be manually edited because changes will be overwritten on the next sync. agconf provides multiple layers of protection:
 
@@ -26,14 +29,24 @@ These files should not be manually edited because changes will be overwritten on
 
 Each managed file stores a content hash that allows agconf to detect modifications:
 
-**For skill files** (`SKILL.md`):
-- Hash is stored in YAML frontmatter as `agent_conf_content_hash`
+**For skill files** (`.claude/skills/*/SKILL.md`):
+- Hash is stored in YAML frontmatter as `agconf_content_hash`
 - Hash is computed from content excluding agconf metadata
-- Example: `agent_conf_content_hash: "sha256:abc123def456"`
+- Example: `agconf_content_hash: "sha256:abc123def456"`
+
+**For rule files** (`.claude/rules/**/*.md`) and **agent files** (`.claude/agents/*.md`):
+- Hash is stored in YAML frontmatter as `agconf_content_hash`
+- Hash is computed from content excluding agconf metadata
+- Example: `agconf_content_hash: "sha256:abc123def456"`
 
 **For AGENTS.md** (global block):
 - Hash is stored in an HTML comment within the global block
 - Hash is computed from the global block content excluding metadata comments
+- Example: `<!-- Content hash: sha256:abc123def456 -->`
+
+**For AGENTS.md** (rules section for Codex):
+- Hash is stored in an HTML comment within the rules section markers
+- Hash is computed from the concatenated rules content
 - Example: `<!-- Content hash: sha256:abc123def456 -->`
 
 ### Detection Logic
@@ -158,6 +171,8 @@ on:
     paths:
       - 'AGENTS.md'
       - '.claude/skills/**'
+      - '.claude/rules/**'
+      - '.claude/agents/**'
 
 jobs:
   check:
@@ -209,9 +224,9 @@ If you need custom content:
 - Edit only the repo-specific block (between `<!-- agconf:repo:start -->` and `<!-- agconf:repo:end -->`)
 - The global block should never be edited manually
 
-**For skills:**
-- Create a new custom skill in `.claude/skills/` with a different name
-- Custom skills (without `agent_conf_managed: "true"`) are not checked
+**For skills, rules, or agents:**
+- Create a new custom file in the appropriate directory with a different name
+- Custom files (without `agconf_managed: "true"` in frontmatter) are not checked
 
 ## Troubleshooting
 

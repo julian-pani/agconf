@@ -71,11 +71,13 @@ meta:
   organization: ACME Corp      # Your organization name (optional)
 content:
   instructions: instructions/AGENTS.md
-  skills_dir: skills
+  skills_dir: skills           # Directory for reusable skills
+  rules_dir: rules             # Optional - modular project instructions
+  agents_dir: agents           # Optional - Claude Code sub-agents
 targets:
-  - claude                     # Supported AI agents
+  - claude                     # Supported AI agents: "claude" or "codex"
 markers:
-  prefix: agconf           # Marker prefix for managed content
+  prefix: agconf               # Marker prefix for managed content
 merge:
   preserve_repo_content: true  # Preserve downstream repo-specific content
 ```
@@ -86,6 +88,8 @@ merge:
 |-------|-------------|---------|
 | `meta.name` | Unique identifier for your standards | Directory name |
 | `meta.organization` | Display name for your org | (none) |
+| `content.rules_dir` | Directory for modular rules (optional) | (none) |
+| `content.agents_dir` | Directory for Claude sub-agents (optional) | (none) |
 | `targets` | AI agent platforms to support | `["claude"]` |
 | `markers.prefix` | Prefix for content markers | `agconf` |
 
@@ -163,6 +167,164 @@ skills/my-skill/
     ├── template.yaml
     └── example.ts
 ```
+
+## Rules
+
+Rules are modular, topic-specific project instructions that allow you to organize standards by topic rather than putting everything in a single AGENTS.md file.
+
+### Configuration
+
+Add `rules_dir` to your canonical `agconf.yaml`:
+
+```yaml
+content:
+  instructions: instructions/AGENTS.md
+  skills_dir: skills
+  rules_dir: rules  # Path to rules directory
+```
+
+### Directory Structure
+
+Rules support arbitrary subdirectory nesting:
+
+```
+canonical-repo/
+├── agconf.yaml
+├── instructions/
+├── skills/
+└── rules/
+    ├── code-style.md
+    ├── security/
+    │   ├── api-auth.md
+    │   └── data-handling.md
+    └── testing/
+        └── unit-tests.md
+```
+
+### Creating a Rule
+
+Each rule is a markdown file that can optionally include frontmatter with `paths` for conditional loading:
+
+```markdown
+---
+paths:
+  - "src/api/**/*.ts"
+  - "lib/api/**/*.ts"
+---
+
+# API Authentication Rules
+
+## Overview
+All API endpoints must implement proper authentication...
+
+## Requirements
+1. Use JWT tokens
+2. Validate on every request
+...
+```
+
+### Target-Specific Behavior
+
+**Claude Code**: Rules are copied to `.claude/rules/` preserving the directory structure. Each rule file gets metadata frontmatter (`agconf_managed`, `agconf_content_hash`, `agconf_source_path`) added to track sync status.
+
+```
+downstream-repo/
+└── .claude/
+    └── rules/
+        ├── code-style.md
+        ├── security/
+        │   └── api-auth.md
+        └── testing/
+            └── unit-tests.md
+```
+
+**GitHub Copilot**: Rules are concatenated into AGENTS.md under a `# Project Rules` section between `<!-- agconf:rules:start/end -->` markers. Heading levels are automatically adjusted (h1 becomes h2, etc.) to nest properly. Source attribution comments (`<!-- Rule: path/to/rule.md -->`) are included for each rule.
+
+For Copilot, `paths` frontmatter is included as comments since Copilot doesn't support conditional loading:
+
+```markdown
+<!-- agconf:rules:start -->
+# Project Rules
+
+<!-- Rule: security/api-auth.md -->
+<!-- Applies to: src/api/**/*.ts, lib/api/**/*.ts -->
+## API Authentication Rules
+...
+<!-- agconf:rules:end -->
+```
+
+## Agents
+
+Agents are Claude Code sub-agents that define specialized AI assistants for specific tasks. Each agent is a markdown file with YAML frontmatter.
+
+### Configuration
+
+Add `agents_dir` to your canonical `agconf.yaml`:
+
+```yaml
+content:
+  instructions: instructions/AGENTS.md
+  skills_dir: skills
+  agents_dir: agents  # Path to agents directory
+targets:
+  - claude  # Agents only work with Claude Code
+```
+
+### Directory Structure
+
+Agents are stored as flat files in the agents directory:
+
+```
+canonical-repo/
+├── agconf.yaml
+├── instructions/
+├── skills/
+└── agents/
+    ├── code-reviewer.md
+    ├── test-writer.md
+    └── doc-planner.md
+```
+
+### Creating an Agent
+
+Each agent requires frontmatter with `name` and `description` fields:
+
+```markdown
+---
+name: code-reviewer
+description: Reviews code changes for quality and best practices
+tools:
+  - Read
+  - Grep
+  - Bash
+---
+
+# Code Reviewer Agent
+
+You are a code reviewer. Your job is to analyze code changes and provide constructive feedback.
+
+## Review Process
+
+1. Read the files that were changed
+2. Check for common issues
+3. Provide specific suggestions
+...
+```
+
+### Target-Specific Behavior
+
+**Claude Code**: Agents are copied to `.claude/agents/` as flat files. Metadata frontmatter (`agconf_managed`, `agconf_content_hash`) is added for change tracking.
+
+```
+downstream-repo/
+└── .claude/
+    └── agents/
+        ├── code-reviewer.md
+        ├── test-writer.md
+        └── doc-planner.md
+```
+
+**GitHub Copilot**: Not supported. Copilot does not have sub-agents. When agents exist in the canonical repository but only Codex target is configured, a warning is displayed and agents are skipped.
 
 ## GitHub Workflows
 
