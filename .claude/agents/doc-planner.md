@@ -5,7 +5,7 @@ tools:
   - Read
   - Glob
   - Grep
-model: sonnet
+model: opus
 memory: project
 skills:
   - documentation-standards

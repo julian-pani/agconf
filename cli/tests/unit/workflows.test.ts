@@ -299,10 +299,10 @@ jobs:
       expect(content).toContain("push:");
     });
 
-    it("watches skills directories", () => {
+    it("watches .claude and .codex directories", () => {
       const content = generateCheckWorkflow("v1.0.0", DEFAULT_CONFIG);
-      expect(content).toContain(".claude/skills/**");
-      expect(content).toContain(".codex/skills/**");
+      expect(content).toContain(".claude/**");
+      expect(content).toContain(".codex/**");
       expect(content).toContain("AGENTS.md");
     });
 

@@ -418,7 +418,7 @@ Each downstream repository can optionally customize sync behavior (commit strate
 
 For the sync workflows to function, downstream repositories need read access to the canonical repository, and optionally the canonical repository may need write access to downstream repos to push updates.
 
-**Note:** The `check` workflow (`agconf-check.yml`) does **not** require any tokens or secrets. It only runs `agconf check` to verify file integrity within the repository.
+**Note:** The `check` workflow (`agconf-check.yml`) does **not** require any tokens or secrets. It only runs `agconf check` to verify file integrity within the repository. The workflow is triggered when changes are detected in `AGENTS.md`, `.claude/**`, or `.codex/**`.
 
 There are two authentication methods:
 1. **GitHub App** (recommended) - More secure, granular permissions, higher rate limits

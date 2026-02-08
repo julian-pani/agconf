@@ -282,16 +282,16 @@ name: ${workflowPrefix} Check
 on:
   pull_request:
     paths:
-      - '.claude/skills/**'
-      - '.codex/skills/**'
+      - '.claude/**'
+      - '.codex/**'
       - 'AGENTS.md'
   push:
     branches:
       - main
       - master
     paths:
-      - '.claude/skills/**'
-      - '.codex/skills/**'
+      - '.claude/**'
+      - '.codex/**'
       - 'AGENTS.md'
 
 concurrency:

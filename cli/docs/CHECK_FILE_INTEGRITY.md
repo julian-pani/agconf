@@ -170,9 +170,8 @@ on:
   pull_request:
     paths:
       - 'AGENTS.md'
-      - '.claude/skills/**'
-      - '.claude/rules/**'
-      - '.claude/agents/**'
+      - '.claude/**'
+      - '.codex/**'
 
 jobs:
   check:
