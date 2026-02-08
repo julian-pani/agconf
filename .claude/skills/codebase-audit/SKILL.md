@@ -377,6 +377,15 @@ After all sub-agents complete, create `consolidated-plan.md`:
 
 If the user wants to proceed with fixes, spawn sub-agents for each priority tier, starting with critical issues.
 
+### Commit Strategy
+
+**Each issue type must be committed separately** for easier PR review. Group related fixes of the same kind into one commit, but keep different issue types in separate commits.
+
+- Group by issue type, not by file. For example, "remove unused imports" across multiple files is one commit, but "remove unused imports" and "simplify error handling" are two separate commits.
+- Use descriptive commit messages (e.g., `fix: remove unused imports`, `refactor: extract shared hash utility`)
+- Follow the repository's commit conventions (check AGENTS.md / CLAUDE.md)
+- Update `progress.md` after each commit to track what has been completed
+
 ## Tips for Effective Audits
 
 - **Scope appropriately**: For large codebases, audit specific modules or recent changes
