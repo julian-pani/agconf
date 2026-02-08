@@ -35,7 +35,7 @@
     "@clack/prompts": "^0.7.0",
     "commander": "^14.0.3",
     "fast-glob": "^3.3.2",
-    "ora": "^8.0.1",
+    "ora": "^9.3.0",
     "picocolors": "^1.0.1",
     "simple-git": "^3.25.0",
     "tabtab": "^3.0.2",
