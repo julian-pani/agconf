@@ -1,3 +1,13 @@
+## [0.7.0](https://github.com/julian-pani/agconf/compare/v0.6.2...v0.7.0) (2026-02-08)
+
+### Features
+
+* add documentation standards skill and doc maintenance agents ([e01f7d5](https://github.com/julian-pani/agconf/commit/e01f7d56777a870e6de335b4536e51257440c6da))
+
+### Bug Fixes
+
+* add some skills ([5f465e1](https://github.com/julian-pani/agconf/commit/5f465e11fb2fb54d4f7c579a728e77d7799272f4))
+
 ## [0.6.2](https://github.com/julian-pani/agconf/compare/v0.6.1...v0.6.2) (2026-02-06)
 
 ### Bug Fixes
