@@ -1,3 +1,9 @@
+## [0.7.2](https://github.com/julian-pani/agconf/compare/v0.7.1...v0.7.2) (2026-02-08)
+
+### Bug Fixes
+
+* broaden check workflow path filters to cover all managed content ([1bb485f](https://github.com/julian-pani/agconf/commit/1bb485f69312b4829992c6ad72f7df6cf1413922))
+
 ## [0.7.1](https://github.com/julian-pani/agconf/compare/v0.7.0...v0.7.1) (2026-02-08)
 
 ### Bug Fixes
