@@ -33,7 +33,7 @@
   },
   "dependencies": {
     "@clack/prompts": "^0.7.0",
-    "commander": "^12.1.0",
+    "commander": "^14.0.3",
     "fast-glob": "^3.3.2",
     "ora": "^8.0.1",
     "picocolors": "^1.0.1",
