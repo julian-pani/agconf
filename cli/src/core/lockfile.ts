@@ -70,11 +70,6 @@ export interface WriteLockfileOptions {
     files: string[];
     content_hash: string;
   };
-  /**
-   * Per-skill content hashes for non-SKILL.md files (references/, scripts/, etc.).
-   * Outer key: skill name. Inner key: path relative to the skill dir. Value: content hash.
-   */
-  skillFiles?: Record<string, Record<string, string>>;
 }
 
 export async function writeLockfile(
@@ -98,7 +93,6 @@ export async function writeLockfile(
       marker_prefix: options.markerPrefix,
       rules: options.rules,
       agents: options.agents,
-      skill_files: options.skillFiles,
     },
     cli_version: getCliVersion(),
   };

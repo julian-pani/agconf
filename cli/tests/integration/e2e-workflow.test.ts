@@ -334,10 +334,11 @@ describe("e2e workflow: full sync + check lifecycle", () => {
       expect(checkResult.exitCode).toBe(1);
     });
 
-    // Regression for https://github.com/julian-pani/agconf/issues — propose
-    // previously globbed only "*/SKILL.md" inside a skill directory, silently
-    // dropping edits to references/, scripts/, and other sibling files.
-    it("should detect tampered non-SKILL.md files inside a managed skill", async () => {
+    // Regression for the bug where propose globbed only "*/SKILL.md" inside a
+    // skill directory and silently dropped edits to sibling files.
+    // detectProposedChanges now clones canonical and byte-compares every
+    // non-SKILL.md file inside each managed skill dir.
+    it("propose detects tampered non-SKILL.md files inside a managed skill", async () => {
       await setupCanonicalRepo(canonicalDir, {
         skills: { "python-logging": SKILL_CONTENT },
       });
@@ -346,17 +347,14 @@ describe("e2e workflow: full sync + check lifecycle", () => {
       await fs.mkdir(refsDir, { recursive: true });
       await fs.writeFile(path.join(refsDir, "template.py"), "print('original')", "utf-8");
 
-      await runInit(targetDir, canonicalDir);
+      // detectProposedChanges clones canonical, which requires it to be a real
+      // git repo. setupCanonicalRepo doesn't init git itself.
+      execSync("git init", { cwd: canonicalDir, stdio: "ignore" });
+      execSync("git config user.email t@t.com", { cwd: canonicalDir, stdio: "ignore" });
+      execSync("git config user.name Test", { cwd: canonicalDir, stdio: "ignore" });
+      execSync("git add -A && git commit -m init", { cwd: canonicalDir, stdio: "ignore" });
 
-      // Sanity: lockfile recorded a hash for the asset
-      const lockfileContent = await fs.readFile(
-        path.join(targetDir, ".agconf", "lockfile.json"),
-        "utf-8",
-      );
-      const lockfile = JSON.parse(lockfileContent);
-      expect(lockfile.content.skill_files?.["python-logging"]?.["references/template.py"]).toMatch(
-        /^sha256:[a-f0-9]{12}$/,
-      );
+      await runInit(targetDir, canonicalDir);
 
       // Tamper with the synced reference file
       const downstreamPath = path.join(
@@ -369,8 +367,10 @@ describe("e2e workflow: full sync + check lifecycle", () => {
       );
       await fs.writeFile(downstreamPath, "print('TAMPERED')", "utf-8");
 
-      const checkResult = await runCheck(targetDir);
-      expect(checkResult.exitCode).toBe(1);
+      const { detectProposedChanges } = await import("../../src/core/propose.js");
+      const result = await detectProposedChanges({ cwd: targetDir });
+      const paths = result.changes.map((c) => c.canonicalPath);
+      expect(paths).toContain("skills/python-logging/references/template.py");
     });
 
     it("should detect tampered rule file", async () => {

@@ -453,17 +453,6 @@ export async function sync(
     }
   }
 
-  // Compute per-file content hashes for non-SKILL.md files in each skill.
-  // These let `check` and `propose` detect modifications to references/, scripts/, etc.
-  const skillFiles: Record<string, Record<string, string>> = {};
-  for (const skillName of skillNames) {
-    const skillDir = path.join(resolvedSource.skillsPath, skillName);
-    const fileHashes = await collectSkillFileHashes(skillDir);
-    if (Object.keys(fileHashes).length > 0) {
-      skillFiles[skillName] = fileHashes;
-    }
-  }
-
   // Process each target
   const targetResults: TargetResult[] = [];
   let totalCopied = 0;
@@ -558,9 +547,6 @@ export async function sync(
       content_hash: agentsResult.contentHash,
     };
   }
-  if (Object.keys(skillFiles).length > 0) {
-    lockfileOptions.skillFiles = skillFiles;
-  }
   const lockfile = await writeLockfile(targetDir, lockfileOptions);
 
   const result: SyncResult = {
@@ -612,48 +598,6 @@ export async function sync(
   }
 
   return result;
-}
-
-/**
- * Hash a buffer using the standard agconf format (sha256:<12-hex>).
- * Used for non-SKILL.md files which may be binary (templates, scripts, images).
- */
-export function hashBuffer(content: Buffer): string {
-  const hash = createHash("sha256").update(content).digest("hex");
-  return `sha256:${hash.slice(0, 12)}`;
-}
-
-/**
- * Walk a skill directory and return per-file content hashes for every file
- * except SKILL.md. Paths are returned with POSIX separators relative to the
- * skill directory so lockfiles stay portable across platforms.
- */
-export async function collectSkillFileHashes(skillDir: string): Promise<Record<string, string>> {
-  const hashes: Record<string, string> = {};
-
-  let files: string[];
-  try {
-    files = await fg("**/*", {
-      cwd: skillDir,
-      onlyFiles: true,
-      dot: true,
-    });
-  } catch {
-    return hashes;
-  }
-
-  for (const relPath of files) {
-    if (relPath === "SKILL.md") continue;
-    const fullPath = path.join(skillDir, relPath);
-    try {
-      const bytes = await fs.readFile(fullPath);
-      hashes[relPath] = hashBuffer(bytes);
-    } catch {
-      // Expected: file may have been removed between glob and read
-    }
-  }
-
-  return hashes;
 }
 
 interface SkillSyncResult {

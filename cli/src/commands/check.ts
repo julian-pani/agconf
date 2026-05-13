@@ -28,17 +28,13 @@ export interface CheckOptions {
 
 export interface ModifiedFileInfo {
   path: string;
-  type: "skill" | "skill-asset" | "agents" | "rule" | "rules-section" | "agent";
+  type: "skill" | "agents" | "rule" | "rules-section" | "agent";
   expectedHash: string;
   currentHash: string;
   /** Rule source path if type is rule */
   rulePath?: string;
   /** Agent path if type is agent */
   agentPath?: string;
-  /** Skill name if type is skill-asset */
-  skillName?: string;
-  /** Sub-path within the skill dir if type is skill-asset */
-  skillFilePath?: string;
 }
 
 /**
@@ -85,12 +81,7 @@ export async function checkCommand(options: CheckOptions = {}): Promise<void> {
   const modifiedFiles: ModifiedFileInfo[] = [];
 
   // Build options for checking managed files
-  const checkOptions: Parameters<typeof checkAllManagedFiles>[2] = markerPrefix
-    ? { markerPrefix, metadataPrefix: markerPrefix }
-    : {};
-  if (lockfile.content.skill_files) {
-    checkOptions.skillFileHashes = lockfile.content.skill_files;
-  }
+  const checkOptions = markerPrefix ? { markerPrefix, metadataPrefix: markerPrefix } : {};
 
   // Check all managed files
   const allFiles = await checkAllManagedFiles(targetDir, targets, checkOptions);
@@ -139,17 +130,6 @@ export async function checkCommand(options: CheckOptions = {}): Promise<void> {
         expectedHash: storedHash,
         currentHash,
       });
-    } else if (file.type === "skill-asset") {
-      // Non-SKILL.md file inside a managed skill (references/foo.py, scripts/bar.sh, ...)
-      const assetInfo: ModifiedFileInfo = {
-        path: file.path,
-        type: "skill-asset",
-        expectedHash: file.expectedHash ?? "untracked",
-        currentHash: file.currentHash ?? "unknown",
-      };
-      if (file.skillName) assetInfo.skillName = file.skillName;
-      if (file.skillFilePath) assetInfo.skillFilePath = file.skillFilePath;
-      modifiedFiles.push(assetInfo);
     } else if (file.type === "rule") {
       // Get hash info for rule file
       const rulePath = path.join(targetDir, file.path);
@@ -300,8 +280,6 @@ export async function checkCommand(options: CheckOptions = {}): Promise<void> {
       label = ` (rule: ${file.rulePath})`;
     } else if (file.type === "agent" && file.agentPath) {
       label = ` (agent: ${file.agentPath})`;
-    } else if (file.type === "skill-asset" && file.skillName && file.skillFilePath) {
-      label = ` (skill asset: ${file.skillName}/${file.skillFilePath})`;
     }
     console.log(`  ${file.path}${pc.dim(label)}`);
     console.log(`    Expected hash: ${pc.dim(file.expectedHash)}`);

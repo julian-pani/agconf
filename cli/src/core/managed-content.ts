@@ -14,15 +14,6 @@ import {
   parseRulesSection,
 } from "./markers.js";
 
-/**
- * Hash a buffer using the standard agconf format (sha256:<12-hex>).
- * Mirrors the format used by the sync path for non-SKILL.md skill files.
- */
-function hashBuffer(content: Buffer): string {
-  const hash = createHash("sha256").update(content).digest("hex");
-  return `sha256:${hash.slice(0, 12)}`;
-}
-
 // Default metadata prefix
 const DEFAULT_METADATA_PREFIX = "agconf";
 
@@ -245,34 +236,20 @@ interface SkillFileCheckResult {
   path: string;
   /** Skill name (directory name) */
   skillName: string;
-  /** Path relative to the skill directory (e.g. "SKILL.md", "references/foo.py") */
-  skillFilePath: string;
   /** Whether the file is managed by agconf */
   isManaged: boolean;
   /** Whether the file has been manually modified */
   hasChanges: boolean;
-  /** Expected hash for non-SKILL.md files (from lockfile), if any */
-  expectedHash?: string;
-  /** Current hash for non-SKILL.md files, if any */
-  currentHash?: string;
 }
 
 /**
  * Check all synced skill files in a target directory for manual modifications.
- * Reports SKILL.md (via frontmatter hash) and all non-SKILL.md files
- * (e.g. references/, scripts/) inside managed skill directories. Non-SKILL.md
- * files are detected as modified when their content hash differs from the
- * hash recorded in the lockfile at sync time.
- *
- * @param skillFileHashes Optional per-skill map of recorded hashes for
- *   non-SKILL.md files (skillName → relativePath → hash). When absent, only
- *   SKILL.md modifications are reported (legacy behavior).
+ * Returns information about each managed SKILL.md file found.
  */
 export async function checkSkillFiles(
   targetDir: string,
   targets: string[] = ["claude"],
   options: MetadataOptions = {},
-  skillFileHashes: Record<string, Record<string, string>> = {},
 ): Promise<SkillFileCheckResult[]> {
   const results: SkillFileCheckResult[] = [];
 
@@ -287,84 +264,30 @@ export async function checkSkillFiles(
       continue;
     }
 
-    // Find all SKILL.md files (each one anchors a managed skill directory)
-    const skillMdFiles = await fg("*/SKILL.md", {
+    // Find all SKILL.md files
+    const skillFiles = await fg("*/SKILL.md", {
       cwd: skillsDir,
       absolute: false,
     });
 
-    for (const skillMdFile of skillMdFiles) {
-      const skillName = path.dirname(skillMdFile);
-      const skillDir = path.join(skillsDir, skillName);
-      const skillMdFullPath = path.join(skillsDir, skillMdFile);
-      const skillMdRelativePath = path.join(`.${target}`, "skills", skillMdFile);
+    for (const skillFile of skillFiles) {
+      const fullPath = path.join(skillsDir, skillFile);
+      const skillName = path.dirname(skillFile);
+      const relativePath = path.join(`.${target}`, "skills", skillFile);
 
-      let skillIsManaged = false;
       try {
-        const content = await fs.readFile(skillMdFullPath, "utf-8");
-        skillIsManaged = isManaged(content, options);
-        const hasChanges = skillIsManaged && hasManualChanges(content, options);
+        const content = await fs.readFile(fullPath, "utf-8");
+        const fileIsManaged = isManaged(content, options);
+        const hasChanges = fileIsManaged && hasManualChanges(content, options);
 
         results.push({
-          path: skillMdRelativePath,
+          path: relativePath,
           skillName,
-          skillFilePath: "SKILL.md",
-          isManaged: skillIsManaged,
+          isManaged: fileIsManaged,
           hasChanges,
         });
       } catch (_error) {
         // Expected: file read may fail, skip this skill file
-      }
-
-      if (!skillIsManaged) {
-        continue;
-      }
-
-      // Walk the rest of the skill directory: references/, scripts/, etc.
-      // These have no frontmatter, so we compare their content hash against
-      // the hash recorded in the lockfile when the skill was last synced.
-      const recordedHashes = skillFileHashes[skillName] ?? {};
-      const subFiles = await fg("**/*", {
-        cwd: skillDir,
-        onlyFiles: true,
-        dot: true,
-      });
-
-      for (const subFile of subFiles) {
-        if (subFile === "SKILL.md") continue;
-
-        const subFullPath = path.join(skillDir, subFile);
-        const subRelativePath = path.join(`.${target}`, "skills", skillName, subFile);
-        const expectedHash = recordedHashes[subFile];
-
-        let currentHash: string;
-        try {
-          const bytes = await fs.readFile(subFullPath);
-          currentHash = hashBuffer(bytes);
-        } catch (_error) {
-          // Expected: file may have vanished between glob and read
-          continue;
-        }
-
-        // Treat the file as managed-by-association with its skill.
-        // hasChanges fires when:
-        //   - we have a recorded hash and it differs (modified), OR
-        //   - there is no recorded hash for this file (added downstream)
-        const hasRecordedHash = expectedHash !== undefined;
-        const hasChanges = hasRecordedHash ? expectedHash !== currentHash : true;
-
-        const result: SkillFileCheckResult = {
-          path: subRelativePath,
-          skillName,
-          skillFilePath: subFile,
-          isManaged: true,
-          hasChanges,
-          currentHash,
-        };
-        if (expectedHash !== undefined) {
-          result.expectedHash = expectedHash;
-        }
-        results.push(result);
       }
     }
   }
@@ -438,15 +361,9 @@ export interface ManagedFileCheckResult {
   /** Relative path to the file */
   path: string;
   /** Type of file */
-  type: "skill" | "skill-asset" | "agents" | "rule" | "rules-section" | "agent";
-  /** Skill name if type is skill or skill-asset */
+  type: "skill" | "agents" | "rule" | "rules-section" | "agent";
+  /** Skill name if type is skill */
   skillName?: string;
-  /** Path relative to the skill dir, if type is skill-asset (e.g. "references/foo.py") */
-  skillFilePath?: string;
-  /** Hash recorded in the lockfile for skill-asset files, if any */
-  expectedHash?: string;
-  /** Current hash on disk for skill-asset files */
-  currentHash?: string;
   /** Rule source path if type is rule (e.g., "security/auth.md") */
   rulePath?: string;
   /** Agent path if type is agent (e.g., "code-reviewer.md") */
@@ -590,11 +507,6 @@ export interface CheckManagedFilesOptions {
   markerPrefix?: string;
   /** Metadata prefix for skill files (default: "agconf") */
   metadataPrefix?: string;
-  /**
-   * Per-skill content hashes for non-SKILL.md files, as recorded in the lockfile.
-   * Used to detect manual modifications to references/, scripts/, etc.
-   */
-  skillFileHashes?: Record<string, Record<string, string>>;
 }
 
 /**
@@ -621,36 +533,17 @@ export async function checkAllManagedFiles(
     results.push(rulesSectionResult);
   }
 
-  // Check skill files (SKILL.md + non-SKILL.md assets like references/, scripts/)
-  const skillFiles = await checkSkillFiles(
-    targetDir,
-    targets,
-    metadataOptions,
-    options.skillFileHashes ?? {},
-  );
+  // Check skill files
+  const skillFiles = await checkSkillFiles(targetDir, targets, metadataOptions);
   for (const skill of skillFiles) {
-    if (!skill.isManaged) continue;
-    if (skill.skillFilePath === "SKILL.md") {
+    if (skill.isManaged) {
       results.push({
         path: skill.path,
         type: "skill",
         skillName: skill.skillName,
-        skillFilePath: skill.skillFilePath,
         isManaged: skill.isManaged,
         hasChanges: skill.hasChanges,
       });
-    } else {
-      const entry: ManagedFileCheckResult = {
-        path: skill.path,
-        type: "skill-asset",
-        skillName: skill.skillName,
-        skillFilePath: skill.skillFilePath,
-        isManaged: skill.isManaged,
-        hasChanges: skill.hasChanges,
-      };
-      if (skill.currentHash !== undefined) entry.currentHash = skill.currentHash;
-      if (skill.expectedHash !== undefined) entry.expectedHash = skill.expectedHash;
-      results.push(entry);
     }
   }
 

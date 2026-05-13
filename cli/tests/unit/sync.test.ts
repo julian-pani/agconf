@@ -2,13 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addManagedMetadata, isManaged } from "../../src/core/managed-content.js";
-import {
-  collectSkillFileHashes,
-  deleteOrphanedSkills,
-  findOrphanedSkills,
-  hashBuffer,
-  syncRules,
-} from "../../src/core/sync.js";
+import { deleteOrphanedSkills, findOrphanedSkills, syncRules } from "../../src/core/sync.js";
 
 describe("sync", () => {
   describe("findOrphanedSkills", () => {
@@ -302,58 +296,6 @@ description: A test skill
         expect(result.skipped).toEqual(["orphan-skill"]);
         expect(await skillExists("orphan-skill", "claude")).toBe(true);
       });
-    });
-  });
-
-  describe("hashBuffer", () => {
-    it("produces a stable sha256:<12-hex> hash for given bytes", () => {
-      const hash1 = hashBuffer(Buffer.from("hello"));
-      const hash2 = hashBuffer(Buffer.from("hello"));
-      expect(hash1).toBe(hash2);
-      expect(hash1).toMatch(/^sha256:[a-f0-9]{12}$/);
-    });
-
-    it("yields different hashes for different bytes", () => {
-      const a = hashBuffer(Buffer.from("hello"));
-      const b = hashBuffer(Buffer.from("hello!"));
-      expect(a).not.toBe(b);
-    });
-  });
-
-  describe("collectSkillFileHashes", () => {
-    let tempDir: string;
-
-    beforeEach(async () => {
-      tempDir = await fs.mkdtemp(path.join(process.cwd(), ".test-collect-"));
-    });
-
-    afterEach(async () => {
-      await fs.rm(tempDir, { recursive: true, force: true });
-    });
-
-    it("hashes every file in the skill dir except SKILL.md", async () => {
-      const skillDir = path.join(tempDir, "skill-a");
-      await fs.mkdir(path.join(skillDir, "references"), { recursive: true });
-      await fs.mkdir(path.join(skillDir, "scripts"), { recursive: true });
-      await fs.writeFile(path.join(skillDir, "SKILL.md"), "skill md");
-      await fs.writeFile(path.join(skillDir, "references", "foo.py"), "print('foo')");
-      await fs.writeFile(path.join(skillDir, "scripts", "bar.sh"), "echo bar");
-
-      const hashes = await collectSkillFileHashes(skillDir);
-
-      expect(Object.keys(hashes).sort()).toEqual(["references/foo.py", "scripts/bar.sh"]);
-      expect(hashes["references/foo.py"]).toMatch(/^sha256:[a-f0-9]{12}$/);
-      expect(hashes["scripts/bar.sh"]).toMatch(/^sha256:[a-f0-9]{12}$/);
-    });
-
-    it("returns an empty map when only SKILL.md exists", async () => {
-      const skillDir = path.join(tempDir, "skill-bare");
-      await fs.mkdir(skillDir, { recursive: true });
-      await fs.writeFile(path.join(skillDir, "SKILL.md"), "skill md");
-
-      const hashes = await collectSkillFileHashes(skillDir);
-
-      expect(hashes).toEqual({});
     });
   });
 
