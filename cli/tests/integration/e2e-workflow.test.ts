@@ -336,9 +336,10 @@ describe("e2e workflow: full sync + check lifecycle", () => {
 
     // Regression for the bug where propose globbed only "*/SKILL.md" inside a
     // skill directory and silently dropped edits to sibling files.
-    // detectProposedChanges now clones canonical and byte-compares every
-    // non-SKILL.md file inside each managed skill dir.
-    it("propose detects tampered non-SKILL.md files inside a managed skill", async () => {
+    // SKILL.md now carries an aggregate assets_hash so `check` catches asset
+    // tampering locally; `propose` clones canonical and byte-compares to
+    // produce file-level diffs.
+    it("check detects tampered non-SKILL.md files inside a managed skill", async () => {
       await setupCanonicalRepo(canonicalDir, {
         skills: { "python-logging": SKILL_CONTENT },
       });
@@ -347,8 +348,39 @@ describe("e2e workflow: full sync + check lifecycle", () => {
       await fs.mkdir(refsDir, { recursive: true });
       await fs.writeFile(path.join(refsDir, "template.py"), "print('original')", "utf-8");
 
-      // detectProposedChanges clones canonical, which requires it to be a real
-      // git repo. setupCanonicalRepo doesn't init git itself.
+      await runInit(targetDir, canonicalDir);
+
+      // Sanity: sync recorded an assets_hash in SKILL.md frontmatter
+      const skillMd = await fs.readFile(
+        path.join(targetDir, ".claude", "skills", "python-logging", "SKILL.md"),
+        "utf-8",
+      );
+      expect(skillMd).toMatch(/agconf_assets_hash:\s*"?sha256:[a-f0-9]{12}/);
+
+      // Tamper with the synced reference file
+      const downstreamPath = path.join(
+        targetDir,
+        ".claude",
+        "skills",
+        "python-logging",
+        "references",
+        "template.py",
+      );
+      await fs.writeFile(downstreamPath, "print('TAMPERED')", "utf-8");
+
+      const checkResult = await runCheck(targetDir);
+      expect(checkResult.exitCode).toBe(1);
+    });
+
+    it("propose still ships the actual tampered asset file (canonical diff)", async () => {
+      await setupCanonicalRepo(canonicalDir, {
+        skills: { "python-logging": SKILL_CONTENT },
+      });
+      const refsDir = path.join(canonicalDir, "skills", "python-logging", "references");
+      await fs.mkdir(refsDir, { recursive: true });
+      await fs.writeFile(path.join(refsDir, "template.py"), "print('original')", "utf-8");
+
+      // detectProposedChanges clones canonical, which requires a real git repo.
       execSync("git init", { cwd: canonicalDir, stdio: "ignore" });
       execSync("git config user.email t@t.com", { cwd: canonicalDir, stdio: "ignore" });
       execSync("git config user.name Test", { cwd: canonicalDir, stdio: "ignore" });
@@ -356,7 +388,6 @@ describe("e2e workflow: full sync + check lifecycle", () => {
 
       await runInit(targetDir, canonicalDir);
 
-      // Tamper with the synced reference file
       const downstreamPath = path.join(
         targetDir,
         ".claude",

@@ -28,12 +28,20 @@ export interface MetadataOptions extends MarkerOptions {
 /**
  * Generate metadata key names based on the configured prefix.
  * Used in skill frontmatter to track managed content.
+ *
+ * - `content_hash` covers the file's own body (frontmatter-stripped).
+ * - `assets_hash` covers sibling files that share the file's managed status
+ *   but have no frontmatter of their own — e.g. for SKILL.md it covers the
+ *   `references/`, `scripts/`, etc. files inside the skill directory.
+ *   The field is generic so other "metadata file + sibling assets" patterns
+ *   added later can reuse it.
  */
 export function getMetadataKeys(prefix: string = DEFAULT_METADATA_PREFIX) {
   const keyPrefix = toMetadataPrefix(prefix);
   return {
     managed: `${keyPrefix}_managed`,
     contentHash: `${keyPrefix}_content_hash`,
+    assetsHash: `${keyPrefix}_assets_hash`,
   };
 }
 
@@ -115,6 +123,78 @@ export function computeContentHash(content: string, options: MetadataOptions = {
 }
 
 /**
+ * Compute an aggregate content hash for a directory's "asset" files.
+ *
+ * Used to detect manual modifications to files that travel alongside a
+ * metadata-bearing file (e.g. SKILL.md + references/foo.py). Paths in
+ * `excludeFiles` are skipped — typically the metadata file itself.
+ *
+ * Hash inputs are sorted POSIX-style for cross-platform stability and each
+ * file contributes both its relative path and its raw bytes, separated by
+ * NUL bytes so a rename can't collide with a content edit.
+ *
+ * Returns an empty string when the directory has no asset files. An empty
+ * hash means "no assets to track" and should be treated as "no mismatch
+ * possible" by callers.
+ */
+export async function computeAssetsHash(dir: string, excludeFiles: string[] = []): Promise<string> {
+  const skip = new Set(excludeFiles.map((f) => f.split(path.sep).join("/")));
+
+  let files: string[];
+  try {
+    files = await fg("**/*", { cwd: dir, onlyFiles: true, dot: true });
+  } catch {
+    return "";
+  }
+
+  const relevant = files
+    .map((f) => f.split(path.sep).join("/"))
+    .filter((f) => !skip.has(f))
+    .sort();
+
+  if (relevant.length === 0) return "";
+
+  const hash = createHash("sha256");
+  for (const relPath of relevant) {
+    const bytes = await fs.readFile(path.join(dir, relPath));
+    hash.update(relPath);
+    hash.update("\0");
+    hash.update(bytes);
+    hash.update("\0");
+  }
+  return `sha256:${hash.digest("hex").slice(0, 12)}`;
+}
+
+/**
+ * Compare the assets_hash recorded in a managed file's frontmatter against
+ * the current contents of its asset directory.
+ *
+ * Returns `false` when the file has no recorded assets_hash (no tracking),
+ * or when the recorded hash matches the live directory contents.
+ */
+export async function hasModifiedAssets(
+  content: string,
+  assetDir: string,
+  excludeFiles: string[] = [],
+  options: MetadataOptions = {},
+): Promise<boolean> {
+  const { metadataPrefix = DEFAULT_METADATA_PREFIX } = options;
+  const { frontmatter } = parseFrontmatter(content);
+
+  if (!frontmatter.metadata || typeof frontmatter.metadata !== "object") {
+    return false;
+  }
+
+  const metadata = frontmatter.metadata as Record<string, string>;
+  const keys = getMetadataKeys(metadataPrefix);
+  const storedHash = metadata[keys.assetsHash];
+  if (!storedHash) return false;
+
+  const currentHash = await computeAssetsHash(assetDir, excludeFiles);
+  return storedHash !== currentHash;
+}
+
+/**
  * Strip managed metadata from content for hashing purposes.
  * Removes metadata fields with the configured prefix.
  */
@@ -162,10 +242,16 @@ export function stripManagedMetadata(content: string, options: MetadataOptions =
 
 /**
  * Add managed metadata to a skill file content.
- * Only adds managed flag and content hash - source/timestamp are in lockfile.
+ * Adds the managed flag, the file's own content hash, and (optionally) an
+ * aggregate hash covering associated asset files so `check` can detect
+ * tampering of sibling files (references/, scripts/, ...).
+ * Source/timestamp live in the lockfile, not here.
  */
-export function addManagedMetadata(content: string, options: MetadataOptions = {}): string {
-  const { metadataPrefix = DEFAULT_METADATA_PREFIX } = options;
+export function addManagedMetadata(
+  content: string,
+  options: MetadataOptions & { assetsHash?: string } = {},
+): string {
+  const { metadataPrefix = DEFAULT_METADATA_PREFIX, assetsHash } = options;
   const { frontmatter, body } = parseFrontmatter(content);
 
   // Compute hash of original content (without any existing managed metadata)
@@ -182,6 +268,9 @@ export function addManagedMetadata(content: string, options: MetadataOptions = {
   // Add managed fields (only managed flag and hash - source/timestamp in lockfile)
   metadata[keys.managed] = "true";
   metadata[keys.contentHash] = contentHash;
+  if (assetsHash !== undefined && assetsHash !== "") {
+    metadata[keys.assetsHash] = assetsHash;
+  }
 
   // Rebuild content
   const yamlContent = serializeFrontmatter(frontmatter);
@@ -238,13 +327,19 @@ interface SkillFileCheckResult {
   skillName: string;
   /** Whether the file is managed by agconf */
   isManaged: boolean;
-  /** Whether the file has been manually modified */
+  /** True if either the SKILL.md body OR its sibling asset files were modified */
   hasChanges: boolean;
+  /** True if the SKILL.md body itself was modified (content_hash mismatch) */
+  contentChanged: boolean;
+  /** True if sibling asset files were modified (assets_hash mismatch) */
+  assetsChanged: boolean;
 }
 
 /**
  * Check all synced skill files in a target directory for manual modifications.
- * Returns information about each managed SKILL.md file found.
+ * Reports modifications to SKILL.md (via content_hash) and to its sibling
+ * asset files (via assets_hash) — both detected locally with no canonical
+ * access required.
  */
 export async function checkSkillFiles(
   targetDir: string,
@@ -273,18 +368,24 @@ export async function checkSkillFiles(
     for (const skillFile of skillFiles) {
       const fullPath = path.join(skillsDir, skillFile);
       const skillName = path.dirname(skillFile);
+      const skillDir = path.join(skillsDir, skillName);
       const relativePath = path.join(`.${target}`, "skills", skillFile);
 
       try {
         const content = await fs.readFile(fullPath, "utf-8");
         const fileIsManaged = isManaged(content, options);
-        const hasChanges = fileIsManaged && hasManualChanges(content, options);
+
+        const contentChanged = fileIsManaged && hasManualChanges(content, options);
+        const assetsChanged =
+          fileIsManaged && (await hasModifiedAssets(content, skillDir, ["SKILL.md"], options));
 
         results.push({
           path: relativePath,
           skillName,
           isManaged: fileIsManaged,
-          hasChanges,
+          hasChanges: contentChanged || assetsChanged,
+          contentChanged,
+          assetsChanged,
         });
       } catch (_error) {
         // Expected: file read may fail, skip this skill file
@@ -372,6 +473,10 @@ export interface ManagedFileCheckResult {
   isManaged: boolean;
   /** Whether the file has been manually modified */
   hasChanges: boolean;
+  /** For skill: whether SKILL.md body itself was modified */
+  contentChanged?: boolean;
+  /** For skill: whether sibling assets (references/, scripts/, ...) were modified */
+  assetsChanged?: boolean;
   /** Source info from the file's metadata */
   source?: string;
   /** When the file was synced */
@@ -543,6 +648,8 @@ export async function checkAllManagedFiles(
         skillName: skill.skillName,
         isManaged: skill.isManaged,
         hasChanges: skill.hasChanges,
+        contentChanged: skill.contentChanged,
+        assetsChanged: skill.assetsChanged,
       });
     }
   }

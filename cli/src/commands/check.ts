@@ -35,6 +35,10 @@ export interface ModifiedFileInfo {
   rulePath?: string;
   /** Agent path if type is agent */
   agentPath?: string;
+  /** For skill: whether SKILL.md body itself was modified */
+  contentChanged?: boolean;
+  /** For skill: whether sibling assets (references/, scripts/, ...) were modified */
+  assetsChanged?: boolean;
 }
 
 /**
@@ -112,7 +116,9 @@ export async function checkCommand(options: CheckOptions = {}): Promise<void> {
         });
       }
     } else if (file.type === "skill") {
-      // Get hash info for skill file
+      // Get hash info for skill file. A skill modification can mean either
+      // SKILL.md itself changed (content_hash mismatch) or one of its sibling
+      // asset files changed (assets_hash mismatch). Both are reported.
       const skillPath = path.join(targetDir, file.path);
       const content = await fs.readFile(skillPath, "utf-8");
       const { frontmatter } = parseFrontmatter(content);
@@ -124,12 +130,15 @@ export async function checkCommand(options: CheckOptions = {}): Promise<void> {
         markerPrefix ? { metadataPrefix: markerPrefix } : undefined,
       );
 
-      modifiedFiles.push({
+      const info: ModifiedFileInfo = {
         path: file.path,
         type: "skill",
         expectedHash: storedHash,
         currentHash,
-      });
+      };
+      if (file.contentChanged !== undefined) info.contentChanged = file.contentChanged;
+      if (file.assetsChanged !== undefined) info.assetsChanged = file.assetsChanged;
+      modifiedFiles.push(info);
     } else if (file.type === "rule") {
       // Get hash info for rule file
       const rulePath = path.join(targetDir, file.path);
@@ -280,6 +289,13 @@ export async function checkCommand(options: CheckOptions = {}): Promise<void> {
       label = ` (rule: ${file.rulePath})`;
     } else if (file.type === "agent" && file.agentPath) {
       label = ` (agent: ${file.agentPath})`;
+    } else if (file.type === "skill") {
+      // Distinguish "SKILL.md body changed" from "sibling assets changed"
+      // so users know where to look (and that `propose` has more detail).
+      const parts: string[] = [];
+      if (file.contentChanged) parts.push("body");
+      if (file.assetsChanged) parts.push("assets");
+      if (parts.length > 0) label = ` (${parts.join(" + ")})`;
     }
     console.log(`  ${file.path}${pc.dim(label)}`);
     console.log(`    Expected hash: ${pc.dim(file.expectedHash)}`);

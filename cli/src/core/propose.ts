@@ -104,13 +104,21 @@ export async function detectProposedChanges(options: ProposeOptions = {}): Promi
 
   const allFiles = await checkAllManagedFiles(targetDir, targets, checkOptions);
 
-  // SKILL.md / rules / agents / AGENTS.md: existing self-hashing detection
-  const modifiedFiles = allFiles.filter((f) => f.hasChanges);
+  // SKILL.md / rules / agents / AGENTS.md: existing self-hashing detection.
+  // For skills, `hasChanges` is true when EITHER the SKILL.md body OR a sibling
+  // asset was modified. We only want to ship SKILL.md to canonical when its
+  // body actually changed — the per-file asset diffs are emitted by the
+  // canonical-diff pass below. Otherwise the SKILL.md change would round-trip
+  // to a no-op commit (managed metadata gets stripped before shipping).
   const filterRegexes = (options.files ?? []).map((pattern) => new RegExp(pattern));
   const matchesFilter = (relPath: string): boolean =>
     filterRegexes.length === 0 || filterRegexes.some((re) => re.test(relPath));
 
-  const filesToPropose = modifiedFiles.filter((f) => matchesFilter(f.path));
+  const filesToPropose = allFiles.filter((f) => {
+    if (!f.hasChanges) return false;
+    if (f.type === "skill" && f.contentChanged === false) return false;
+    return matchesFilter(f.path);
+  });
 
   const changes: ProposedChange[] = [];
   for (const file of filesToPropose) {
