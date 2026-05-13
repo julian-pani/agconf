@@ -23,10 +23,14 @@ export interface ProposedChange {
   downstreamPath: string;
   /** Canonical file path (relative to canonical root) */
   canonicalPath: string;
-  /** Content to write in canonical (metadata stripped) */
-  content: string;
+  /**
+   * Content to write in canonical. For markdown files this is the metadata-stripped
+   * string; for skill-asset files (non-SKILL.md, possibly binary) this is the raw
+   * bytes read from disk.
+   */
+  content: string | Buffer;
   /** Type of content */
-  type: "skill" | "rule" | "agent" | "agents-md-global";
+  type: "skill" | "skill-asset" | "rule" | "agent" | "agents-md-global";
 }
 
 export interface ProposeOptions {
@@ -77,6 +81,10 @@ export async function detectProposedChanges(options: ProposeOptions = {}): Promi
   const checkOptions: CheckManagedFilesOptions = markerPrefix
     ? { markerPrefix, metadataPrefix: markerPrefix }
     : {};
+  const skillFileHashes = lockfile.content.skill_files;
+  if (skillFileHashes) {
+    checkOptions.skillFileHashes = skillFileHashes;
+  }
 
   const allFiles = await checkAllManagedFiles(targetDir, targets, checkOptions);
   const modifiedFiles = allFiles.filter((f) => f.hasChanges);
@@ -131,6 +139,20 @@ async function buildProposedChange(
         canonicalPath,
         content: stripped,
         type: "skill",
+      };
+    }
+
+    case "skill-asset": {
+      // Non-SKILL.md files inside a managed skill dir (references/, scripts/, etc.)
+      // These have no frontmatter, so we ship raw bytes. They may be binary.
+      const content = await fs.readFile(fullPath);
+      // .claude/skills/<name>/<sub-path> → skills/<name>/<sub-path>
+      const canonicalPath = file.path.replace(/^\.[^/]+\/skills\//, "skills/");
+      return {
+        downstreamPath: file.path,
+        canonicalPath,
+        content,
+        type: "skill-asset",
       };
     }
 
@@ -228,7 +250,11 @@ export async function applyProposedChanges(
   for (const change of result.changes) {
     const targetPath = path.join(cloneDir, change.canonicalPath);
     await fs.mkdir(path.dirname(targetPath), { recursive: true });
-    await fs.writeFile(targetPath, change.content, "utf-8");
+    if (typeof change.content === "string") {
+      await fs.writeFile(targetPath, change.content, "utf-8");
+    } else {
+      await fs.writeFile(targetPath, change.content);
+    }
   }
 
   // Commit using the title

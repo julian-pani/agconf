@@ -280,7 +280,18 @@ export async function checkModifiedFilesBeforeSync(
   options: SharedSyncOptions,
   tempDir: string | null,
 ): Promise<boolean> {
-  const modifiedFiles = await getModifiedManagedFiles(targetDir, targets);
+  // Pull lockfile metadata so we can detect modifications to non-SKILL.md
+  // files inside managed skill directories (references/, scripts/, ...).
+  const lockfileResult = await readLockfile(targetDir);
+  const markerPrefix = lockfileResult?.lockfile.content.marker_prefix;
+  const skillFileHashes = lockfileResult?.lockfile.content.skill_files;
+  const checkOpts: Parameters<typeof getModifiedManagedFiles>[2] = markerPrefix
+    ? { markerPrefix, metadataPrefix: markerPrefix }
+    : {};
+  if (skillFileHashes) {
+    checkOpts.skillFileHashes = skillFileHashes;
+  }
+  const modifiedFiles = await getModifiedManagedFiles(targetDir, targets, checkOpts);
 
   if (modifiedFiles.length === 0) {
     return true; // No modified files, proceed

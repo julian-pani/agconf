@@ -1,5 +1,21 @@
-import { describe, expect, it } from "vitest";
-import { generateBranchName, type ProposedChange, slugifyTitle } from "../../src/core/propose.js";
+import { createHash } from "node:crypto";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { addManagedMetadata } from "../../src/core/managed-content.js";
+import {
+  detectProposedChanges,
+  generateBranchName,
+  type ProposedChange,
+  slugifyTitle,
+} from "../../src/core/propose.js";
+
+function hashBytes(content: string | Buffer): string {
+  const buf = typeof content === "string" ? Buffer.from(content) : content;
+  const hash = createHash("sha256").update(buf).digest("hex");
+  return `sha256:${hash.slice(0, 12)}`;
+}
 
 describe("propose", () => {
   describe("slugifyTitle", () => {
@@ -115,6 +131,100 @@ describe("propose", () => {
         type: "agents-md-global",
       };
       expect(change.canonicalPath).toBe("instructions/AGENTS.md");
+    });
+
+    it("skill-asset canonical path should be under skills/<skill>/", () => {
+      const change: ProposedChange = {
+        downstreamPath: ".claude/skills/python-logging/references/template.py",
+        canonicalPath: "skills/python-logging/references/template.py",
+        content: Buffer.from("print('hi')"),
+        type: "skill-asset",
+      };
+      expect(change.canonicalPath).toBe("skills/python-logging/references/template.py");
+    });
+  });
+
+  describe("detectProposedChanges with skill assets", () => {
+    let tempDir: string;
+
+    beforeEach(async () => {
+      tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "agconf-propose-test-"));
+    });
+
+    afterEach(async () => {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    });
+
+    it("ships both SKILL.md and references/ edits in the same proposal", async () => {
+      // 1) Lay out a downstream tree with a managed skill + a tampered asset
+      const skillDir = path.join(tempDir, ".claude", "skills", "python-logging");
+      const refDir = path.join(skillDir, "references");
+      await fs.mkdir(refDir, { recursive: true });
+
+      const skillBody = `---
+name: python-logging
+description: Configure Python logging.
+---
+
+# Python Logging
+
+ORIGINAL skill body.
+`;
+      const originalAsset = "print('original')";
+      const tamperedAsset = "print('TAMPERED')";
+
+      // SKILL.md is managed with content hash baked in; then modify it manually
+      const managedSkill = addManagedMetadata(skillBody);
+      const tamperedSkill = managedSkill.replace("ORIGINAL skill body.", "TAMPERED skill body.");
+      await fs.writeFile(path.join(skillDir, "SKILL.md"), tamperedSkill, "utf-8");
+      await fs.writeFile(path.join(refDir, "template.py"), tamperedAsset, "utf-8");
+
+      // 2) Write a lockfile that pins the canonical asset hash
+      const lockfile = {
+        version: "1.0.0",
+        synced_at: new Date().toISOString(),
+        source: { type: "local" as const, path: "/canonical" },
+        content: {
+          agents_md: { global_block_hash: "sha256:abc", merged: true },
+          skills: ["python-logging"],
+          targets: ["claude"],
+          skill_files: {
+            "python-logging": {
+              "references/template.py": hashBytes(originalAsset),
+            },
+          },
+        },
+      };
+      await fs.mkdir(path.join(tempDir, ".agconf"), { recursive: true });
+      await fs.writeFile(
+        path.join(tempDir, ".agconf", "lockfile.json"),
+        JSON.stringify(lockfile, null, 2),
+        "utf-8",
+      );
+
+      // 3) Detect proposed changes; both files should appear
+      const result = await detectProposedChanges({ cwd: tempDir });
+
+      const paths = result.changes.map((c) => c.canonicalPath).sort();
+      expect(paths).toEqual([
+        "skills/python-logging/SKILL.md",
+        "skills/python-logging/references/template.py",
+      ]);
+
+      const skillChange = result.changes.find((c) => c.type === "skill");
+      const assetChange = result.changes.find((c) => c.type === "skill-asset");
+      expect(skillChange).toBeDefined();
+      expect(assetChange).toBeDefined();
+
+      // skill-asset content is delivered as raw bytes
+      expect(
+        Buffer.isBuffer(assetChange?.content) || typeof assetChange?.content === "string",
+      ).toBe(true);
+      const assetBytes =
+        typeof assetChange?.content === "string"
+          ? Buffer.from(assetChange.content)
+          : (assetChange?.content as Buffer);
+      expect(assetBytes.toString("utf-8")).toBe(tamperedAsset);
     });
   });
 });

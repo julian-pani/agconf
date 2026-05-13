@@ -1,12 +1,23 @@
-import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   addManagedMetadata,
+  checkAllManagedFiles,
+  checkSkillFiles,
   computeContentHash,
   hasManualChanges,
   isManaged,
   parseFrontmatter,
   stripManagedMetadata,
 } from "../../src/core/managed-content.js";
+
+function hashBytes(content: string | Buffer): string {
+  const buf = typeof content === "string" ? Buffer.from(content) : content;
+  const hash = createHash("sha256").update(buf).digest("hex");
+  return `sha256:${hash.slice(0, 12)}`;
+}
 
 const SAMPLE_SKILL = `---
 name: test-skill
@@ -298,6 +309,115 @@ More content here.
 
         expect(hashOriginal).toBe(hashWithMetadata);
       });
+    });
+  });
+
+  describe("checkSkillFiles - non-SKILL.md files", () => {
+    let targetDir: string;
+
+    const writeSkillFile = async (
+      skillName: string,
+      relPath: string,
+      content: string,
+    ): Promise<void> => {
+      const fullPath = path.join(targetDir, ".claude", "skills", skillName, relPath);
+      await fs.mkdir(path.dirname(fullPath), { recursive: true });
+      await fs.writeFile(fullPath, content);
+    };
+
+    beforeEach(async () => {
+      targetDir = await fs.mkdtemp(path.join(process.cwd(), ".test-check-"));
+    });
+
+    afterEach(async () => {
+      await fs.rm(targetDir, { recursive: true, force: true });
+    });
+
+    it("reports modifications to references/ files when hashes differ from lockfile", async () => {
+      const managedSkill = addManagedMetadata(SAMPLE_SKILL);
+      await writeSkillFile("python-logging", "SKILL.md", managedSkill);
+      await writeSkillFile("python-logging", "references/template.py", "print('modified')");
+
+      // Lockfile recorded a different hash (canonical state)
+      const lockfileHashes = {
+        "python-logging": {
+          "references/template.py": hashBytes("print('original')"),
+        },
+      };
+
+      const results = await checkSkillFiles(targetDir, ["claude"], {}, lockfileHashes);
+
+      const asset = results.find((r) => r.skillFilePath === "references/template.py");
+      expect(asset).toBeDefined();
+      expect(asset?.isManaged).toBe(true);
+      expect(asset?.hasChanges).toBe(true);
+      expect(asset?.expectedHash).toBe(hashBytes("print('original')"));
+      expect(asset?.currentHash).toBe(hashBytes("print('modified')"));
+    });
+
+    it("does NOT flag references/ files that match the lockfile hash", async () => {
+      const managedSkill = addManagedMetadata(SAMPLE_SKILL);
+      await writeSkillFile("python-logging", "SKILL.md", managedSkill);
+      await writeSkillFile("python-logging", "references/template.py", "print('original')");
+
+      const lockfileHashes = {
+        "python-logging": {
+          "references/template.py": hashBytes("print('original')"),
+        },
+      };
+
+      const results = await checkSkillFiles(targetDir, ["claude"], {}, lockfileHashes);
+
+      const asset = results.find((r) => r.skillFilePath === "references/template.py");
+      expect(asset?.hasChanges).toBe(false);
+    });
+
+    it("flags downstream-added files (no recorded hash) as new additions", async () => {
+      const managedSkill = addManagedMetadata(SAMPLE_SKILL);
+      await writeSkillFile("python-logging", "SKILL.md", managedSkill);
+      await writeSkillFile("python-logging", "scripts/new-script.sh", "echo new");
+
+      // Lockfile has no entry for this skill yet → file is unrecorded
+      const results = await checkSkillFiles(targetDir, ["claude"], {}, {});
+
+      const asset = results.find((r) => r.skillFilePath === "scripts/new-script.sh");
+      expect(asset).toBeDefined();
+      expect(asset?.hasChanges).toBe(true);
+      expect(asset?.expectedHash).toBeUndefined();
+      expect(asset?.currentHash).toBe(hashBytes("echo new"));
+    });
+
+    it("does NOT scan files inside skills whose SKILL.md is unmanaged", async () => {
+      // SKILL.md has no agconf metadata, so the whole skill is unmanaged
+      await writeSkillFile("rogue-skill", "SKILL.md", SAMPLE_SKILL);
+      await writeSkillFile("rogue-skill", "scripts/local.sh", "echo local");
+
+      const results = await checkSkillFiles(targetDir, ["claude"], {}, {});
+
+      // No asset entries should be reported for the unmanaged skill
+      const assetEntries = results.filter((r) => r.skillFilePath !== "SKILL.md");
+      expect(assetEntries).toEqual([]);
+    });
+
+    it("emits ManagedFileCheckResult entries of type 'skill-asset' for non-SKILL.md files", async () => {
+      const managedSkill = addManagedMetadata(SAMPLE_SKILL);
+      await writeSkillFile("python-logging", "SKILL.md", managedSkill);
+      await writeSkillFile("python-logging", "references/template.py", "print('modified')");
+
+      const all = await checkAllManagedFiles(targetDir, ["claude"], {
+        skillFileHashes: {
+          "python-logging": {
+            "references/template.py": hashBytes("print('original')"),
+          },
+        },
+      });
+
+      const asset = all.find((f) => f.type === "skill-asset");
+      expect(asset).toBeDefined();
+      expect(asset?.path).toBe(
+        path.join(".claude", "skills", "python-logging", "references/template.py"),
+      );
+      expect(asset?.hasChanges).toBe(true);
     });
   });
 });

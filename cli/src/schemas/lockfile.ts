@@ -25,6 +25,15 @@ export const AgentsContentSchema = z.object({
   content_hash: z.string(),
 });
 
+/**
+ * Per-file hashes for non-SKILL.md files inside each skill directory.
+ * Outer key is skill name, inner key is the path relative to the skill dir
+ * (e.g. "references/foo.py"), value is the canonical content hash recorded
+ * at sync time. SKILL.md itself is excluded because its hash lives inside
+ * its own frontmatter.
+ */
+export const SkillFilesSchema = z.record(z.string(), z.record(z.string(), z.string()));
+
 export const SourceSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("github"),
@@ -52,6 +61,8 @@ export const ContentSchema = z.object({
   rules: RulesContentSchema.optional(),
   /** Agents content tracking - optional */
   agents: AgentsContentSchema.optional(),
+  /** Per-skill hashes for non-SKILL.md files - optional for backward compat */
+  skill_files: SkillFilesSchema.optional(),
 });
 
 export const LockfileSchema = z.object({

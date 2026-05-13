@@ -334,6 +334,45 @@ describe("e2e workflow: full sync + check lifecycle", () => {
       expect(checkResult.exitCode).toBe(1);
     });
 
+    // Regression for https://github.com/julian-pani/agconf/issues — propose
+    // previously globbed only "*/SKILL.md" inside a skill directory, silently
+    // dropping edits to references/, scripts/, and other sibling files.
+    it("should detect tampered non-SKILL.md files inside a managed skill", async () => {
+      await setupCanonicalRepo(canonicalDir, {
+        skills: { "python-logging": SKILL_CONTENT },
+      });
+      // Add a sibling asset file the helper doesn't write itself.
+      const refsDir = path.join(canonicalDir, "skills", "python-logging", "references");
+      await fs.mkdir(refsDir, { recursive: true });
+      await fs.writeFile(path.join(refsDir, "template.py"), "print('original')", "utf-8");
+
+      await runInit(targetDir, canonicalDir);
+
+      // Sanity: lockfile recorded a hash for the asset
+      const lockfileContent = await fs.readFile(
+        path.join(targetDir, ".agconf", "lockfile.json"),
+        "utf-8",
+      );
+      const lockfile = JSON.parse(lockfileContent);
+      expect(lockfile.content.skill_files?.["python-logging"]?.["references/template.py"]).toMatch(
+        /^sha256:[a-f0-9]{12}$/,
+      );
+
+      // Tamper with the synced reference file
+      const downstreamPath = path.join(
+        targetDir,
+        ".claude",
+        "skills",
+        "python-logging",
+        "references",
+        "template.py",
+      );
+      await fs.writeFile(downstreamPath, "print('TAMPERED')", "utf-8");
+
+      const checkResult = await runCheck(targetDir);
+      expect(checkResult.exitCode).toBe(1);
+    });
+
     it("should detect tampered rule file", async () => {
       await setupCanonicalRepo(canonicalDir, {
         rules: { "api-auth.md": RULE_CONTENT },
