@@ -1,3 +1,9 @@
+## [0.13.3](https://github.com/julian-pani/agconf/compare/v0.13.2...v0.13.3) (2026-05-13)
+
+### Bug Fixes
+
+* **cli:** propose all files in managed skill dirs, not just SKILL.md ([#56](https://github.com/julian-pani/agconf/issues/56)) ([23525cc](https://github.com/julian-pani/agconf/commit/23525ccd230af5de232bd8ee920cd6dc481284d7))
+
 ## [0.13.2](https://github.com/julian-pani/agconf/compare/v0.13.1...v0.13.2) (2026-02-19)
 
 ### Bug Fixes
