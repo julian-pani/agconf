@@ -14,6 +14,7 @@ import {
 import { readLockfile, writeLockfile } from "./lockfile.js";
 import {
   addManagedMetadata,
+  computeAssetsHash,
   hasManualChanges,
   isManaged,
   type SkillValidationError,
@@ -636,7 +637,49 @@ interface CopyResult {
 }
 
 /**
- * Copy a skill directory, adding managed metadata to SKILL.md files.
+ * Recursively copy a directory tree from `srcDir` to `dstDir`.
+ * Skips writes when the destination file's bytes already match.
+ * Used for the inside of a skill dir (after we've handled SKILL.md separately).
+ */
+async function copyTree(srcDir: string, dstDir: string): Promise<CopyResult> {
+  await fs.mkdir(dstDir, { recursive: true });
+  const entries = await fs.readdir(srcDir, { withFileTypes: true });
+  let copied = 0;
+  let modified = false;
+
+  for (const entry of entries) {
+    const srcPath = path.join(srcDir, entry.name);
+    const dstPath = path.join(dstDir, entry.name);
+
+    if (entry.isDirectory()) {
+      const r = await copyTree(srcPath, dstPath);
+      copied += r.copied;
+      if (r.modified) modified = true;
+    } else {
+      let needsCopy = true;
+      try {
+        const [s, t] = await Promise.all([fs.readFile(srcPath), fs.readFile(dstPath)]);
+        needsCopy = !s.equals(t);
+      } catch {
+        // Destination missing — needsCopy stays true
+      }
+      if (needsCopy) {
+        await fs.copyFile(srcPath, dstPath);
+        modified = true;
+      }
+      copied++;
+    }
+  }
+  return { copied, modified };
+}
+
+/**
+ * Copy a skill directory in three passes:
+ *   1. Copy every file except SKILL.md (recursively).
+ *   2. Compute `assets_hash` over what was written (everything except SKILL.md).
+ *   3. Copy SKILL.md last, baking both `content_hash` and `assets_hash` into
+ *      its frontmatter so `check` can later detect tampering of either the
+ *      SKILL.md body or any sibling asset file without consulting canonical.
  * Returns whether any files were actually modified (content changed).
  */
 async function copySkillDirectory(
@@ -646,55 +689,57 @@ async function copySkillDirectory(
 ): Promise<CopyResult> {
   await fs.mkdir(targetDir, { recursive: true });
 
-  const entries = await fs.readdir(sourceDir, { withFileTypes: true });
   let copied = 0;
   let modified = false;
 
+  // Pass 1: copy every non-SKILL.md entry at the skill root.
+  const entries = await fs.readdir(sourceDir, { withFileTypes: true });
   for (const entry of entries) {
-    const sourcePath = path.join(sourceDir, entry.name);
-    const targetPath = path.join(targetDir, entry.name);
-
+    if (entry.name === "SKILL.md" && !entry.isDirectory()) continue;
+    const srcPath = path.join(sourceDir, entry.name);
+    const dstPath = path.join(targetDir, entry.name);
     if (entry.isDirectory()) {
-      const subResult = await copySkillDirectory(sourcePath, targetPath, metadataPrefix);
-      copied += subResult.copied;
-      if (subResult.modified) modified = true;
-    } else if (entry.name === "SKILL.md") {
-      // Add managed metadata to SKILL.md files
-      const content = await fs.readFile(sourcePath, "utf-8");
-      const contentWithMetadata = addManagedMetadata(content, { metadataPrefix });
-
-      // Check if file exists and has same content
-      let existingContent: string | null = null;
-      try {
-        existingContent = await fs.readFile(targetPath, "utf-8");
-      } catch {
-        // File doesn't exist
-      }
-
-      if (existingContent !== contentWithMetadata) {
-        await fs.writeFile(targetPath, contentWithMetadata, "utf-8");
-        modified = true;
-      }
-      copied++;
+      const r = await copyTree(srcPath, dstPath);
+      copied += r.copied;
+      if (r.modified) modified = true;
     } else {
-      // Check if file exists and has same content
       let needsCopy = true;
       try {
-        const [sourceContent, targetContent] = await Promise.all([
-          fs.readFile(sourcePath),
-          fs.readFile(targetPath),
-        ]);
-        needsCopy = !sourceContent.equals(targetContent);
+        const [s, t] = await Promise.all([fs.readFile(srcPath), fs.readFile(dstPath)]);
+        needsCopy = !s.equals(t);
       } catch {
-        // Target doesn't exist
+        // Destination missing — needsCopy stays true
       }
-
       if (needsCopy) {
-        await fs.copyFile(sourcePath, targetPath);
+        await fs.copyFile(srcPath, dstPath);
         modified = true;
       }
       copied++;
     }
+  }
+
+  // Pass 2: compute the aggregate hash of the asset files we just wrote.
+  const assetsHash = await computeAssetsHash(targetDir, ["SKILL.md"]);
+
+  // Pass 3: write SKILL.md with both hashes embedded.
+  const skillMdSrc = path.join(sourceDir, "SKILL.md");
+  const skillMdDst = path.join(targetDir, "SKILL.md");
+  try {
+    const skillContent = await fs.readFile(skillMdSrc, "utf-8");
+    const withMetadata = addManagedMetadata(skillContent, { metadataPrefix, assetsHash });
+    let existing: string | null = null;
+    try {
+      existing = await fs.readFile(skillMdDst, "utf-8");
+    } catch {
+      // Destination missing
+    }
+    if (existing !== withMetadata) {
+      await fs.writeFile(skillMdDst, withMetadata, "utf-8");
+      modified = true;
+    }
+    copied++;
+  } catch {
+    // SKILL.md may not exist in source — validateSkillFrontmatter surfaces this.
   }
 
   return { copied, modified };

@@ -1,8 +1,13 @@
-import { describe, expect, it } from "vitest";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   addManagedMetadata,
+  computeAssetsHash,
   computeContentHash,
   hasManualChanges,
+  hasModifiedAssets,
   isManaged,
   parseFrontmatter,
   stripManagedMetadata,
@@ -298,6 +303,123 @@ More content here.
 
         expect(hashOriginal).toBe(hashWithMetadata);
       });
+    });
+  });
+
+  describe("computeAssetsHash", () => {
+    let tempDir: string;
+
+    beforeEach(async () => {
+      tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "agconf-assets-hash-"));
+    });
+
+    afterEach(async () => {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    });
+
+    it("hashes a directory's files and is stable for identical input", async () => {
+      await fs.mkdir(path.join(tempDir, "references"), { recursive: true });
+      await fs.writeFile(path.join(tempDir, "SKILL.md"), "skill md");
+      await fs.writeFile(path.join(tempDir, "references", "foo.py"), "print('foo')");
+
+      const a = await computeAssetsHash(tempDir, ["SKILL.md"]);
+      const b = await computeAssetsHash(tempDir, ["SKILL.md"]);
+
+      expect(a).toBe(b);
+      expect(a).toMatch(/^sha256:[a-f0-9]{12}$/);
+    });
+
+    it("excludes the named files from the hash", async () => {
+      await fs.writeFile(path.join(tempDir, "SKILL.md"), "original");
+      await fs.writeFile(path.join(tempDir, "asset.txt"), "asset");
+      const before = await computeAssetsHash(tempDir, ["SKILL.md"]);
+
+      // Modifying SKILL.md must NOT change the assets hash
+      await fs.writeFile(path.join(tempDir, "SKILL.md"), "TAMPERED");
+      const after = await computeAssetsHash(tempDir, ["SKILL.md"]);
+
+      expect(before).toBe(after);
+    });
+
+    it("changes when any asset file's bytes change", async () => {
+      await fs.writeFile(path.join(tempDir, "SKILL.md"), "skill md");
+      await fs.writeFile(path.join(tempDir, "a.py"), "old");
+      const before = await computeAssetsHash(tempDir, ["SKILL.md"]);
+
+      await fs.writeFile(path.join(tempDir, "a.py"), "new");
+      const after = await computeAssetsHash(tempDir, ["SKILL.md"]);
+
+      expect(before).not.toBe(after);
+    });
+
+    it("changes when an asset file is added or removed", async () => {
+      await fs.writeFile(path.join(tempDir, "SKILL.md"), "skill md");
+      await fs.writeFile(path.join(tempDir, "a.py"), "one");
+      const single = await computeAssetsHash(tempDir, ["SKILL.md"]);
+
+      await fs.writeFile(path.join(tempDir, "b.py"), "two");
+      const added = await computeAssetsHash(tempDir, ["SKILL.md"]);
+
+      await fs.rm(path.join(tempDir, "b.py"));
+      const removed = await computeAssetsHash(tempDir, ["SKILL.md"]);
+
+      expect(added).not.toBe(single);
+      expect(removed).toBe(single);
+    });
+
+    it("differentiates rename from edit (path is part of the hash)", async () => {
+      await fs.writeFile(path.join(tempDir, "SKILL.md"), "skill md");
+      await fs.writeFile(path.join(tempDir, "a.py"), "same bytes");
+      const before = await computeAssetsHash(tempDir, ["SKILL.md"]);
+
+      // Rename a.py → b.py with identical bytes: assets hash must change
+      await fs.rename(path.join(tempDir, "a.py"), path.join(tempDir, "b.py"));
+      const after = await computeAssetsHash(tempDir, ["SKILL.md"]);
+
+      expect(before).not.toBe(after);
+    });
+
+    it("returns empty string when the directory has no asset files", async () => {
+      await fs.writeFile(path.join(tempDir, "SKILL.md"), "skill md");
+      const hash = await computeAssetsHash(tempDir, ["SKILL.md"]);
+      expect(hash).toBe("");
+    });
+  });
+
+  describe("hasModifiedAssets", () => {
+    let tempDir: string;
+
+    beforeEach(async () => {
+      tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "agconf-has-mod-"));
+    });
+
+    afterEach(async () => {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    });
+
+    it("returns false when assets are unchanged", async () => {
+      await fs.writeFile(path.join(tempDir, "asset.txt"), "original");
+      const assetsHash = await computeAssetsHash(tempDir, ["SKILL.md"]);
+
+      const skillContent = addManagedMetadata(SAMPLE_SKILL, { assetsHash });
+      expect(await hasModifiedAssets(skillContent, tempDir, ["SKILL.md"])).toBe(false);
+    });
+
+    it("returns true when an asset is modified", async () => {
+      await fs.writeFile(path.join(tempDir, "asset.txt"), "original");
+      const assetsHash = await computeAssetsHash(tempDir, ["SKILL.md"]);
+      const skillContent = addManagedMetadata(SAMPLE_SKILL, { assetsHash });
+
+      await fs.writeFile(path.join(tempDir, "asset.txt"), "TAMPERED");
+
+      expect(await hasModifiedAssets(skillContent, tempDir, ["SKILL.md"])).toBe(true);
+    });
+
+    it("returns false when no assets_hash is recorded (no tracking)", async () => {
+      await fs.writeFile(path.join(tempDir, "asset.txt"), "anything");
+      // No assetsHash → not tracking asset modifications
+      const skillContent = addManagedMetadata(SAMPLE_SKILL);
+      expect(await hasModifiedAssets(skillContent, tempDir, ["SKILL.md"])).toBe(false);
     });
   });
 });

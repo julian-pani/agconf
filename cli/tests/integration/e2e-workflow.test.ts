@@ -334,6 +334,76 @@ describe("e2e workflow: full sync + check lifecycle", () => {
       expect(checkResult.exitCode).toBe(1);
     });
 
+    // Regression for the bug where propose globbed only "*/SKILL.md" inside a
+    // skill directory and silently dropped edits to sibling files.
+    // SKILL.md now carries an aggregate assets_hash so `check` catches asset
+    // tampering locally; `propose` clones canonical and byte-compares to
+    // produce file-level diffs.
+    it("check detects tampered non-SKILL.md files inside a managed skill", async () => {
+      await setupCanonicalRepo(canonicalDir, {
+        skills: { "python-logging": SKILL_CONTENT },
+      });
+      // Add a sibling asset file the helper doesn't write itself.
+      const refsDir = path.join(canonicalDir, "skills", "python-logging", "references");
+      await fs.mkdir(refsDir, { recursive: true });
+      await fs.writeFile(path.join(refsDir, "template.py"), "print('original')", "utf-8");
+
+      await runInit(targetDir, canonicalDir);
+
+      // Sanity: sync recorded an assets_hash in SKILL.md frontmatter
+      const skillMd = await fs.readFile(
+        path.join(targetDir, ".claude", "skills", "python-logging", "SKILL.md"),
+        "utf-8",
+      );
+      expect(skillMd).toMatch(/agconf_assets_hash:\s*"?sha256:[a-f0-9]{12}/);
+
+      // Tamper with the synced reference file
+      const downstreamPath = path.join(
+        targetDir,
+        ".claude",
+        "skills",
+        "python-logging",
+        "references",
+        "template.py",
+      );
+      await fs.writeFile(downstreamPath, "print('TAMPERED')", "utf-8");
+
+      const checkResult = await runCheck(targetDir);
+      expect(checkResult.exitCode).toBe(1);
+    });
+
+    it("propose still ships the actual tampered asset file (canonical diff)", async () => {
+      await setupCanonicalRepo(canonicalDir, {
+        skills: { "python-logging": SKILL_CONTENT },
+      });
+      const refsDir = path.join(canonicalDir, "skills", "python-logging", "references");
+      await fs.mkdir(refsDir, { recursive: true });
+      await fs.writeFile(path.join(refsDir, "template.py"), "print('original')", "utf-8");
+
+      // detectProposedChanges clones canonical, which requires a real git repo.
+      execSync("git init", { cwd: canonicalDir, stdio: "ignore" });
+      execSync("git config user.email t@t.com", { cwd: canonicalDir, stdio: "ignore" });
+      execSync("git config user.name Test", { cwd: canonicalDir, stdio: "ignore" });
+      execSync("git add -A && git commit -m init", { cwd: canonicalDir, stdio: "ignore" });
+
+      await runInit(targetDir, canonicalDir);
+
+      const downstreamPath = path.join(
+        targetDir,
+        ".claude",
+        "skills",
+        "python-logging",
+        "references",
+        "template.py",
+      );
+      await fs.writeFile(downstreamPath, "print('TAMPERED')", "utf-8");
+
+      const { detectProposedChanges } = await import("../../src/core/propose.js");
+      const result = await detectProposedChanges({ cwd: targetDir });
+      const paths = result.changes.map((c) => c.canonicalPath);
+      expect(paths).toContain("skills/python-logging/references/template.py");
+    });
+
     it("should detect tampered rule file", async () => {
       await setupCanonicalRepo(canonicalDir, {
         rules: { "api-auth.md": RULE_CONTENT },

@@ -2,6 +2,7 @@ import { exec } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { promisify } from "node:util";
+import fg from "fast-glob";
 import { type SimpleGit, simpleGit } from "simple-git";
 import type { Source } from "../schemas/lockfile.js";
 import { readLockfile } from "./lockfile.js";
@@ -23,10 +24,14 @@ export interface ProposedChange {
   downstreamPath: string;
   /** Canonical file path (relative to canonical root) */
   canonicalPath: string;
-  /** Content to write in canonical (metadata stripped) */
-  content: string;
+  /**
+   * Content to write in canonical. For markdown files this is the metadata-stripped
+   * string; for skill-asset files (non-SKILL.md, possibly binary) this is the raw
+   * bytes read from disk.
+   */
+  content: string | Buffer;
   /** Type of content */
-  type: "skill" | "rule" | "agent" | "agents-md-global";
+  type: "skill" | "skill-asset" | "rule" | "agent" | "agents-md-global";
 }
 
 export interface ProposeOptions {
@@ -57,10 +62,28 @@ export interface ProposeResult {
   markerPrefix?: string | undefined;
   /** Context about the downstream repo */
   downstream: DownstreamContext;
+  /**
+   * Canonical clone created during detection (used to diff non-SKILL.md
+   * skill files). Reused by applyProposedChanges when present so we don't
+   * clone twice in the full propose flow.
+   */
+  canonicalCloneDir?: string | undefined;
 }
 
 /**
  * Detect modified managed files and build proposed changes for the canonical repo.
+ *
+ * For SKILL.md / rules / agents / AGENTS.md the modification check runs against
+ * each file's own embedded hash (frontmatter or marker metadata) — no canonical
+ * access required.
+ *
+ * For non-SKILL.md files inside a managed skill directory (references/,
+ * scripts/, etc.) we treat *every* file as managed-by-association with its
+ * skill. There is no frontmatter to inspect, so we clone the canonical repo
+ * once and byte-compare each downstream file against its canonical sibling.
+ * Files that differ — or that exist downstream but not in canonical — become
+ * proposed `skill-asset` changes. The clone is handed back via
+ * `ProposeResult.canonicalCloneDir` so `applyProposedChanges` can reuse it.
  */
 export async function detectProposedChanges(options: ProposeOptions = {}): Promise<ProposeResult> {
   const targetDir = options.cwd ?? process.cwd();
@@ -73,27 +96,59 @@ export async function detectProposedChanges(options: ProposeOptions = {}): Promi
   const { lockfile } = lockfileResult;
   const targets = lockfile.content.targets ?? ["claude"];
   const markerPrefix = lockfile.content.marker_prefix;
+  const source = lockfile.source;
 
   const checkOptions: CheckManagedFilesOptions = markerPrefix
     ? { markerPrefix, metadataPrefix: markerPrefix }
     : {};
 
   const allFiles = await checkAllManagedFiles(targetDir, targets, checkOptions);
-  const modifiedFiles = allFiles.filter((f) => f.hasChanges);
 
-  // Filter by --files if specified (patterns are treated as regexes against relative paths)
-  let filesToPropose = modifiedFiles;
-  if (options.files && options.files.length > 0) {
-    const regexes = options.files.map((pattern) => new RegExp(pattern));
-    filesToPropose = modifiedFiles.filter((f) => regexes.some((re) => re.test(f.path)));
-  }
+  // SKILL.md / rules / agents / AGENTS.md: existing self-hashing detection.
+  // For skills, `hasChanges` is true when EITHER the SKILL.md body OR a sibling
+  // asset was modified. We only want to ship SKILL.md to canonical when its
+  // body actually changed — the per-file asset diffs are emitted by the
+  // canonical-diff pass below. Otherwise the SKILL.md change would round-trip
+  // to a no-op commit (managed metadata gets stripped before shipping).
+  const filterRegexes = (options.files ?? []).map((pattern) => new RegExp(pattern));
+  const matchesFilter = (relPath: string): boolean =>
+    filterRegexes.length === 0 || filterRegexes.some((re) => re.test(relPath));
+
+  const filesToPropose = allFiles.filter((f) => {
+    if (!f.hasChanges) return false;
+    if (f.type === "skill" && f.contentChanged === false) return false;
+    return matchesFilter(f.path);
+  });
 
   const changes: ProposedChange[] = [];
-
   for (const file of filesToPropose) {
     const change = await buildProposedChange(targetDir, file, markerPrefix);
     if (change) {
       changes.push(change);
+    }
+  }
+
+  // Non-SKILL.md files inside managed skill dirs: diff against canonical.
+  // Only clone if there is at least one managed skill to inspect.
+  const managedSkillNames = allFiles
+    .filter((f) => f.type === "skill" && f.isManaged && f.skillName)
+    .map((f) => f.skillName as string);
+
+  let canonicalCloneDir: string | undefined;
+  if (managedSkillNames.length > 0) {
+    canonicalCloneDir = await cloneCanonicalForDetect(source);
+    for (const skillName of managedSkillNames) {
+      const assetChanges = await detectSkillAssetChanges(
+        targetDir,
+        targets,
+        skillName,
+        canonicalCloneDir,
+      );
+      for (const change of assetChanges) {
+        if (matchesFilter(change.downstreamPath)) {
+          changes.push(change);
+        }
+      }
     }
   }
 
@@ -102,10 +157,109 @@ export async function detectProposedChanges(options: ProposeOptions = {}): Promi
 
   return {
     changes,
-    source: lockfile.source,
+    source,
     markerPrefix,
     downstream,
+    canonicalCloneDir,
   };
+}
+
+/**
+ * For a single managed skill, walk every non-SKILL.md file in the downstream
+ * skill directory and emit a `skill-asset` change for each one whose bytes
+ * differ from canonical (or that does not exist in canonical at all).
+ *
+ * When the skill is synced to multiple targets (e.g. claude + codex) the copies
+ * are identical, so we only inspect the first target that has the directory.
+ */
+async function detectSkillAssetChanges(
+  targetDir: string,
+  targets: string[],
+  skillName: string,
+  canonicalCloneDir: string,
+): Promise<ProposedChange[]> {
+  const canonicalSkillDir = path.join(canonicalCloneDir, "skills", skillName);
+
+  for (const target of targets) {
+    const downstreamSkillDir = path.join(targetDir, `.${target}`, "skills", skillName);
+    try {
+      await fs.access(downstreamSkillDir);
+    } catch {
+      continue; // Skill not synced to this target
+    }
+
+    return diffSkillDir(targetDir, target, skillName, downstreamSkillDir, canonicalSkillDir);
+  }
+  return [];
+}
+
+async function diffSkillDir(
+  _targetDir: string,
+  target: string,
+  skillName: string,
+  downstreamSkillDir: string,
+  canonicalSkillDir: string,
+): Promise<ProposedChange[]> {
+  const changes: ProposedChange[] = [];
+
+  const downstreamFiles = await fg("**/*", {
+    cwd: downstreamSkillDir,
+    onlyFiles: true,
+    dot: true,
+  });
+
+  for (const relPath of downstreamFiles) {
+    if (relPath === "SKILL.md") continue; // Handled by frontmatter-based detection
+
+    const downstreamFull = path.join(downstreamSkillDir, relPath);
+    const canonicalFull = path.join(canonicalSkillDir, relPath);
+
+    let downstreamBytes: Buffer;
+    try {
+      downstreamBytes = await fs.readFile(downstreamFull);
+    } catch {
+      // File may have been removed between glob and read
+      continue;
+    }
+
+    let canonicalBytes: Buffer | null = null;
+    try {
+      canonicalBytes = await fs.readFile(canonicalFull);
+    } catch {
+      // File doesn't exist in canonical — treat as a new addition downstream
+    }
+
+    if (canonicalBytes !== null && downstreamBytes.equals(canonicalBytes)) {
+      continue;
+    }
+
+    // Use POSIX separators in canonical paths so the canonical commit is
+    // platform-portable regardless of which OS the proposer is on.
+    const downstreamPath = path.join(`.${target}`, "skills", skillName, relPath);
+    const canonicalPath = `skills/${skillName}/${relPath.split(path.sep).join("/")}`;
+
+    changes.push({
+      downstreamPath,
+      canonicalPath,
+      content: downstreamBytes,
+      type: "skill-asset",
+    });
+  }
+
+  return changes;
+}
+
+/**
+ * Clone canonical to a temp dir for detection. The same clone is reused by
+ * `applyProposedChanges` (it's threaded through `ProposeResult`) so we never
+ * clone twice in a single propose flow.
+ */
+async function cloneCanonicalForDetect(source: Source): Promise<string> {
+  const tmpBase = path.join(process.env.TMPDIR || "/tmp", `agconf-propose-${Date.now()}`);
+  await fs.mkdir(tmpBase, { recursive: true });
+  const cloneDir = path.join(tmpBase, "canonical");
+  await cloneCanonical(source, cloneDir);
+  return cloneDir;
 }
 
 /**
@@ -203,7 +357,8 @@ export interface ApplyOptions {
 
 /**
  * Apply proposed changes to the canonical repository.
- * Clones canonical, creates branch, applies changes, pushes, opens PR.
+ * Clones canonical (or reuses the clone created during detection), creates a
+ * branch, applies changes, pushes, opens PR.
  */
 export async function applyProposedChanges(
   result: ProposeResult,
@@ -211,13 +366,18 @@ export async function applyProposedChanges(
 ): Promise<ApplyResult> {
   const { source } = result;
 
-  // Create a persistent temp directory (not auto-cleaned, so user can retry on failure)
-  const tmpBase = path.join(process.env.TMPDIR || "/tmp", `agconf-propose-${Date.now()}`);
-  await fs.mkdir(tmpBase, { recursive: true });
-
-  // Clone the canonical repo
-  const cloneDir = path.join(tmpBase, "canonical");
-  await cloneCanonical(source, cloneDir);
+  let cloneDir: string;
+  if (result.canonicalCloneDir) {
+    // Reuse the clone detect already created — saves a second clone in the
+    // common detect-then-apply flow.
+    cloneDir = result.canonicalCloneDir;
+  } else {
+    // Create a persistent temp directory (not auto-cleaned, so user can retry on failure)
+    const tmpBase = path.join(process.env.TMPDIR || "/tmp", `agconf-propose-${Date.now()}`);
+    await fs.mkdir(tmpBase, { recursive: true });
+    cloneDir = path.join(tmpBase, "canonical");
+    await cloneCanonical(source, cloneDir);
+  }
 
   // Create branch from title
   const branch = generateBranchName(options.title);
@@ -228,7 +388,11 @@ export async function applyProposedChanges(
   for (const change of result.changes) {
     const targetPath = path.join(cloneDir, change.canonicalPath);
     await fs.mkdir(path.dirname(targetPath), { recursive: true });
-    await fs.writeFile(targetPath, change.content, "utf-8");
+    if (typeof change.content === "string") {
+      await fs.writeFile(targetPath, change.content, "utf-8");
+    } else {
+      await fs.writeFile(targetPath, change.content);
+    }
   }
 
   // Commit using the title
