@@ -1,3 +1,9 @@
+## [0.14.0](https://github.com/julian-pani/agconf/compare/v0.13.3...v0.14.0) (2026-06-02)
+
+### Features
+
+* **cli:** propose new content upstream and guard sync from overwriting local edits ([#58](https://github.com/julian-pani/agconf/issues/58)) ([2041ffa](https://github.com/julian-pani/agconf/commit/2041ffadb1200c935d15f47755a9e99e67497b7e))
+
 ## [0.13.3](https://github.com/julian-pani/agconf/compare/v0.13.2...v0.13.3) (2026-05-13)
 
 ### Bug Fixes
