@@ -261,8 +261,9 @@ async function diffSkillDir(
  * clone twice in a single propose flow.
  */
 async function cloneCanonicalForDetect(source: Source): Promise<string> {
-  const tmpBase = path.join(process.env.TMPDIR || "/tmp", `agconf-propose-${Date.now()}`);
-  await fs.mkdir(tmpBase, { recursive: true });
+  // mkdtemp atomically creates a uniquely-named dir, so concurrent propose
+  // flows never collide on the same clone path.
+  const tmpBase = await fs.mkdtemp(path.join(process.env.TMPDIR || "/tmp", "agconf-propose-"));
   const cloneDir = path.join(tmpBase, "canonical");
   await cloneCanonical(source, cloneDir);
   return cloneDir;
@@ -793,9 +794,9 @@ export async function applyProposedChanges(
     // common detect-then-apply flow.
     cloneDir = result.canonicalCloneDir;
   } else {
-    // Create a persistent temp directory (not auto-cleaned, so user can retry on failure)
-    const tmpBase = path.join(process.env.TMPDIR || "/tmp", `agconf-propose-${Date.now()}`);
-    await fs.mkdir(tmpBase, { recursive: true });
+    // Create a persistent temp directory (not auto-cleaned, so user can retry
+    // on failure). mkdtemp gives a unique name so concurrent applies don't collide.
+    const tmpBase = await fs.mkdtemp(path.join(process.env.TMPDIR || "/tmp", "agconf-propose-"));
     cloneDir = path.join(tmpBase, "canonical");
     await cloneCanonical(source, cloneDir);
   }
