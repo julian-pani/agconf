@@ -342,6 +342,99 @@ Body.
       expect(result.changes.map((c) => c.canonicalPath)).toEqual(["skills/skill-b/scripts/new.sh"]);
       expect(result.changes[0]?.type).toBe("skill-asset");
     });
+
+    describe("--files regex filter", () => {
+      /**
+       * Set up two managed rule files whose bodies have been locally edited
+       * (the stored content hash no longer matches), so both show up as
+       * modified absent any filter. Rules are used rather than skills so detect
+       * never has to clone canonical — the `files` option is the thing under
+       * test here, and rule modification is detected purely from frontmatter.
+       */
+      async function setupTwoModifiedRules(): Promise<void> {
+        const ruleBody = (name: string) => `---
+title: ${name}
+---
+
+# ${name}
+
+ORIGINAL body.
+`;
+
+        const rulesDir = path.join(downstreamDir, ".claude", "rules", "security");
+        await fs.mkdir(rulesDir, { recursive: true });
+        for (const name of ["foo", "bar"]) {
+          // Managed metadata baked in, then body tampered so the stored content
+          // hash no longer matches → hasChanges === true.
+          const tampered = addManagedMetadata(ruleBody(name)).replace(
+            "ORIGINAL body.",
+            "TAMPERED body.",
+          );
+          await fs.writeFile(path.join(rulesDir, `${name}.md`), tampered, "utf-8");
+        }
+
+        // No managed skills → detect skips cloning canonical entirely.
+        const lockfile = {
+          version: "1.0.0",
+          synced_at: new Date().toISOString(),
+          source: { type: "local" as const, path: canonicalDir },
+          content: {
+            agents_md: { global_block_hash: "sha256:abc", merged: true },
+            skills: [],
+            targets: ["claude"],
+          },
+        };
+        await fs.mkdir(path.join(downstreamDir, ".agconf"), { recursive: true });
+        await fs.writeFile(
+          path.join(downstreamDir, ".agconf", "lockfile.json"),
+          JSON.stringify(lockfile, null, 2),
+          "utf-8",
+        );
+      }
+
+      it("returns only the file whose relative path matches the regex pattern", async () => {
+        await setupTwoModifiedRules();
+
+        // Sanity: with no filter, both modified rules are proposed.
+        const all = await detectProposedChanges({ cwd: downstreamDir });
+        expect(all.changes.map((c) => c.canonicalPath).sort()).toEqual([
+          "rules/security/bar.md",
+          "rules/security/foo.md",
+        ]);
+
+        // `security/foo` is treated as a RegExp tested against the downstream
+        // relative path (.claude/rules/security/foo.md), so only foo matches.
+        const filtered = await detectProposedChanges({
+          cwd: downstreamDir,
+          files: ["security/foo"],
+        });
+        expect(filtered.changes.map((c) => c.canonicalPath)).toEqual(["rules/security/foo.md"]);
+      });
+
+      it("returns zero changes when the pattern matches nothing", async () => {
+        await setupTwoModifiedRules();
+
+        const filtered = await detectProposedChanges({
+          cwd: downstreamDir,
+          files: ["security/does-not-exist"],
+        });
+        expect(filtered.changes).toEqual([]);
+      });
+
+      it("treats the pattern as a regex, not a literal glob", async () => {
+        await setupTwoModifiedRules();
+
+        // A regex alternation matches both; a literal-glob interpretation would not.
+        const filtered = await detectProposedChanges({
+          cwd: downstreamDir,
+          files: ["foo|bar"],
+        });
+        expect(filtered.changes.map((c) => c.canonicalPath).sort()).toEqual([
+          "rules/security/bar.md",
+          "rules/security/foo.md",
+        ]);
+      });
+    });
   });
 
   describe("detectNewContent", () => {
