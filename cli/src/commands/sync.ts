@@ -33,7 +33,7 @@ export async function syncCommand(options: SyncOptions): Promise<void> {
   }
 
   // Resolve target directory to git root
-  const targetDir = await resolveTargetDirectory();
+  const targetDir = await resolveTargetDirectory(options.cwd);
 
   // Check current status (informational only, no confirmation prompt)
   const status = await getSyncStatus(targetDir);

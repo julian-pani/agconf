@@ -38,6 +38,8 @@ export interface SharedSyncOptions {
   pinned?: boolean;
   summaryFile?: string;
   expandChanges?: boolean;
+  /** Working directory to resolve the target git root from (defaults to process.cwd()). For testing. */
+  cwd?: string;
 }
 
 export interface CommandContext {
@@ -65,9 +67,8 @@ export async function parseAndValidateTargets(
   }
 }
 
-export async function resolveTargetDirectory(): Promise<string> {
+export async function resolveTargetDirectory(cwd: string = process.cwd()): Promise<string> {
   const logger = createLogger();
-  const cwd = process.cwd();
 
   const gitRoot = await getGitRoot(cwd);
   if (!gitRoot) {
