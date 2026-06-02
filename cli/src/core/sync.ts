@@ -15,9 +15,11 @@ import { readLockfile, writeLockfile } from "./lockfile.js";
 import {
   addManagedMetadata,
   computeAssetsHash,
+  fileMatchesCanonical,
   hasManualChanges,
   isManaged,
   type SkillValidationError,
+  skillMatchesCanonical,
   validateSkillFrontmatter,
 } from "./managed-content.js";
 import { consolidateClaudeMd, mergeAgentsMd, writeAgentsMd } from "./merge.js";
@@ -407,6 +409,144 @@ export interface SyncResult {
     /** True if agents were skipped due to Codex-only target */
     skipped?: boolean;
   };
+  /**
+   * Downstream paths of previously-unmanaged files that matched canonical and
+   * were adopted as managed by this sync (the round-trip closing). Empty in the
+   * common case.
+   */
+  adopted: string[];
+}
+
+/** A local file that `sync` would overwrite but that differs from canonical and is not agconf-managed. */
+export interface SyncConflict {
+  type: "skill" | "rule" | "agent";
+  /** Downstream path relative to the target dir (e.g. ".claude/skills/foo") */
+  path: string;
+}
+
+/**
+ * Thrown by `sync()` when it would overwrite local content that differs from
+ * canonical and is not managed by agconf (e.g. uncommitted local work). The
+ * caller decides how to surface it; pass `override: true` to overwrite anyway.
+ */
+export class UnmanagedOverwriteError extends Error {
+  constructor(public readonly conflicts: SyncConflict[]) {
+    super(
+      `Refusing to overwrite ${conflicts.length} local file(s) that differ from canonical and are not managed by agconf`,
+    );
+    this.name = "UnmanagedOverwriteError";
+  }
+}
+
+interface UnmanagedCollisions {
+  /** Divergent unmanaged files — block the sync unless overridden */
+  conflicts: SyncConflict[];
+  /** Identical unmanaged files — safe to overwrite (adopt as managed) */
+  adopted: string[];
+}
+
+/**
+ * Read-only pre-flight: for every file `sync` is about to write, classify any
+ * EXISTING UNMANAGED downstream file as either `adopted` (byte-identical to
+ * canonical modulo metadata — safe to overwrite/adopt) or a `conflict`
+ * (differs — would lose local content). Managed files are left to the normal
+ * write path (canonical is their source of truth; `check` reports drift).
+ */
+async function detectUnmanagedCollisions(
+  targetDir: string,
+  resolvedSource: ResolvedSource,
+  targets: Target[],
+  skillNames: string[],
+  metadataPrefix: string,
+): Promise<UnmanagedCollisions> {
+  const conflicts: SyncConflict[] = [];
+  const adopted: string[] = [];
+  const metaOpts = { metadataPrefix };
+
+  const exists = async (p: string): Promise<boolean> => {
+    try {
+      await fs.access(p);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  // Skills — one managed dir per target (.claude/skills, .codex/skills).
+  for (const target of targets) {
+    const targetDirName = getTargetConfig(target).dir;
+    for (const skillName of skillNames) {
+      const localSkillDir = path.join(targetDir, targetDirName, "skills", skillName);
+      const localSkillMd = path.join(localSkillDir, "SKILL.md");
+      const canonicalSkillDir = path.join(resolvedSource.skillsPath, skillName);
+      const downstreamPath = `${targetDirName}/skills/${skillName}`;
+
+      if (!(await exists(localSkillMd))) {
+        // Abnormal: a skill dir without SKILL.md. We can't read its managed
+        // state, so if it holds files that sync would overwrite and they differ
+        // from canonical, be conservative and flag a conflict rather than risk a
+        // silent clobber. Empty/identical dirs (and absent dirs) pass through.
+        const localFiles = await fg("**/*", {
+          cwd: localSkillDir,
+          onlyFiles: true,
+          dot: true,
+        }).catch(() => []);
+        if (
+          localFiles.length > 0 &&
+          !(await skillMatchesCanonical(localSkillDir, canonicalSkillDir, metaOpts))
+        ) {
+          conflicts.push({ type: "skill", path: downstreamPath });
+        }
+        continue;
+      }
+
+      const content = await fs.readFile(localSkillMd, "utf-8");
+      if (isManaged(content, metaOpts)) continue; // managed: canonical owns it
+      if (await skillMatchesCanonical(localSkillDir, canonicalSkillDir, metaOpts)) {
+        adopted.push(downstreamPath);
+      } else {
+        conflicts.push({ type: "skill", path: downstreamPath });
+      }
+    }
+  }
+
+  // Rules — Claude target only (Codex rules live in AGENTS.md markers, not files).
+  if (resolvedSource.rulesPath && targets.includes("claude")) {
+    const rules = await discoverRules(resolvedSource.rulesPath);
+    for (const rule of rules) {
+      const localPath = path.join(targetDir, ".claude", "rules", rule.relativePath);
+      if (!(await exists(localPath))) continue;
+      const content = await fs.readFile(localPath, "utf-8");
+      if (isManaged(content, metaOpts)) continue;
+      const canonicalPath = path.join(resolvedSource.rulesPath, rule.relativePath);
+      const downstreamPath = `.claude/rules/${rule.relativePath}`;
+      if (await fileMatchesCanonical(localPath, canonicalPath, metaOpts)) {
+        adopted.push(downstreamPath);
+      } else {
+        conflicts.push({ type: "rule", path: downstreamPath });
+      }
+    }
+  }
+
+  // Agents — Claude target only.
+  if (resolvedSource.agentsPath && targets.includes("claude")) {
+    const agents = await discoverAgents(resolvedSource.agentsPath);
+    for (const agent of agents) {
+      const localPath = path.join(targetDir, ".claude", "agents", agent.relativePath);
+      if (!(await exists(localPath))) continue;
+      const content = await fs.readFile(localPath, "utf-8");
+      if (isManaged(content, metaOpts)) continue;
+      const canonicalPath = path.join(resolvedSource.agentsPath, agent.relativePath);
+      const downstreamPath = `.claude/agents/${agent.relativePath}`;
+      if (await fileMatchesCanonical(localPath, canonicalPath, metaOpts)) {
+        adopted.push(downstreamPath);
+      } else {
+        conflicts.push({ type: "agent", path: downstreamPath });
+      }
+    }
+  }
+
+  return { conflicts, adopted };
 }
 
 export async function sync(
@@ -416,6 +556,30 @@ export async function sync(
 ): Promise<SyncResult> {
   // Get marker prefix from resolved source
   const markerPrefix = resolvedSource.markerPrefix;
+  const metadataPrefix = toMetadataPrefix(markerPrefix);
+
+  // Find all skill directories once (used by the overwrite guard and sync loop).
+  const skillDirs = await fg("*/", {
+    cwd: resolvedSource.skillsPath,
+    onlyDirectories: true,
+    deep: 1,
+  });
+  const skillNames = skillDirs.map((d) => d.replace(/\/$/, ""));
+
+  // Pre-flight: never silently overwrite local content that differs from canonical
+  // and isn't managed by agconf. Identical unmanaged files are adopted (reported in
+  // result.adopted); divergent ones abort the whole sync unless --override. Runs
+  // before any write, so a conflict leaves the working tree untouched.
+  const collisions = await detectUnmanagedCollisions(
+    targetDir,
+    resolvedSource,
+    options.targets,
+    skillNames,
+    metadataPrefix,
+  );
+  if (collisions.conflicts.length > 0 && !options.override) {
+    throw new UnmanagedOverwriteError(collisions.conflicts);
+  }
 
   // Read global AGENTS.md content
   const globalContent = await fs.readFile(resolvedSource.agentsMdPath, "utf-8");
@@ -430,14 +594,6 @@ export async function sync(
   // Consolidate CLAUDE.md files (regardless of target)
   // This merges content into AGENTS.md and creates root CLAUDE.md reference
   const consolidateResult = await consolidateClaudeMd(targetDir, mergeResult.hadDotClaudeClaudeMd);
-
-  // Find all skill directories once
-  const skillDirs = await fg("*/", {
-    cwd: resolvedSource.skillsPath,
-    onlyDirectories: true,
-    deep: 1,
-  });
-  const skillNames = skillDirs.map((d) => d.replace(/\/$/, ""));
 
   // Validate all skills have required frontmatter
   const validationErrors: SkillValidationError[] = [];
@@ -569,6 +725,7 @@ export async function sync(
       totalCopied,
       validationErrors,
     },
+    adopted: collisions.adopted,
   };
 
   if (rulesResult && rulesResult.rules.length > 0) {

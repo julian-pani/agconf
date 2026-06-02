@@ -63,7 +63,10 @@ export function createCli(): Command {
     )
     .option("--local [path]", "Use local canonical repository (auto-discover or specify path)")
     .option("-y, --yes", "Non-interactive mode (merge by default)")
-    .option("--override", "Override existing AGENTS.md instead of merging")
+    .option(
+      "--override",
+      "Let canonical win over local content (replace AGENTS.md instead of merging; overwrite divergent unmanaged skills/rules/agents)",
+    )
     .option("--ref <ref>", "GitHub ref/version to sync from (default: latest release)")
     .option("-t, --target <targets...>", "Target platforms (claude, codex)", ["claude"])
     .action(
@@ -88,7 +91,10 @@ export function createCli(): Command {
     )
     .option("--local [path]", "Use local canonical repository (auto-discover or specify path)")
     .option("-y, --yes", "Non-interactive mode (merge by default)")
-    .option("--override", "Override existing AGENTS.md instead of merging")
+    .option(
+      "--override",
+      "Let canonical win over local content (replace AGENTS.md instead of merging; overwrite divergent unmanaged skills/rules/agents)",
+    )
     .option("--ref <ref>", "GitHub ref/version to sync from")
     .option("--pinned", "Use lockfile version without fetching latest")
     .option("-t, --target <targets...>", "Target platforms (claude, codex)")
@@ -126,6 +132,10 @@ export function createCli(): Command {
     .option("-t, --title <title>", "Proposal title (used for branch, commit, and PR)")
     .option("-m, --message <message>", "Message to include in the PR description")
     .option("--files <patterns...>", "Only propose files matching regex patterns (relative paths)")
+    .option(
+      "--new [path]",
+      "Propose new (unmanaged) skills/rules/agents; optionally restrict to a path",
+    )
     .option("-y, --yes", "Non-interactive mode")
     .action(
       async (options: {
@@ -133,6 +143,7 @@ export function createCli(): Command {
         title?: string;
         message?: string;
         files?: string[];
+        new?: string | boolean;
         yes?: boolean;
       }) => {
         await proposeCommand(options);

@@ -8,7 +8,13 @@ import { readLockfile } from "../core/lockfile.js";
 import { getModifiedManagedFiles } from "../core/managed-content.js";
 import type { ResolvedSource } from "../core/source.js";
 import { formatSourceString, resolveGithubSource, resolveLocalSource } from "../core/source.js";
-import { deleteOrphanedSkills, findOrphanedSkills, type SyncStatus, sync } from "../core/sync.js";
+import {
+  deleteOrphanedSkills,
+  findOrphanedSkills,
+  type SyncStatus,
+  sync,
+  UnmanagedOverwriteError,
+} from "../core/sync.js";
 import { getTargetConfig, parseTargets, SUPPORTED_TARGETS, type Target } from "../core/targets.js";
 import {
   formatTag,
@@ -771,8 +777,41 @@ ${summaryLines.join("\n")}
       await fs.writeFile(options.summaryFile, summary, "utf-8");
     }
 
+    // Round-trip adoption: previously-unmanaged local files that matched canonical
+    // and are now tracked. Surfaces that re-running `propose --new` is unnecessary.
+    if (result.adopted.length > 0) {
+      console.log();
+      console.log(
+        pc.green(`Adopted ${result.adopted.length} previously-untracked file(s) as managed:`),
+      );
+      for (const adoptedPath of result.adopted) {
+        console.log(`  ${pc.green("+")} ${adoptedPath}`);
+      }
+    }
+
     prompts.outro(pc.green("Done!"));
   } catch (error) {
+    if (error instanceof UnmanagedOverwriteError) {
+      syncSpinner.fail("Sync stopped");
+      console.log();
+      console.log(
+        pc.yellow("These local files differ from canonical and are not managed by agconf:"),
+      );
+      for (const conflict of error.conflicts) {
+        console.log(`  ${pc.yellow("!")} ${conflict.path} ${pc.dim(`(${conflict.type})`)}`);
+      }
+      console.log();
+      console.log(pc.dim("Overwriting would discard your local changes. Either:"));
+      // `propose` only makes sense once a canonical relationship exists (sync),
+      // not on a first-time `init`.
+      if (context.commandName === "sync") {
+        console.log(pc.dim("  • send them upstream:     agconf propose"));
+      } else {
+        console.log(pc.dim("  • rename the local file(s) to keep them, then re-run"));
+      }
+      console.log(pc.dim(`  • overwrite with canonical: agconf ${context.commandName} --override`));
+      process.exit(1);
+    }
     syncSpinner.fail("Sync failed");
     logger.error(error instanceof Error ? error.message : String(error));
     process.exit(1);

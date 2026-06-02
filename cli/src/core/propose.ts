@@ -4,13 +4,19 @@ import * as path from "node:path";
 import { promisify } from "node:util";
 import fg from "fast-glob";
 import { type SimpleGit, simpleGit } from "simple-git";
+import { loadCanonicalRepoConfig } from "../config/loader.js";
 import type { Source } from "../schemas/lockfile.js";
+import { validateAgentFrontmatter } from "./agents.js";
 import { readLockfile } from "./lockfile.js";
 import {
   type CheckManagedFilesOptions,
   checkAllManagedFiles,
+  fileMatchesCanonical,
+  isManaged,
   type ManagedFileCheckResult,
+  skillMatchesCanonical,
   stripManagedMetadata,
+  validateSkillFrontmatter,
 } from "./managed-content.js";
 import { parseAgentsMd, stripMetadataComments } from "./markers.js";
 
@@ -333,6 +339,421 @@ async function buildProposedChange(
       // rules-section (codex concatenated) — not directly proposable
       return null;
   }
+}
+
+// =============================================================================
+// New (unmanaged) content proposals
+// =============================================================================
+// The detection above only surfaces *modified managed* files (they carry an
+// embedded hash from a previous sync). The functions below discover content
+// authored locally that canonical has never seen — skills, rules, and agents
+// with no agconf metadata — so it can be proposed upstream as a brand-new
+// addition.
+
+/**
+ * A single discoverable new (unmanaged) content item that can be proposed to
+ * canonical. Each candidate expands into one or more concrete `ProposedChange`
+ * entries (a skill ships its SKILL.md plus every asset file; a rule or agent
+ * ships a single file).
+ */
+export interface NewContentCandidate {
+  type: "skill" | "rule" | "agent";
+  /** Identifier: skill name, rule path (relative to rules dir), or agent file name */
+  name: string;
+  /** Downstream path shown to the user (skill dir, or rule/agent file), POSIX, relative to target dir */
+  downstreamPath: string;
+  /** Canonical destination (skill dir, or rule/agent file), POSIX, relative to canonical root */
+  canonicalPath: string;
+  /** Concrete file changes this candidate ships */
+  changes: ProposedChange[];
+}
+
+interface DetectNewContentOptions {
+  /** Working directory (default: process.cwd()) */
+  cwd?: string | undefined;
+  /** Restrict discovery to this path (relative to cwd or absolute) within a managed dir */
+  path?: string | undefined;
+}
+
+/**
+ * Local content that already exists in canonical AND is byte-identical to it
+ * (modulo managed metadata). It is not proposable — it is a round-trip awaiting
+ * adoption: running `agconf sync` replaces the untracked local copy with the
+ * managed (tracked) version. See the round-trip notes on `detectNewContent`.
+ */
+interface AdoptableItem {
+  type: "skill" | "rule" | "agent";
+  name: string;
+  downstreamPath: string;
+}
+
+export interface DetectNewContentResult {
+  /** New content discovered (collisions and invalid files excluded — see `warnings`/`adoptable`) */
+  candidates: NewContentCandidate[];
+  /**
+   * Local content that already matches canonical and just needs `agconf sync`
+   * to become managed (the common "I proposed this, it merged, I haven't synced
+   * yet" case). Kept out of `candidates` so we don't re-propose a no-op.
+   */
+  adoptable: AdoptableItem[];
+  /**
+   * True when a path filter resolved to exactly one candidate, so the caller
+   * can skip an interactive selection step and propose it directly.
+   */
+  autoSelect: boolean;
+  /** Non-fatal messages (true conflicts, invalid frontmatter) for the caller to surface */
+  warnings: string[];
+  source: Source;
+  markerPrefix?: string | undefined;
+  downstream: DownstreamContext;
+  /** Canonical clone created during detection; reused by applyProposedChanges */
+  canonicalCloneDir?: string | undefined;
+}
+
+/** Metadata-prefix options shared by the helpers below. */
+type MetaOpts = { metadataPrefix?: string };
+
+/** A locally-discovered unmanaged file before canonical mapping/validation. */
+interface RawNewCandidate {
+  type: "skill" | "rule" | "agent";
+  name: string;
+  downstreamPath: string;
+  target: string;
+}
+
+/**
+ * Detect new (unmanaged) content that could be proposed to canonical.
+ *
+ * Runs in two passes so canonical is only cloned when there is something to
+ * propose:
+ *  1. Walk the downstream `.{target}/skills|rules|agents` dirs and collect every
+ *     file that is NOT agconf-managed (no `agconf_managed` frontmatter). Apply
+ *     the optional path filter here.
+ *  2. If any candidates remain, clone canonical once, resolve its configured
+ *     destination dirs (`skills_dir`/`rules_dir`/`agents_dir`), drop anything
+ *     that fails frontmatter validation, and build the concrete `ProposedChange`
+ *     set for each survivor.
+ *
+ * Round-trip handling: content that already exists upstream is NOT a candidate.
+ * We compare it to canonical (modulo managed metadata) to tell two cases apart:
+ *   - byte-identical  -> `adoptable`: a completed round trip awaiting `agconf
+ *     sync`, which replaces the untracked local copy with the managed version.
+ *   - differs         -> a true conflict, surfaced as a warning (sync would
+ *     overwrite the local copy, so the diff should be proposed first).
+ */
+export async function detectNewContent(
+  options: DetectNewContentOptions = {},
+): Promise<DetectNewContentResult> {
+  const targetDir = options.cwd ?? process.cwd();
+
+  const lockfileResult = await readLockfile(targetDir);
+  if (!lockfileResult) {
+    throw new Error("No lockfile found. Run 'agconf init' first.");
+  }
+
+  const { lockfile } = lockfileResult;
+  const targets = lockfile.content.targets ?? ["claude"];
+  const markerPrefix = lockfile.content.marker_prefix;
+  const source = lockfile.source;
+  const metaOpts: MetaOpts = markerPrefix ? { metadataPrefix: markerPrefix } : {};
+
+  const downstream = await getDownstreamContext(targetDir);
+
+  // Pass 1: discover unmanaged local candidates (no canonical access yet).
+  let raws = await discoverRawNewCandidates(targetDir, targets, metaOpts);
+
+  if (options.path) {
+    const filter = normalizeRelPath(targetDir, options.path);
+    raws = raws.filter((r) => pathFilterMatches(r.downstreamPath, filter));
+  }
+
+  if (raws.length === 0) {
+    return {
+      candidates: [],
+      adoptable: [],
+      autoSelect: false,
+      warnings: [],
+      source,
+      markerPrefix,
+      downstream,
+    };
+  }
+
+  // Pass 2: clone canonical once to resolve destination dirs + detect collisions.
+  const canonicalCloneDir = await cloneCanonicalForDetect(source);
+  const canonConfig = await loadCanonicalRepoConfig(canonicalCloneDir);
+  const skillsDir = canonConfig?.content.skills_dir ?? "skills";
+  const rulesDir = canonConfig?.content.rules_dir ?? "rules";
+  const agentsDir = canonConfig?.content.agents_dir ?? "agents";
+
+  const candidates: NewContentCandidate[] = [];
+  const adoptable: AdoptableItem[] = [];
+  const warnings: string[] = [];
+
+  for (const raw of raws) {
+    const candidate = await buildNewCandidate(raw, {
+      targetDir,
+      canonicalCloneDir,
+      skillsDir,
+      rulesDir,
+      agentsDir,
+      metaOpts,
+      adoptable,
+      warnings,
+    });
+    if (candidate) candidates.push(candidate);
+  }
+
+  // Auto-select only when a path filter pinned things down to a single survivor.
+  const autoSelect = Boolean(options.path) && candidates.length === 1;
+
+  return {
+    candidates,
+    adoptable,
+    autoSelect,
+    warnings,
+    source,
+    markerPrefix,
+    downstream,
+    canonicalCloneDir,
+  };
+}
+
+interface BuildCandidateContext {
+  targetDir: string;
+  canonicalCloneDir: string;
+  skillsDir: string;
+  rulesDir: string;
+  agentsDir: string;
+  metaOpts: MetaOpts;
+  /** Collects round-trip items (local already matches canonical) (mutated) */
+  adoptable: AdoptableItem[];
+  /** Collects conflict / validation messages (mutated) */
+  warnings: string[];
+}
+
+/**
+ * Map a raw candidate to a full `NewContentCandidate`, or return null when it
+ * already exists upstream (recorded as adoptable or a conflict via `ctx`) or
+ * fails frontmatter validation.
+ */
+async function buildNewCandidate(
+  raw: RawNewCandidate,
+  ctx: BuildCandidateContext,
+): Promise<NewContentCandidate | null> {
+  const { targetDir, canonicalCloneDir, metaOpts, adoptable, warnings } = ctx;
+
+  if (raw.type === "skill") {
+    const canonicalPath = `${ctx.skillsDir}/${raw.name}`;
+    const skillDir = path.join(targetDir, `.${raw.target}`, "skills", raw.name);
+    const canonicalSkillDir = path.join(canonicalCloneDir, ctx.skillsDir, raw.name);
+    if (await pathExists(canonicalSkillDir)) {
+      if (await skillMatchesCanonical(skillDir, canonicalSkillDir, metaOpts)) {
+        adoptable.push({ type: "skill", name: raw.name, downstreamPath: raw.downstreamPath });
+      } else {
+        warnings.push(conflictWarning("Skill", raw.name));
+      }
+      return null;
+    }
+    const skillMd = await fs.readFile(path.join(skillDir, "SKILL.md"), "utf-8");
+    const vErr = validateSkillFrontmatter(skillMd, raw.name, raw.downstreamPath);
+    if (vErr) {
+      warnings.push(`Skill "${raw.name}" skipped: ${vErr.errors.join("; ")}`);
+      return null;
+    }
+    const changes = await buildNewSkillChanges(
+      skillDir,
+      raw.target,
+      raw.name,
+      ctx.skillsDir,
+      metaOpts,
+    );
+    return {
+      type: "skill",
+      name: raw.name,
+      downstreamPath: raw.downstreamPath,
+      canonicalPath,
+      changes,
+    };
+  }
+
+  if (raw.type === "rule") {
+    const canonicalPath = `${ctx.rulesDir}/${raw.name}`;
+    const fullPath = path.join(targetDir, `.${raw.target}`, "rules", raw.name);
+    const canonicalFullPath = path.join(canonicalCloneDir, ctx.rulesDir, raw.name);
+    if (await pathExists(canonicalFullPath)) {
+      if (await fileMatchesCanonical(fullPath, canonicalFullPath, metaOpts)) {
+        adoptable.push({ type: "rule", name: raw.name, downstreamPath: raw.downstreamPath });
+      } else {
+        warnings.push(conflictWarning("Rule", raw.name));
+      }
+      return null;
+    }
+    const content = stripManagedMetadata(await fs.readFile(fullPath, "utf-8"), metaOpts);
+    return {
+      type: "rule",
+      name: raw.name,
+      downstreamPath: raw.downstreamPath,
+      canonicalPath,
+      changes: [{ downstreamPath: raw.downstreamPath, canonicalPath, content, type: "rule" }],
+    };
+  }
+
+  // agent
+  const canonicalPath = `${ctx.agentsDir}/${raw.name}`;
+  const fullPath = path.join(targetDir, ".claude", "agents", raw.name);
+  const canonicalFullPath = path.join(canonicalCloneDir, ctx.agentsDir, raw.name);
+  if (await pathExists(canonicalFullPath)) {
+    if (await fileMatchesCanonical(fullPath, canonicalFullPath, metaOpts)) {
+      adoptable.push({ type: "agent", name: raw.name, downstreamPath: raw.downstreamPath });
+    } else {
+      warnings.push(conflictWarning("Agent", raw.name));
+    }
+    return null;
+  }
+  const rawContent = await fs.readFile(fullPath, "utf-8");
+  const vErr = validateAgentFrontmatter(rawContent, raw.name);
+  if (vErr) {
+    warnings.push(`Agent "${raw.name}" skipped: ${vErr.errors.join("; ")}`);
+    return null;
+  }
+  const content = stripManagedMetadata(rawContent, metaOpts);
+  return {
+    type: "agent",
+    name: raw.name,
+    downstreamPath: raw.downstreamPath,
+    canonicalPath,
+    changes: [{ downstreamPath: raw.downstreamPath, canonicalPath, content, type: "agent" }],
+  };
+}
+
+function conflictWarning(label: string, name: string): string {
+  return (
+    `${label} "${name}" already exists in canonical and differs from your local copy — ` +
+    "propose the change via a regular `agconf propose`, or run `agconf sync` to overwrite the local copy."
+  );
+}
+
+/**
+ * Walk the downstream managed dirs and collect every file that is NOT
+ * agconf-managed. Skills are deduped by name and rules by path across targets
+ * (the synced copies are identical); agents only exist for the Claude target.
+ */
+async function discoverRawNewCandidates(
+  targetDir: string,
+  targets: string[],
+  metaOpts: MetaOpts,
+): Promise<RawNewCandidate[]> {
+  const seen = new Set<string>();
+  const raws: RawNewCandidate[] = [];
+
+  for (const target of targets) {
+    const skillsDir = path.join(targetDir, `.${target}`, "skills");
+    for (const sf of await globFiles(skillsDir, "*/SKILL.md")) {
+      const name = path.dirname(sf);
+      const key = `skill:${name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const content = await fs.readFile(path.join(skillsDir, sf), "utf-8");
+      if (isManaged(content, metaOpts)) continue;
+      raws.push({ type: "skill", name, downstreamPath: `.${target}/skills/${name}`, target });
+    }
+  }
+
+  for (const target of targets) {
+    const rulesDir = path.join(targetDir, `.${target}`, "rules");
+    for (const rf of await globFiles(rulesDir, "**/*.md")) {
+      const name = rf.split(path.sep).join("/");
+      const key = `rule:${name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const content = await fs.readFile(path.join(rulesDir, rf), "utf-8");
+      if (isManaged(content, metaOpts)) continue;
+      raws.push({ type: "rule", name, downstreamPath: `.${target}/rules/${name}`, target });
+    }
+  }
+
+  // Agents are only synced to the Claude target.
+  if (targets.includes("claude")) {
+    const agentsDir = path.join(targetDir, ".claude", "agents");
+    for (const af of await globFiles(agentsDir, "*.md")) {
+      const name = af.split(path.sep).join("/");
+      const content = await fs.readFile(path.join(agentsDir, af), "utf-8");
+      if (isManaged(content, metaOpts)) continue;
+      raws.push({
+        type: "agent",
+        name,
+        downstreamPath: `.claude/agents/${name}`,
+        target: "claude",
+      });
+    }
+  }
+
+  return raws;
+}
+
+/**
+ * Build the full change set for a brand-new skill: SKILL.md (metadata stripped,
+ * a no-op when none is present) plus every sibling asset as raw bytes.
+ */
+async function buildNewSkillChanges(
+  skillDir: string,
+  target: string,
+  skillName: string,
+  skillsDir: string,
+  metaOpts: MetaOpts,
+): Promise<ProposedChange[]> {
+  const changes: ProposedChange[] = [];
+  for (const relPath of await globFiles(skillDir, "**/*")) {
+    const posix = relPath.split(path.sep).join("/");
+    const downstreamPath = `.${target}/skills/${skillName}/${posix}`;
+    const canonicalPath = `${skillsDir}/${skillName}/${posix}`;
+    if (posix === "SKILL.md") {
+      const content = stripManagedMetadata(
+        await fs.readFile(path.join(skillDir, relPath), "utf-8"),
+        metaOpts,
+      );
+      changes.push({ downstreamPath, canonicalPath, content, type: "skill" });
+    } else {
+      const content = await fs.readFile(path.join(skillDir, relPath));
+      changes.push({ downstreamPath, canonicalPath, content, type: "skill-asset" });
+    }
+  }
+  return changes;
+}
+
+/** Glob files under a directory, returning [] when the directory is absent. */
+async function globFiles(cwd: string, pattern: string): Promise<string[]> {
+  try {
+    return await fg(pattern, { cwd, onlyFiles: true, dot: true });
+  } catch {
+    return [];
+  }
+}
+
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await fs.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Normalize a user-supplied path to a POSIX path relative to the target dir. */
+function normalizeRelPath(targetDir: string, p: string): string {
+  const abs = path.isAbsolute(p) ? p : path.join(targetDir, p);
+  return path.relative(targetDir, abs).split(path.sep).join("/").replace(/\/+$/, "");
+}
+
+/**
+ * A candidate matches the filter when either is contained in the other: the
+ * filter can be a parent dir (`.claude/skills`), the candidate's own path
+ * (`.claude/skills/foo`), or a child of it (`.claude/skills/foo/SKILL.md`).
+ */
+function pathFilterMatches(candidatePath: string, filter: string): boolean {
+  const c = candidatePath.replace(/\/+$/, "");
+  return c === filter || c.startsWith(`${filter}/`) || filter.startsWith(`${c}/`);
 }
 
 export interface ApplyResult {

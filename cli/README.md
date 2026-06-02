@@ -22,6 +22,8 @@ Full documentation available on GitHub: https://github.com/julian-pani/agconf
 | `init` | Initialize repo from a canonical source | `agconf init --source org/standards` |
 | `sync` | Sync content from canonical repo (fetches latest by default) | `agconf sync` or `agconf sync --pinned` |
 | `check` | Verify managed files are unchanged | `agconf check` |
+| `propose` | Propose local changes to managed content back to the canonical repo (opens a PR) | `agconf propose` |
+| `propose --new [path]` | Propose new (unmanaged) skills/rules/agents upstream; optional path filters discovery | `agconf propose --new .claude/skills/my-skill` |
 | `upgrade-cli` | Upgrade the CLI to latest version (auto-detects package manager) | `agconf upgrade-cli` |
 | `canonical init` | Scaffold a new canonical repository | `agconf canonical init` |
 | `config show` | Show current configuration | `agconf config show` |
@@ -48,6 +50,15 @@ This scaffolds the structure for your standards. Edit `instructions/AGENTS.md` t
 cd your-project
 agconf init --source your-org/engineering-standards
 ```
+
+## Local edits & overwrite protection
+
+`sync` will not silently overwrite a local skill/rule/agent that it does not manage:
+
+- If a local **unmanaged** file is byte-identical to canonical, sync **adopts** it (adds tracking metadata) — this is how a file you authored and proposed upstream becomes managed after the PR merges; no need to re-run `propose --new`.
+- If a local **unmanaged** file **differs** from canonical, sync **stops with an error** and writes nothing, listing the conflicting paths. Resolve by sending your change upstream (`agconf propose`), renaming the file, or overwriting with `--override`.
+
+> **`--override` discards local changes.** It both replaces `AGENTS.md` (instead of merging) and overwrites divergent unmanaged files with canonical. CI sync jobs typically pass `--override` because the working tree is committed (git-recoverable); run plain `sync` locally to keep uncommitted work safe. Managed files are always overwritten by sync (canonical owns them; `check` reports local drift).
 
 ## CLAUDE.md Handling
 

@@ -38,7 +38,18 @@ const COMMANDS = {
   },
   propose: {
     description: "Propose local changes back to canonical",
-    options: ["-n", "--dry-run", "-t", "--title", "-m", "--message", "--files", "-y", "--yes"],
+    options: [
+      "-n",
+      "--dry-run",
+      "-t",
+      "--title",
+      "-m",
+      "--message",
+      "--files",
+      "--new",
+      "-y",
+      "--yes",
+    ],
   },
   config: {
     description: "Manage global CLI configuration",

@@ -112,6 +112,7 @@ GitHub Actions workflows are created automatically to keep downstream repos in s
 | `init` | Initialize repo from a canonical source |
 | `sync` | Sync content from canonical repo (fetches latest by default) |
 | `check` | Verify managed files are unchanged |
+| `propose` | Propose local changes (or new skills/rules/agents via `--new`) back to canonical as a PR |
 | `upgrade-cli` | Upgrade the CLI to latest version (auto-detects package manager) |
 | `canonical init` | Scaffold a new canonical repository |
 | `config` | Manage global CLI configuration |
@@ -162,7 +163,13 @@ agconf sync --summary-file sync-report.md
 
 # Show all changed items in output (default shows first 5)
 agconf sync --expand-changes
+
+# Force canonical to win: replace AGENTS.md (instead of merging) AND overwrite
+# divergent local unmanaged skills/rules/agents. Discards local changes.
+agconf sync --override
 ```
+
+By default `sync` will **not** silently overwrite a local skill/rule/agent it does not manage. If a local **unmanaged** file is identical to canonical it is **adopted** (gains tracking metadata); if it **differs**, sync stops with an error and writes nothing. Use `agconf propose` to send the change upstream, or `--override` to discard it. CI sync jobs typically pass `--override` (the working tree is committed, so overwrites are git-recoverable).
 
 ### `agconf check`
 
@@ -179,6 +186,26 @@ Exit codes:
 - `1` - One or more managed files have been modified
 
 This command is used by the pre-commit hook and CI workflows to detect unauthorized modifications to agconf-managed files.
+
+### `agconf propose`
+
+Send local changes to managed content back to the canonical repository as a pull request — the reverse of `sync`.
+
+```bash
+# Propose edits you made to existing managed skills/rules/agents
+agconf propose
+
+# Propose NEW (unmanaged) content you authored locally
+agconf propose --new
+
+# Restrict discovery of new content to a path (a single match is auto-selected)
+agconf propose --new .claude/skills/my-new-skill
+
+# Preview without opening a PR
+agconf propose --dry-run
+```
+
+Once a proposed item is merged into canonical, the next `agconf sync` adopts your local copy as managed automatically — no need to re-run `propose --new`.
 
 ### `agconf upgrade-cli`
 

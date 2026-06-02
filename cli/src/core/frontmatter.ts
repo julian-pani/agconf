@@ -176,6 +176,47 @@ function parseSimpleYaml(yaml: string): Record<string, unknown> {
   return result;
 }
 
+/**
+ * Heuristic: does this file's frontmatter use only constructs that
+ * `parseSimpleYaml` round-trips faithfully (no silent data loss)?
+ *
+ * The hand-rolled parser drops or mangles: non-word keys (`my-key:`, `a.b:`),
+ * standalone comment lines, block scalars (`key: |`), and nesting deeper than
+ * one level. Callers that decide whether two files are equivalent by comparing
+ * metadata-stripped (i.e. parse→serialize) output must NOT trust that output
+ * when the frontmatter isn't faithfully representable — otherwise a difference
+ * in a dropped region would be masked. Returns true for files with no
+ * frontmatter (body is always preserved verbatim).
+ *
+ * Conservative by design: anything it cannot vouch for returns false so callers
+ * fall back to a strict comparison.
+ */
+export function frontmatterIsSimple(content: string): boolean {
+  const match = content.match(FRONTMATTER_REGEX);
+  if (!match || !match[1]) return true; // no frontmatter → nothing to lose
+
+  for (const line of match[1].split("\n")) {
+    if (line.trim() === "") continue;
+
+    // Indented lines: only a single level of nesting is faithful — a 2-space
+    // `key: value` or a 2-space array item. Anything else (deeper nesting,
+    // block-scalar bodies, tabs) is not.
+    if (/^\s/.test(line)) {
+      if (!/^ {2}\w+:/.test(line) && !/^ {2}-\s+\S/.test(line)) return false;
+      continue;
+    }
+
+    // Top-level lines must be `word:` — rejects comments, non-word keys, etc.
+    const kv = line.match(/^(\w+):\s*(.*)$/);
+    if (!kv) return false;
+    // Reject block-scalar indicators (`|`, `>`, `|-`, `>2`, ...) — their bodies
+    // live on following indented lines and are dropped by the parser.
+    if (/^[|>][+\-0-9]*$/.test((kv[2] ?? "").trim())) return false;
+  }
+
+  return true;
+}
+
 // =============================================================================
 // Serialization
 // =============================================================================
