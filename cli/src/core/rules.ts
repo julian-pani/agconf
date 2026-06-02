@@ -335,7 +335,7 @@ export function addRuleMetadata(rule: Rule, metadataPrefix: string): string {
 
   // Build new frontmatter
   const existingFrontmatter = rule.frontmatter || {};
-  const existingMetadata = (existingFrontmatter.metadata as Record<string, string>) || {};
+  const existingMetadata = existingFrontmatter.metadata ?? {};
 
   const newMetadata: Record<string, string> = {
     ...existingMetadata,
