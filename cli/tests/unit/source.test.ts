@@ -56,6 +56,16 @@ markers:
   prefix: "my-org"
 `;
 
+const VALID_AGCONF_YAML_CUSTOM_PATHS = `version: "1.0.0"
+meta:
+  name: "custom-paths-test"
+content:
+  instructions: "docs/AGENTS.md"
+  skills_dir: "agent-skills"
+targets:
+  - claude
+`;
+
 const INVALID_AGCONF_YAML_MISSING_META = `version: "1.0.0"
 content:
   instructions: "instructions/AGENTS.md"
@@ -97,6 +107,10 @@ async function createCanonicalRepo(
     createInstructions?: boolean;
     rulesDir?: string;
     agentsDir?: string;
+    /** Relative path of the instructions file (default: "instructions/AGENTS.md") */
+    instructionsPath?: string;
+    /** Directory name for skills (default: "skills") */
+    skillsDir?: string;
   } = {},
 ): Promise<void> {
   const {
@@ -106,6 +120,8 @@ async function createCanonicalRepo(
     createInstructions = true,
     rulesDir,
     agentsDir,
+    instructionsPath = "instructions/AGENTS.md",
+    skillsDir = "skills",
   } = options;
 
   await fs.mkdir(baseDir, { recursive: true });
@@ -115,12 +131,13 @@ async function createCanonicalRepo(
   }
 
   if (createInstructions) {
-    await fs.mkdir(path.join(baseDir, "instructions"), { recursive: true });
-    await fs.writeFile(path.join(baseDir, "instructions", "AGENTS.md"), agentsMd);
+    const fullInstructionsPath = path.join(baseDir, instructionsPath);
+    await fs.mkdir(path.dirname(fullInstructionsPath), { recursive: true });
+    await fs.writeFile(fullInstructionsPath, agentsMd);
   }
 
   if (createSkillsDir) {
-    await fs.mkdir(path.join(baseDir, "skills"), { recursive: true });
+    await fs.mkdir(path.join(baseDir, skillsDir), { recursive: true });
   }
 
   if (rulesDir) {
@@ -277,6 +294,49 @@ describe("resolveLocalSource", () => {
 
     expect(resolved.agentsPath).toBe(path.join(canonicalDir, "agents"));
     expect(resolved.rulesPath).toBeNull();
+  });
+
+  it("honors custom skills_dir and instructions paths from agconf.yaml", async () => {
+    const canonicalDir = path.join(tempDir, "canonical-custom-paths");
+    // Only the custom-named directories exist (no default skills/ or instructions/)
+    await createCanonicalRepo(canonicalDir, {
+      agconfYaml: VALID_AGCONF_YAML_CUSTOM_PATHS,
+      instructionsPath: "docs/AGENTS.md",
+      skillsDir: "agent-skills",
+    });
+
+    const resolved = await resolveLocalSource({ path: canonicalDir });
+
+    expect(resolved.agentsMdPath).toBe(path.join(canonicalDir, "docs", "AGENTS.md"));
+    expect(resolved.skillsPath).toBe(path.join(canonicalDir, "agent-skills"));
+  });
+
+  it("validates against the configured instructions path (not the default)", async () => {
+    const canonicalDir = path.join(tempDir, "canonical-custom-missing-instructions");
+    // Config points instructions at docs/AGENTS.md but the file is never created
+    await createCanonicalRepo(canonicalDir, {
+      agconfYaml: VALID_AGCONF_YAML_CUSTOM_PATHS,
+      createInstructions: false,
+      skillsDir: "agent-skills",
+    });
+
+    await expect(resolveLocalSource({ path: canonicalDir })).rejects.toThrow(
+      /missing docs\/AGENTS.md/,
+    );
+  });
+
+  it("validates against the configured skills_dir (not the default)", async () => {
+    const canonicalDir = path.join(tempDir, "canonical-custom-missing-skills");
+    // Config points skills_dir at agent-skills but the directory is never created
+    await createCanonicalRepo(canonicalDir, {
+      agconfYaml: VALID_AGCONF_YAML_CUSTOM_PATHS,
+      instructionsPath: "docs/AGENTS.md",
+      createSkillsDir: false,
+    });
+
+    await expect(resolveLocalSource({ path: canonicalDir })).rejects.toThrow(
+      /missing agent-skills\/ directory/,
+    );
   });
 
   it("resolves with custom marker prefix from agconf.yaml", async () => {
