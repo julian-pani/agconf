@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { parseFrontmatter, serializeFrontmatter } from "../../src/core/frontmatter.js";
+import {
+  frontmatterIsSimple,
+  parseFrontmatter,
+  serializeFrontmatter,
+} from "../../src/core/frontmatter.js";
 
 // =============================================================================
 // Test Data
@@ -710,5 +714,36 @@ describe("edge cases", () => {
 
     expect(result.frontmatter).not.toBeNull();
     expect(result.frontmatter?.name).toBe("single quoted");
+  });
+
+  describe("frontmatterIsSimple", () => {
+    const fm = (body: string) => `---\n${body}\n---\n\nBody.\n`;
+
+    it("returns true for files with no frontmatter", () => {
+      expect(frontmatterIsSimple("# Just a heading\n\nText.")).toBe(true);
+    });
+
+    it("returns true for plain key/value frontmatter", () => {
+      expect(frontmatterIsSimple(fm("name: foo\ndescription: a thing"))).toBe(true);
+    });
+
+    it("returns true for one-level nested metadata and block arrays", () => {
+      expect(frontmatterIsSimple(fm("name: foo\nmetadata:\n  agconf_managed: true"))).toBe(true);
+      expect(frontmatterIsSimple(fm("name: foo\ntools:\n  - Read\n  - Write"))).toBe(true);
+    });
+
+    it("returns false for non-word keys (parser drops them)", () => {
+      expect(frontmatterIsSimple(fm("name: foo\nmy-key: value"))).toBe(false);
+      expect(frontmatterIsSimple(fm("a.b: value"))).toBe(false);
+    });
+
+    it("returns false for comment lines and block scalars", () => {
+      expect(frontmatterIsSimple(fm("name: foo\n# a comment"))).toBe(false);
+      expect(frontmatterIsSimple(fm("name: foo\ndescription: |\n  multi\n  line"))).toBe(false);
+    });
+
+    it("returns false for nesting deeper than one level", () => {
+      expect(frontmatterIsSimple(fm("a:\n  b:\n    c: deep"))).toBe(false);
+    });
   });
 });

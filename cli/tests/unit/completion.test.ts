@@ -290,7 +290,16 @@ describe("completion", () => {
 
       expect(handleCompletion()).toBe(true);
       expect(tabtab.log).toHaveBeenCalledWith(
-        expect.arrayContaining(["-n", "--dry-run", "-t", "--title", "-m", "--message", "--files"]),
+        expect.arrayContaining([
+          "-n",
+          "--dry-run",
+          "-t",
+          "--title",
+          "-m",
+          "--message",
+          "--files",
+          "--new",
+        ]),
       );
     });
 

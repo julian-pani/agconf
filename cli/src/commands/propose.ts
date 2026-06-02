@@ -4,7 +4,10 @@ import {
   type ApplyOptions,
   type ApplyResult,
   applyProposedChanges,
+  type DetectNewContentResult,
+  detectNewContent,
   detectProposedChanges,
+  type NewContentCandidate,
   type ProposeResult,
 } from "../core/propose.js";
 import { formatSourceString } from "../core/source.js";
@@ -15,43 +18,33 @@ export interface ProposeCommandOptions {
   message?: string | undefined;
   files?: string[] | undefined;
   yes?: boolean | undefined;
+  /**
+   * Propose new (unmanaged) content instead of changes to managed content.
+   * `true` discovers everything; a string restricts discovery to that path.
+   */
+  new?: string | boolean | undefined;
   cwd?: string | undefined;
 }
 
+type Spinner = ReturnType<typeof prompts.spinner>;
+
 export async function proposeCommand(options: ProposeCommandOptions = {}): Promise<void> {
   const targetDir = options.cwd ?? process.cwd();
+  const isNew = options.new !== undefined && options.new !== false;
 
   console.log();
   prompts.intro(pc.bold("agconf propose"));
 
-  // Detect changes
   const spinner = prompts.spinner();
-  spinner.start("Detecting changes to managed content...");
 
-  let result: ProposeResult;
-  try {
-    result = await detectProposedChanges({
-      cwd: targetDir,
-      files: options.files,
-    });
-  } catch (error) {
-    spinner.stop("Failed to detect changes");
-    prompts.log.error(String(error));
-    prompts.outro("Propose cancelled");
-    process.exit(1);
-  }
+  const result = isNew
+    ? await buildNewProposeResult(targetDir, options, spinner)
+    : await buildManagedProposeResult(targetDir, options, spinner);
 
-  if (result.changes.length === 0) {
-    spinner.stop("No changes detected");
-    prompts.log.info("No modified managed files found. Nothing to propose.");
-    prompts.outro("Done");
-    return;
-  }
+  if (!result) return; // messaging + outro already handled
 
-  spinner.stop(`Found ${result.changes.length} modified file(s)`);
-
-  // Show changes
-  prompts.log.info("Modified files:");
+  // Show what will be proposed.
+  prompts.log.info(isNew ? "New files to propose:" : "Modified files:");
   for (const change of result.changes) {
     console.log(`  ${change.downstreamPath} ${pc.dim(`→ ${change.canonicalPath}`)}`);
   }
@@ -64,6 +57,164 @@ export async function proposeCommand(options: ProposeCommandOptions = {}): Promi
     return;
   }
 
+  await runApply(result, options, spinner);
+}
+
+/**
+ * Detect modified managed files. Returns null (after emitting the appropriate
+ * outro) when detection fails or there is nothing to propose.
+ */
+async function buildManagedProposeResult(
+  targetDir: string,
+  options: ProposeCommandOptions,
+  spinner: Spinner,
+): Promise<ProposeResult | null> {
+  spinner.start("Detecting changes to managed content...");
+
+  let result: ProposeResult;
+  try {
+    result = await detectProposedChanges({ cwd: targetDir, files: options.files });
+  } catch (error) {
+    spinner.stop("Failed to detect changes");
+    prompts.log.error(String(error));
+    prompts.outro("Propose cancelled");
+    process.exit(1);
+  }
+
+  if (result.changes.length === 0) {
+    spinner.stop("No changes detected");
+    prompts.log.info("No modified managed files found. Nothing to propose.");
+    prompts.outro("Done");
+    return null;
+  }
+
+  spinner.stop(`Found ${result.changes.length} modified file(s)`);
+  return result;
+}
+
+/**
+ * Discover new (unmanaged) content, let the user choose which items to propose,
+ * and assemble a ProposeResult. Returns null (after emitting the appropriate
+ * outro) when nothing is found or the user cancels.
+ */
+async function buildNewProposeResult(
+  targetDir: string,
+  options: ProposeCommandOptions,
+  spinner: Spinner,
+): Promise<ProposeResult | null> {
+  spinner.start("Discovering new content...");
+
+  let detect: DetectNewContentResult;
+  try {
+    detect = await detectNewContent({
+      cwd: targetDir,
+      path: typeof options.new === "string" ? options.new : undefined,
+    });
+  } catch (error) {
+    spinner.stop("Failed to discover new content");
+    prompts.log.error(String(error));
+    prompts.outro("Propose cancelled");
+    process.exit(1);
+  }
+
+  spinner.stop(
+    detect.candidates.length > 0
+      ? `Found ${detect.candidates.length} new item(s)`
+      : "No new content found",
+  );
+
+  for (const warning of detect.warnings) {
+    prompts.log.warn(warning);
+  }
+
+  // Round-trip items: already upstream and identical to the local copy. Not
+  // proposable — `sync` adopts them. Surfaced so a repo that proposed content
+  // earlier isn't left wondering why it no longer appears as "new".
+  if (detect.adoptable.length > 0) {
+    prompts.log.info(
+      `${detect.adoptable.length} item(s) already exist in canonical and match your local copy:`,
+    );
+    for (const item of detect.adoptable) {
+      console.log(`  ${item.downstreamPath} ${pc.dim(`(${item.type})`)}`);
+    }
+    console.log();
+    prompts.log.info(
+      "Run `agconf sync` to adopt them as managed (replaces the untracked local copy with the tracked version).",
+    );
+  }
+
+  if (detect.candidates.length === 0) {
+    prompts.log.info("No new skills, rules, or agents to propose.");
+    prompts.outro("Done");
+    return null;
+  }
+
+  const selected = await selectNewCandidates(detect, options);
+  if (!selected) {
+    prompts.outro("Propose cancelled");
+    return null;
+  }
+
+  return {
+    changes: selected.flatMap((c) => c.changes),
+    source: detect.source,
+    markerPrefix: detect.markerPrefix,
+    downstream: detect.downstream,
+    canonicalCloneDir: detect.canonicalCloneDir,
+  };
+}
+
+/**
+ * Resolve which discovered candidates to propose. Auto-selects when a path
+ * filter pinned down a single item; selects all in `--yes` mode; otherwise
+ * prompts with a multiselect. Returns null if the user cancels.
+ */
+async function selectNewCandidates(
+  detect: DetectNewContentResult,
+  options: ProposeCommandOptions,
+): Promise<NewContentCandidate[] | null> {
+  if (detect.autoSelect && detect.candidates.length === 1) {
+    const only = detect.candidates[0];
+    if (only) prompts.log.info(`Selected ${candidateLabel(only)}`);
+    return detect.candidates;
+  }
+
+  if (options.yes) {
+    return detect.candidates;
+  }
+
+  const choice = await prompts.multiselect({
+    message: "Select new content to propose:",
+    options: detect.candidates.map((c, i) => ({
+      value: i,
+      label: candidateLabel(c),
+      hint: c.canonicalPath,
+    })),
+    required: true,
+  });
+
+  if (prompts.isCancel(choice)) {
+    return null;
+  }
+
+  return (choice as number[])
+    .map((i) => detect.candidates[i])
+    .filter((c): c is NewContentCandidate => c !== undefined);
+}
+
+function candidateLabel(candidate: NewContentCandidate): string {
+  return `${candidate.type}: ${candidate.name}`;
+}
+
+/**
+ * Prompt for title/message as needed, apply the proposal to canonical, and
+ * report the outcome. Shared by the managed and new-content flows.
+ */
+async function runApply(
+  result: ProposeResult,
+  options: ProposeCommandOptions,
+  spinner: Spinner,
+): Promise<void> {
   // Prompt for proposal title if not provided
   let title = options.title;
   if (!title && !options.yes) {
@@ -101,13 +252,9 @@ export async function proposeCommand(options: ProposeCommandOptions = {}): Promi
     message = messageInput || undefined;
   }
 
-  // Apply changes
-  const applyOptions: ApplyOptions = {
-    title,
-    message,
-  };
+  const applyOptions: ApplyOptions = { title, message };
 
-  spinner.start("Cloning canonical repository...");
+  spinner.start("Applying changes to canonical repository...");
 
   let applyResult: ApplyResult;
   try {

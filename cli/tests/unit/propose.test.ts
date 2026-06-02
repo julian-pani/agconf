@@ -5,6 +5,8 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addManagedMetadata } from "../../src/core/managed-content.js";
 import {
+  applyProposedChanges,
+  detectNewContent,
   detectProposedChanges,
   generateBranchName,
   type ProposedChange,
@@ -339,6 +341,394 @@ Body.
       const result = await detectProposedChanges({ cwd: downstreamDir });
       expect(result.changes.map((c) => c.canonicalPath)).toEqual(["skills/skill-b/scripts/new.sh"]);
       expect(result.changes[0]?.type).toBe("skill-asset");
+    });
+  });
+
+  describe("detectNewContent", () => {
+    let tempDir: string;
+    let downstreamDir: string;
+    let canonicalDir: string;
+
+    beforeEach(async () => {
+      tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "agconf-propose-new-test-"));
+      downstreamDir = path.join(tempDir, "downstream");
+      canonicalDir = path.join(tempDir, "canonical");
+      await fs.mkdir(downstreamDir, { recursive: true });
+      await fs.mkdir(canonicalDir, { recursive: true });
+    });
+
+    afterEach(async () => {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    });
+
+    // `--allow-empty` so canonical can be an empty repo (no collisions) while
+    // still being cloneable by detectNewContent.
+    function initCanonicalGitRepo(): void {
+      execSync("git init", { cwd: canonicalDir, stdio: "ignore" });
+      execSync("git config user.email t@t.com", { cwd: canonicalDir, stdio: "ignore" });
+      execSync("git config user.name Test", { cwd: canonicalDir, stdio: "ignore" });
+      execSync("git add -A && git commit -m init --allow-empty", {
+        cwd: canonicalDir,
+        stdio: "ignore",
+      });
+    }
+
+    async function writeLockfile(skills: string[] = []): Promise<void> {
+      const lockfile = {
+        version: "1.0.0",
+        synced_at: new Date().toISOString(),
+        source: { type: "local" as const, path: canonicalDir },
+        content: {
+          agents_md: { global_block_hash: "sha256:abc", merged: true },
+          skills,
+          targets: ["claude"],
+        },
+      };
+      await fs.mkdir(path.join(downstreamDir, ".agconf"), { recursive: true });
+      await fs.writeFile(
+        path.join(downstreamDir, ".agconf", "lockfile.json"),
+        JSON.stringify(lockfile, null, 2),
+        "utf-8",
+      );
+    }
+
+    async function writeDownstreamSkill(
+      name: string,
+      body: string,
+      assets: Record<string, string> = {},
+    ): Promise<void> {
+      const dir = path.join(downstreamDir, ".claude", "skills", name);
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, "SKILL.md"), body, "utf-8");
+      for (const [rel, content] of Object.entries(assets)) {
+        const full = path.join(dir, rel);
+        await fs.mkdir(path.dirname(full), { recursive: true });
+        await fs.writeFile(full, content, "utf-8");
+      }
+    }
+
+    const validSkill = (name: string) => `---
+name: ${name}
+description: A new skill authored locally.
+---
+
+# ${name}
+
+Body.
+`;
+
+    it("discovers a new unmanaged skill with its assets", async () => {
+      await writeDownstreamSkill("brand-new", validSkill("brand-new"), {
+        "references/helper.py": "print('hi')",
+      });
+      initCanonicalGitRepo();
+      await writeLockfile();
+
+      const result = await detectNewContent({ cwd: downstreamDir });
+
+      expect(result.candidates).toHaveLength(1);
+      const candidate = result.candidates[0];
+      expect(candidate?.type).toBe("skill");
+      expect(candidate?.name).toBe("brand-new");
+      expect(candidate?.downstreamPath).toBe(".claude/skills/brand-new");
+
+      const canonicalPaths = candidate?.changes.map((c) => c.canonicalPath).sort();
+      expect(canonicalPaths).toEqual([
+        "skills/brand-new/SKILL.md",
+        "skills/brand-new/references/helper.py",
+      ]);
+      const skillChange = candidate?.changes.find((c) => c.canonicalPath.endsWith("SKILL.md"));
+      expect(skillChange?.type).toBe("skill");
+      const assetChange = candidate?.changes.find((c) => c.type === "skill-asset");
+      expect(assetChange?.canonicalPath).toBe("skills/brand-new/references/helper.py");
+      // Clone is created and threaded through for apply to reuse.
+      expect(result.canonicalCloneDir).toBeTruthy();
+    });
+
+    it("includes nested skill assets across subdirectories with POSIX canonical paths", async () => {
+      await writeDownstreamSkill("nested", validSkill("nested"), {
+        "references/a.md": "# A",
+        "references/sub/b.md": "# B nested",
+        "scripts/run.sh": "echo hi",
+      });
+      initCanonicalGitRepo();
+      await writeLockfile();
+
+      const result = await detectNewContent({ cwd: downstreamDir });
+      expect(result.candidates).toHaveLength(1);
+      const candidate = result.candidates[0];
+
+      const byPath = new Map((candidate?.changes ?? []).map((c) => [c.canonicalPath, c]));
+      expect([...byPath.keys()].sort()).toEqual([
+        "skills/nested/SKILL.md",
+        "skills/nested/references/a.md",
+        "skills/nested/references/sub/b.md",
+        "skills/nested/scripts/run.sh",
+      ]);
+      expect(byPath.get("skills/nested/SKILL.md")?.type).toBe("skill");
+      expect(byPath.get("skills/nested/references/sub/b.md")?.type).toBe("skill-asset");
+      // Canonical paths must use POSIX separators regardless of host OS.
+      for (const p of byPath.keys()) expect(p).not.toContain("\\");
+    });
+
+    it("preserves binary skill asset bytes exactly (no utf-8 corruption)", async () => {
+      const skillDir = path.join(downstreamDir, ".claude", "skills", "with-binary");
+      await fs.mkdir(path.join(skillDir, "assets"), { recursive: true });
+      await fs.writeFile(path.join(skillDir, "SKILL.md"), validSkill("with-binary"), "utf-8");
+      const bytes = Buffer.from([0x00, 0x01, 0xff, 0x00, 0x50, 0x4e, 0x47, 0xfe]);
+      await fs.writeFile(path.join(skillDir, "assets", "logo.png"), bytes);
+      initCanonicalGitRepo();
+      await writeLockfile();
+
+      const result = await detectNewContent({ cwd: downstreamDir });
+      const asset = result.candidates[0]?.changes.find(
+        (c) => c.canonicalPath === "skills/with-binary/assets/logo.png",
+      );
+      expect(asset?.type).toBe("skill-asset");
+      expect(Buffer.isBuffer(asset?.content)).toBe(true);
+      expect((asset?.content as Buffer).equals(bytes)).toBe(true);
+    });
+
+    it("auto-selects a skill via a path filter and includes all its assets", async () => {
+      await writeDownstreamSkill("alpha", validSkill("alpha"), {
+        "references/a.md": "# A",
+        "scripts/run.sh": "echo hi",
+      });
+      await writeDownstreamSkill("beta", validSkill("beta"));
+      initCanonicalGitRepo();
+      await writeLockfile();
+
+      const result = await detectNewContent({ cwd: downstreamDir, path: ".claude/skills/alpha" });
+
+      expect(result.autoSelect).toBe(true);
+      expect(result.candidates).toHaveLength(1);
+      expect(result.candidates[0]?.name).toBe("alpha");
+      expect(result.candidates[0]?.changes.map((c) => c.canonicalPath).sort()).toEqual([
+        "skills/alpha/SKILL.md",
+        "skills/alpha/references/a.md",
+        "skills/alpha/scripts/run.sh",
+      ]);
+    });
+
+    it("ships SKILL.md and all assets (incl. binary) to canonical when applied", async () => {
+      const binary = Buffer.from([0x00, 0x10, 0xff, 0x42, 0x00]);
+      const skillDir = path.join(downstreamDir, ".claude", "skills", "shipme");
+      await fs.mkdir(path.join(skillDir, "assets"), { recursive: true });
+      await fs.writeFile(path.join(skillDir, "SKILL.md"), validSkill("shipme"), "utf-8");
+      await fs.writeFile(path.join(skillDir, "references.md"), "# refs", "utf-8");
+      await fs.writeFile(path.join(skillDir, "assets", "logo.png"), binary);
+      initCanonicalGitRepo();
+      await writeLockfile();
+
+      const detected = await detectNewContent({ cwd: downstreamDir });
+      const proposeResult = {
+        changes: detected.candidates.flatMap((c) => c.changes),
+        source: detected.source,
+        markerPrefix: detected.markerPrefix,
+        downstream: detected.downstream,
+        canonicalCloneDir: detected.canonicalCloneDir,
+      };
+
+      // Supply a git identity via env so the commit succeeds without global config.
+      const envKeys = [
+        "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL",
+        "GIT_COMMITTER_NAME",
+        "GIT_COMMITTER_EMAIL",
+      ];
+      const saved = Object.fromEntries(envKeys.map((k) => [k, process.env[k]]));
+      for (const k of envKeys) process.env[k] = k.endsWith("EMAIL") ? "t@t.com" : "Test";
+
+      let cloneDir: string;
+      try {
+        const applyResult = await applyProposedChanges(proposeResult, {
+          title: "Add shipme skill",
+        });
+        cloneDir = applyResult.cloneDir;
+      } finally {
+        for (const k of envKeys) {
+          if (saved[k] === undefined) delete process.env[k];
+          else process.env[k] = saved[k];
+        }
+      }
+
+      // Files are written into the canonical clone's working tree before commit.
+      const skillMd = await fs.readFile(
+        path.join(cloneDir, "skills", "shipme", "SKILL.md"),
+        "utf-8",
+      );
+      expect(skillMd).toContain("# shipme");
+      const refs = await fs.readFile(
+        path.join(cloneDir, "skills", "shipme", "references.md"),
+        "utf-8",
+      );
+      expect(refs).toBe("# refs");
+      const png = await fs.readFile(path.join(cloneDir, "skills", "shipme", "assets", "logo.png"));
+      expect(png.equals(binary)).toBe(true);
+    });
+
+    it("ignores skills that are already managed", async () => {
+      await writeDownstreamSkill("managed", addManagedMetadata(validSkill("managed")));
+      initCanonicalGitRepo();
+      await writeLockfile();
+
+      const result = await detectNewContent({ cwd: downstreamDir });
+
+      expect(result.candidates).toEqual([]);
+      // No candidates → canonical is never cloned.
+      expect(result.canonicalCloneDir).toBeUndefined();
+    });
+
+    it("classifies an identical collision as adoptable (a pending round-trip)", async () => {
+      // Canonical already has this skill (it was proposed earlier and merged);
+      // the local copy is still the unmanaged original.
+      await fs.mkdir(path.join(canonicalDir, "skills", "dupe"), { recursive: true });
+      await fs.writeFile(
+        path.join(canonicalDir, "skills", "dupe", "SKILL.md"),
+        validSkill("dupe"),
+        "utf-8",
+      );
+      initCanonicalGitRepo();
+
+      await writeDownstreamSkill("dupe", validSkill("dupe"));
+      await writeLockfile();
+
+      const result = await detectNewContent({ cwd: downstreamDir });
+
+      expect(result.candidates).toEqual([]);
+      expect(result.adoptable).toEqual([
+        { type: "skill", name: "dupe", downstreamPath: ".claude/skills/dupe" },
+      ]);
+      // Identical content is not a conflict — no scary warning.
+      expect(result.warnings).toEqual([]);
+    });
+
+    it("classifies a divergent collision as a conflict warning, not adoptable", async () => {
+      await fs.mkdir(path.join(canonicalDir, "skills", "dupe"), { recursive: true });
+      await fs.writeFile(
+        path.join(canonicalDir, "skills", "dupe", "SKILL.md"),
+        validSkill("dupe"),
+        "utf-8",
+      );
+      initCanonicalGitRepo();
+
+      // Local copy diverged from what is upstream.
+      await writeDownstreamSkill("dupe", validSkill("dupe").replace("Body.", "Local-only edit."));
+      await writeLockfile();
+
+      const result = await detectNewContent({ cwd: downstreamDir });
+
+      expect(result.candidates).toEqual([]);
+      expect(result.adoptable).toEqual([]);
+      expect(result.warnings.join("\n")).toContain("differs from your local copy");
+    });
+
+    it("skips a new skill with invalid frontmatter", async () => {
+      const missingDescription = `---
+name: incomplete
+---
+
+Body.
+`;
+      await writeDownstreamSkill("incomplete", missingDescription);
+      initCanonicalGitRepo();
+      await writeLockfile();
+
+      const result = await detectNewContent({ cwd: downstreamDir });
+
+      expect(result.candidates).toEqual([]);
+      expect(result.warnings.join("\n")).toContain("description");
+    });
+
+    it("auto-selects when a path filter resolves to a single skill dir", async () => {
+      await writeDownstreamSkill("alpha", validSkill("alpha"));
+      await writeDownstreamSkill("beta", validSkill("beta"));
+      initCanonicalGitRepo();
+      await writeLockfile();
+
+      const result = await detectNewContent({
+        cwd: downstreamDir,
+        path: ".claude/skills/alpha",
+      });
+
+      expect(result.autoSelect).toBe(true);
+      expect(result.candidates).toHaveLength(1);
+      expect(result.candidates[0]?.name).toBe("alpha");
+    });
+
+    it("auto-selects when the path points at a single SKILL.md file", async () => {
+      await writeDownstreamSkill("alpha", validSkill("alpha"));
+      await writeDownstreamSkill("beta", validSkill("beta"));
+      initCanonicalGitRepo();
+      await writeLockfile();
+
+      const result = await detectNewContent({
+        cwd: downstreamDir,
+        path: ".claude/skills/beta/SKILL.md",
+      });
+
+      expect(result.autoSelect).toBe(true);
+      expect(result.candidates.map((c) => c.name)).toEqual(["beta"]);
+    });
+
+    it("does not auto-select when a path filter matches multiple candidates", async () => {
+      await writeDownstreamSkill("alpha", validSkill("alpha"));
+      await writeDownstreamSkill("beta", validSkill("beta"));
+      initCanonicalGitRepo();
+      await writeLockfile();
+
+      const result = await detectNewContent({ cwd: downstreamDir, path: ".claude/skills" });
+
+      expect(result.autoSelect).toBe(false);
+      expect(result.candidates.map((c) => c.name).sort()).toEqual(["alpha", "beta"]);
+    });
+
+    it("discovers a new unmanaged rule", async () => {
+      const ruleDir = path.join(downstreamDir, ".claude", "rules", "security");
+      await fs.mkdir(ruleDir, { recursive: true });
+      await fs.writeFile(path.join(ruleDir, "new-rule.md"), "# New Rule\n\nContent.\n", "utf-8");
+      initCanonicalGitRepo();
+      await writeLockfile();
+
+      const result = await detectNewContent({ cwd: downstreamDir });
+
+      expect(result.candidates).toHaveLength(1);
+      const candidate = result.candidates[0];
+      expect(candidate?.type).toBe("rule");
+      expect(candidate?.name).toBe("security/new-rule.md");
+      expect(candidate?.canonicalPath).toBe("rules/security/new-rule.md");
+      expect(candidate?.changes).toHaveLength(1);
+      expect(candidate?.changes[0]?.type).toBe("rule");
+    });
+
+    it("discovers valid agents and skips invalid ones", async () => {
+      const agentsDir = path.join(downstreamDir, ".claude", "agents");
+      await fs.mkdir(agentsDir, { recursive: true });
+      await fs.writeFile(
+        path.join(agentsDir, "reviewer.md"),
+        `---
+name: reviewer
+description: Reviews code.
+---
+
+# Reviewer
+`,
+        "utf-8",
+      );
+      await fs.writeFile(path.join(agentsDir, "broken.md"), "No frontmatter here.\n", "utf-8");
+      initCanonicalGitRepo();
+      await writeLockfile();
+
+      const result = await detectNewContent({ cwd: downstreamDir });
+
+      expect(result.candidates.map((c) => c.name)).toEqual(["reviewer.md"]);
+      expect(result.candidates[0]?.canonicalPath).toBe("agents/reviewer.md");
+      expect(result.warnings.join("\n")).toContain("broken.md");
+    });
+
+    it("throws when no lockfile is present", async () => {
+      await writeDownstreamSkill("x", validSkill("x"));
+      await expect(detectNewContent({ cwd: downstreamDir })).rejects.toThrow("No lockfile");
     });
   });
 });

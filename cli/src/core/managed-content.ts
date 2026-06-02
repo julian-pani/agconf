@@ -3,7 +3,11 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import fg from "fast-glob";
 import { toMetadataPrefix } from "../utils/prefix.js";
-import { parseFrontmatter as parseFrontmatterShared, serializeFrontmatter } from "./frontmatter.js";
+import {
+  frontmatterIsSimple,
+  parseFrontmatter as parseFrontmatterShared,
+  serializeFrontmatter,
+} from "./frontmatter.js";
 import {
   hasGlobalBlockChanges,
   hasRulesSectionChanges,
@@ -315,6 +319,82 @@ export function isManaged(content: string, options: MetadataOptions = {}): boole
   const metadata = frontmatter.metadata as Record<string, string>;
   const keys = getMetadataKeys(metadataPrefix);
   return metadata[keys.managed] === "true";
+}
+
+/**
+ * True when a downstream skill directory is byte-identical to its canonical
+ * counterpart: SKILL.md compared with managed metadata stripped from both
+ * sides, every other file compared byte-for-byte, and the file sets must match
+ * exactly. Lets callers tell a pending round-trip (safe to adopt) from a real
+ * conflict (would lose local content). Shared by `sync`'s overwrite guard and
+ * `propose --new`'s collision classification.
+ */
+export async function skillMatchesCanonical(
+  localDir: string,
+  canonicalDir: string,
+  options: MetadataOptions = {},
+): Promise<boolean> {
+  const list = async (dir: string): Promise<string[]> => {
+    try {
+      return (await fg("**/*", { cwd: dir, onlyFiles: true, dot: true }))
+        .map((p) => p.split(path.sep).join("/"))
+        .sort();
+    } catch {
+      return [];
+    }
+  };
+  const localFiles = await list(localDir);
+  const canonFiles = await list(canonicalDir);
+  if (localFiles.length !== canonFiles.length) return false;
+  if (localFiles.join("\n") !== canonFiles.join("\n")) return false;
+
+  for (const rel of localFiles) {
+    const lp = path.join(localDir, rel);
+    const cp = path.join(canonicalDir, rel);
+    if (rel === "SKILL.md") {
+      const [l, c] = await Promise.all([fs.readFile(lp, "utf-8"), fs.readFile(cp, "utf-8")]);
+      if (!markdownContentMatches(l, c, options)) return false;
+    } else {
+      const [l, c] = await Promise.all([fs.readFile(lp), fs.readFile(cp)]);
+      if (!l.equals(c)) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * True when a single downstream markdown file (rule or agent) matches its
+ * canonical counterpart once managed metadata is stripped from both sides.
+ */
+export async function fileMatchesCanonical(
+  localPath: string,
+  canonicalPath: string,
+  options: MetadataOptions = {},
+): Promise<boolean> {
+  const [l, c] = await Promise.all([
+    fs.readFile(localPath, "utf-8"),
+    fs.readFile(canonicalPath, "utf-8"),
+  ]);
+  return markdownContentMatches(l, c, options);
+}
+
+/**
+ * Decide whether two markdown files are equivalent for the purpose of "safe to
+ * overwrite/adopt one with the other". Bodies are preserved verbatim by
+ * `stripManagedMetadata`, so the only data-loss risk is in frontmatter the
+ * hand-rolled YAML parser cannot represent. We therefore only trust the
+ * metadata-stripped comparison when BOTH files' frontmatter is parser-faithful
+ * (`frontmatterIsSimple`); otherwise we require strict byte equality, erring
+ * toward "different" (a safe conflict) rather than a false match (silent loss).
+ */
+function markdownContentMatches(
+  local: string,
+  canonical: string,
+  options: MetadataOptions,
+): boolean {
+  if (local === canonical) return true;
+  if (!frontmatterIsSimple(local) || !frontmatterIsSimple(canonical)) return false;
+  return stripManagedMetadata(local, options) === stripManagedMetadata(canonical, options);
 }
 
 /**

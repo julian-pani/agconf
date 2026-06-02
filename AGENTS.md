@@ -40,7 +40,7 @@ pnpm install:global       # Build + install globally
 ## Architecture
 
 ### Core Modules (`cli/src/core/`)
-- `sync.ts` - Main sync logic between canonical and downstream repos
+- `sync.ts` - Main sync logic between canonical and downstream repos. Includes a pre-flight **overwrite guard** (`detectUnmanagedCollisions`): before writing, any pre-existing *unmanaged* skill/rule/agent file that is byte-identical to canonical (modulo metadata) is **adopted** (reported in `SyncResult.adopted`), while one that *differs* aborts the whole sync with `UnmanagedOverwriteError` unless `--override` is passed. Managed files are exempt (canonical owns them). Reuses `skillMatchesCanonical`/`fileMatchesCanonical` from `managed-content.ts`.
 - `lockfile.ts` - Version pinning and metadata tracking
 - `markers.ts` - HTML comment markers for section separation in managed files
 - `merge.ts` - AGENTS.md merge logic (preserves repo-specific content). Also handles CLAUDE.md consolidation: merges content from both root and .claude/ locations into AGENTS.md, then keeps only root CLAUDE.md with @AGENTS.md reference (deletes .claude/CLAUDE.md if present)
