@@ -43,7 +43,16 @@ export async function resolveLocalSource(
     basePath = await findCanonicalRepo(process.cwd());
   }
 
-  await validateCanonicalRepo(basePath);
+  // Load canonical config to get marker prefix and content paths
+  const canonicalConfig = await loadCanonicalRepoConfig(basePath);
+  const markerPrefix = canonicalConfig?.markers.prefix ?? "agconf";
+  const instructionsPath = canonicalConfig?.content.instructions ?? "instructions/AGENTS.md";
+  const skillsDir = canonicalConfig?.content.skills_dir ?? "skills";
+  const rulesDir = canonicalConfig?.content.rules_dir;
+  const agentsDir = canonicalConfig?.content.agents_dir;
+
+  // Validate against the configured content paths (honors custom skills_dir/instructions)
+  await validateCanonicalRepo(basePath, instructionsPath, skillsDir);
 
   const git: SimpleGit = simpleGit(basePath);
   let commitSha: string | undefined;
@@ -55,12 +64,6 @@ export async function resolveLocalSource(
     // Expected: not a git repo or git not available, commit SHA is optional
   }
 
-  // Load canonical config to get marker prefix, rules_dir, and agents_dir
-  const canonicalConfig = await loadCanonicalRepoConfig(basePath);
-  const markerPrefix = canonicalConfig?.markers.prefix ?? "agconf";
-  const rulesDir = canonicalConfig?.content.rules_dir;
-  const agentsDir = canonicalConfig?.content.agents_dir;
-
   const source: Source = {
     type: "local",
     path: basePath,
@@ -70,8 +73,8 @@ export async function resolveLocalSource(
   return {
     source,
     basePath,
-    agentsMdPath: path.join(basePath, "instructions", "AGENTS.md"),
-    skillsPath: path.join(basePath, "skills"),
+    agentsMdPath: path.join(basePath, instructionsPath),
+    skillsPath: path.join(basePath, skillsDir),
     rulesPath: rulesDir ? path.join(basePath, rulesDir) : null,
     agentsPath: agentsDir ? path.join(basePath, agentsDir) : null,
     markerPrefix,
@@ -90,9 +93,11 @@ export async function resolveGithubSource(
   const log = await clonedGit.log({ maxCount: 1 });
   const commitSha = log.latest?.hash ?? "";
 
-  // Load canonical config to get marker prefix, rules_dir, and agents_dir
+  // Load canonical config to get marker prefix and content paths
   const canonicalConfig = await loadCanonicalRepoConfig(tempDir);
   const markerPrefix = canonicalConfig?.markers.prefix ?? "agconf";
+  const instructionsPath = canonicalConfig?.content.instructions ?? "instructions/AGENTS.md";
+  const skillsDir = canonicalConfig?.content.skills_dir ?? "skills";
   const rulesDir = canonicalConfig?.content.rules_dir;
   const agentsDir = canonicalConfig?.content.agents_dir;
 
@@ -106,8 +111,8 @@ export async function resolveGithubSource(
   return {
     source,
     basePath: tempDir,
-    agentsMdPath: path.join(tempDir, "instructions", "AGENTS.md"),
-    skillsPath: path.join(tempDir, "skills"),
+    agentsMdPath: path.join(tempDir, instructionsPath),
+    skillsPath: path.join(tempDir, skillsDir),
     rulesPath: rulesDir ? path.join(tempDir, rulesDir) : null,
     agentsPath: agentsDir ? path.join(tempDir, agentsDir) : null,
     markerPrefix,
@@ -232,9 +237,13 @@ async function isCanonicalRepo(dir: string): Promise<boolean> {
   }
 }
 
-async function validateCanonicalRepo(basePath: string): Promise<void> {
-  const agentsMdPath = path.join(basePath, "instructions", "AGENTS.md");
-  const skillsPath = path.join(basePath, "skills");
+async function validateCanonicalRepo(
+  basePath: string,
+  instructionsPath: string,
+  skillsDir: string,
+): Promise<void> {
+  const agentsMdPath = path.join(basePath, instructionsPath);
+  const skillsPath = path.join(basePath, skillsDir);
 
   const [agentsMdExists, skillsExists] = await Promise.all([
     fs
@@ -248,11 +257,11 @@ async function validateCanonicalRepo(basePath: string): Promise<void> {
   ]);
 
   if (!agentsMdExists) {
-    throw new Error(`Invalid canonical repository: missing instructions/AGENTS.md at ${basePath}`);
+    throw new Error(`Invalid canonical repository: missing ${instructionsPath} at ${basePath}`);
   }
 
   if (!skillsExists) {
-    throw new Error(`Invalid canonical repository: missing skills/ directory at ${basePath}`);
+    throw new Error(`Invalid canonical repository: missing ${skillsDir}/ directory at ${basePath}`);
   }
 }
 
