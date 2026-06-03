@@ -1,3 +1,9 @@
+## [0.14.1](https://github.com/julian-pani/agconf/compare/v0.14.0...v0.14.1) (2026-06-03)
+
+### Bug Fixes
+
+* honor configured canonical content dirs (skills_dir/instructions/rules_dir/agents_dir) ([#59](https://github.com/julian-pani/agconf/issues/59)) ([4554b80](https://github.com/julian-pani/agconf/commit/4554b80169b140caaf4d49e8e34b77a558511175))
+
 ## [0.14.0](https://github.com/julian-pani/agconf/compare/v0.13.3...v0.14.0) (2026-06-02)
 
 ### Features
