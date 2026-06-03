@@ -70,9 +70,15 @@ describe("upgradeCliCommand", () => {
     vi.restoreAllMocks();
   });
 
+  // Strip ANSI color codes: picocolors emits color when CI is set (so the shim
+  // hints wrap their command in pc.cyan), which would otherwise break the
+  // contiguous-substring assertions on output that spans a color boundary.
+  const ESC = String.fromCharCode(27);
+  const stripAnsi = (s: string) => s.replaceAll(new RegExp(`${ESC}\\[[0-9;]*m`, "g"), "");
+
   // logger.info / logger.warn print to console.log; logger.error prints to console.error
-  const logOutput = () => logSpy.mock.calls.map((c) => c.join(" ")).join("\n");
-  const errorOutput = () => errSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+  const logOutput = () => stripAnsi(logSpy.mock.calls.map((c) => c.join(" ")).join("\n"));
+  const errorOutput = () => stripAnsi(errSpy.mock.calls.map((c) => c.join(" ")).join("\n"));
 
   it("rejects an invalid --package-manager value (src ~79-83)", async () => {
     // Current 1.0.0 < latest 2.0.0 so we reach the PM validation branch.
