@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import fg from "fast-glob";
 import { type SimpleGit, simpleGit } from "simple-git";
 import { loadCanonicalRepoConfig } from "../config/loader.js";
+import type { CanonicalRepoConfig } from "../config/schema.js";
 import type { Source } from "../schemas/lockfile.js";
 import { validateAgentFrontmatter } from "./agents.js";
 import { readLockfile } from "./lockfile.js";
@@ -77,6 +78,28 @@ export interface ProposeResult {
 }
 
 /**
+ * Canonical-side destination directories, resolved from the canonical config
+ * with the conventional defaults. Used to map downstream paths
+ * (`.{target}/skills|rules|agents`, AGENTS.md) back to their canonical
+ * locations when proposing changes upstream.
+ */
+interface CanonicalDirs {
+  skillsDir: string;
+  rulesDir: string;
+  agentsDir: string;
+  instructions: string;
+}
+
+function resolveCanonicalDirs(config: CanonicalRepoConfig | undefined): CanonicalDirs {
+  return {
+    skillsDir: config?.content.skills_dir ?? "skills",
+    rulesDir: config?.content.rules_dir ?? "rules",
+    agentsDir: config?.content.agents_dir ?? "agents",
+    instructions: config?.content.instructions ?? "instructions/AGENTS.md",
+  };
+}
+
+/**
  * Detect modified managed files and build proposed changes for the canonical repo.
  *
  * For SKILL.md / rules / agents / AGENTS.md the modification check runs against
@@ -126,29 +149,38 @@ export async function detectProposedChanges(options: ProposeOptions = {}): Promi
     return matchesFilter(f.path);
   });
 
+  // Non-SKILL.md files inside managed skill dirs are diffed against canonical.
+  const managedSkillNames = allFiles
+    .filter((f) => f.type === "skill" && f.isManaged && f.skillName)
+    .map((f) => f.skillName as string);
+
+  // Clone canonical (once) whenever there is anything to propose so the
+  // canonical-side destination paths honor the configured content dirs
+  // (skills_dir/rules_dir/agents_dir/instructions). The clone is handed back via
+  // ProposeResult.canonicalCloneDir so applyProposedChanges can reuse it.
+  let canonicalCloneDir: string | undefined;
+  let dirs = resolveCanonicalDirs(undefined);
+  if (filesToPropose.length > 0 || managedSkillNames.length > 0) {
+    canonicalCloneDir = await cloneCanonicalForDetect(source);
+    dirs = resolveCanonicalDirs(await loadCanonicalRepoConfig(canonicalCloneDir));
+  }
+
   const changes: ProposedChange[] = [];
   for (const file of filesToPropose) {
-    const change = await buildProposedChange(targetDir, file, markerPrefix);
+    const change = await buildProposedChange(targetDir, file, markerPrefix, dirs);
     if (change) {
       changes.push(change);
     }
   }
 
-  // Non-SKILL.md files inside managed skill dirs: diff against canonical.
-  // Only clone if there is at least one managed skill to inspect.
-  const managedSkillNames = allFiles
-    .filter((f) => f.type === "skill" && f.isManaged && f.skillName)
-    .map((f) => f.skillName as string);
-
-  let canonicalCloneDir: string | undefined;
-  if (managedSkillNames.length > 0) {
-    canonicalCloneDir = await cloneCanonicalForDetect(source);
+  if (canonicalCloneDir) {
     for (const skillName of managedSkillNames) {
       const assetChanges = await detectSkillAssetChanges(
         targetDir,
         targets,
         skillName,
         canonicalCloneDir,
+        dirs.skillsDir,
       );
       for (const change of assetChanges) {
         if (matchesFilter(change.downstreamPath)) {
@@ -183,8 +215,9 @@ async function detectSkillAssetChanges(
   targets: string[],
   skillName: string,
   canonicalCloneDir: string,
+  skillsDir: string,
 ): Promise<ProposedChange[]> {
-  const canonicalSkillDir = path.join(canonicalCloneDir, "skills", skillName);
+  const canonicalSkillDir = path.join(canonicalCloneDir, skillsDir, skillName);
 
   for (const target of targets) {
     const downstreamSkillDir = path.join(targetDir, `.${target}`, "skills", skillName);
@@ -194,17 +227,17 @@ async function detectSkillAssetChanges(
       continue; // Skill not synced to this target
     }
 
-    return diffSkillDir(targetDir, target, skillName, downstreamSkillDir, canonicalSkillDir);
+    return diffSkillDir(target, skillName, downstreamSkillDir, canonicalSkillDir, skillsDir);
   }
   return [];
 }
 
 async function diffSkillDir(
-  _targetDir: string,
   target: string,
   skillName: string,
   downstreamSkillDir: string,
   canonicalSkillDir: string,
+  skillsDir: string,
 ): Promise<ProposedChange[]> {
   const changes: ProposedChange[] = [];
 
@@ -242,7 +275,7 @@ async function diffSkillDir(
     // Use POSIX separators in canonical paths so the canonical commit is
     // platform-portable regardless of which OS the proposer is on.
     const downstreamPath = path.join(`.${target}`, "skills", skillName, relPath);
-    const canonicalPath = `skills/${skillName}/${relPath.split(path.sep).join("/")}`;
+    const canonicalPath = `${skillsDir}/${skillName}/${relPath.split(path.sep).join("/")}`;
 
     changes.push({
       downstreamPath,
@@ -276,7 +309,8 @@ async function cloneCanonicalForDetect(source: Source): Promise<string> {
 async function buildProposedChange(
   targetDir: string,
   file: ManagedFileCheckResult,
-  markerPrefix?: string,
+  markerPrefix: string | undefined,
+  dirs: CanonicalDirs,
 ): Promise<ProposedChange | null> {
   const fullPath = path.join(targetDir, file.path);
   const metadataOptions = markerPrefix ? { metadataPrefix: markerPrefix } : {};
@@ -285,8 +319,8 @@ async function buildProposedChange(
     case "skill": {
       const content = await fs.readFile(fullPath, "utf-8");
       const stripped = stripManagedMetadata(content, metadataOptions);
-      // .claude/skills/<name>/SKILL.md → skills/<name>/SKILL.md
-      const canonicalPath = file.path.replace(/^\.[^/]+\/skills\//, "skills/");
+      // .claude/skills/<name>/SKILL.md → <skills_dir>/<name>/SKILL.md
+      const canonicalPath = file.path.replace(/^\.[^/]+\/skills\//, `${dirs.skillsDir}/`);
       return {
         downstreamPath: file.path,
         canonicalPath,
@@ -298,8 +332,8 @@ async function buildProposedChange(
     case "rule": {
       const content = await fs.readFile(fullPath, "utf-8");
       const stripped = stripManagedMetadata(content, metadataOptions);
-      // .claude/rules/<path> → rules/<path>
-      const canonicalPath = file.path.replace(/^\.[^/]+\/rules\//, "rules/");
+      // .claude/rules/<path> → <rules_dir>/<path>
+      const canonicalPath = file.path.replace(/^\.[^/]+\/rules\//, `${dirs.rulesDir}/`);
       return {
         downstreamPath: file.path,
         canonicalPath,
@@ -311,8 +345,8 @@ async function buildProposedChange(
     case "agent": {
       const content = await fs.readFile(fullPath, "utf-8");
       const stripped = stripManagedMetadata(content, metadataOptions);
-      // .claude/agents/<name>.md → agents/<name>.md
-      const canonicalPath = file.path.replace(/^\.[^/]+\/agents\//, "agents/");
+      // .claude/agents/<name>.md → <agents_dir>/<name>.md
+      const canonicalPath = file.path.replace(/^\.[^/]+\/agents\//, `${dirs.agentsDir}/`);
       return {
         downstreamPath: file.path,
         canonicalPath,
@@ -330,7 +364,7 @@ async function buildProposedChange(
       const stripped = stripMetadataComments(parsed.globalBlock);
       return {
         downstreamPath: file.path,
-        canonicalPath: "instructions/AGENTS.md",
+        canonicalPath: dirs.instructions,
         content: stripped,
         type: "agents-md-global",
       };
@@ -482,10 +516,9 @@ export async function detectNewContent(
 
   // Pass 2: clone canonical once to resolve destination dirs + detect collisions.
   const canonicalCloneDir = await cloneCanonicalForDetect(source);
-  const canonConfig = await loadCanonicalRepoConfig(canonicalCloneDir);
-  const skillsDir = canonConfig?.content.skills_dir ?? "skills";
-  const rulesDir = canonConfig?.content.rules_dir ?? "rules";
-  const agentsDir = canonConfig?.content.agents_dir ?? "agents";
+  const { skillsDir, rulesDir, agentsDir } = resolveCanonicalDirs(
+    await loadCanonicalRepoConfig(canonicalCloneDir),
+  );
 
   const candidates: NewContentCandidate[] = [];
   const adoptable: AdoptableItem[] = [];

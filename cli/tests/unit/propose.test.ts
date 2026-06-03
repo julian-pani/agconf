@@ -373,7 +373,20 @@ ORIGINAL body.
           await fs.writeFile(path.join(rulesDir, `${name}.md`), tampered, "utf-8");
         }
 
-        // No managed skills → detect skips cloning canonical entirely.
+        await fs.writeFile(
+          path.join(canonicalDir, "agconf.yaml"),
+          `version: "1.0.0"
+meta:
+  name: test-canonical
+targets:
+  - claude
+`,
+          "utf-8",
+        );
+
+        // Initialize canonical as a valid git repo for source/config resolution.
+        initCanonicalGitRepo();
+
         const lockfile = {
           version: "1.0.0",
           synced_at: new Date().toISOString(),
@@ -434,6 +447,146 @@ ORIGINAL body.
           "rules/security/foo.md",
         ]);
       });
+    });
+
+    it("maps canonical paths under a custom skills_dir from agconf.yaml", async () => {
+      const skillBody = `---
+name: custom-skill
+description: A skill living in a non-default canonical dir.
+---
+
+ORIGINAL body.
+`;
+      const originalAsset = "print('original')";
+      const tamperedAsset = "print('TAMPERED')";
+
+      // Canonical declares a non-default skills_dir and stores the skill there.
+      await fs.writeFile(
+        path.join(canonicalDir, "agconf.yaml"),
+        `version: "1.0.0"
+meta:
+  name: custom-canonical
+content:
+  skills_dir: agent-skills
+targets:
+  - claude
+`,
+        "utf-8",
+      );
+      const canonicalRefs = path.join(canonicalDir, "agent-skills", "custom-skill", "references");
+      await fs.mkdir(canonicalRefs, { recursive: true });
+      await fs.writeFile(
+        path.join(canonicalDir, "agent-skills", "custom-skill", "SKILL.md"),
+        skillBody,
+        "utf-8",
+      );
+      await fs.writeFile(path.join(canonicalRefs, "template.py"), originalAsset, "utf-8");
+      initCanonicalGitRepo();
+
+      // Downstream keeps the fixed .claude/skills/ target layout; both files differ.
+      const downstreamSkillDir = path.join(downstreamDir, ".claude", "skills", "custom-skill");
+      const downstreamRefs = path.join(downstreamSkillDir, "references");
+      await fs.mkdir(downstreamRefs, { recursive: true });
+      const tamperedSkill = addManagedMetadata(skillBody).replace(
+        "ORIGINAL body.",
+        "TAMPERED body.",
+      );
+      await fs.writeFile(path.join(downstreamSkillDir, "SKILL.md"), tamperedSkill, "utf-8");
+      await fs.writeFile(path.join(downstreamRefs, "template.py"), tamperedAsset, "utf-8");
+
+      const lockfile = {
+        version: "1.0.0",
+        synced_at: new Date().toISOString(),
+        source: { type: "local" as const, path: canonicalDir },
+        content: {
+          agents_md: { global_block_hash: "sha256:abc", merged: true },
+          skills: ["custom-skill"],
+          targets: ["claude"],
+        },
+      };
+      await fs.mkdir(path.join(downstreamDir, ".agconf"), { recursive: true });
+      await fs.writeFile(
+        path.join(downstreamDir, ".agconf", "lockfile.json"),
+        JSON.stringify(lockfile, null, 2),
+        "utf-8",
+      );
+
+      // Both the SKILL.md body change and the asset change must point at the
+      // configured agent-skills/ dir, NOT the default skills/.
+      const result = await detectProposedChanges({ cwd: downstreamDir });
+      const paths = result.changes.map((c) => c.canonicalPath).sort();
+      expect(paths).toEqual([
+        "agent-skills/custom-skill/SKILL.md",
+        "agent-skills/custom-skill/references/template.py",
+      ]);
+    });
+
+    it("maps rule and agent canonical paths under custom rules_dir/agents_dir", async () => {
+      // Canonical only needs agconf.yaml — the config drives the destination dirs.
+      await fs.writeFile(
+        path.join(canonicalDir, "agconf.yaml"),
+        `version: "1.0.0"
+meta:
+  name: custom-canonical
+content:
+  rules_dir: my-rules
+  agents_dir: my-agents
+targets:
+  - claude
+`,
+        "utf-8",
+      );
+      initCanonicalGitRepo();
+
+      // Downstream: a managed rule and a managed agent, both modified.
+      const ruleBody = `---
+name: api-auth
+---
+
+ORIGINAL rule.
+`;
+      const agentBody = `---
+name: reviewer
+description: Reviews code.
+---
+
+ORIGINAL agent.
+`;
+      const ruleDir = path.join(downstreamDir, ".claude", "rules", "security");
+      const agentDir = path.join(downstreamDir, ".claude", "agents");
+      await fs.mkdir(ruleDir, { recursive: true });
+      await fs.mkdir(agentDir, { recursive: true });
+      await fs.writeFile(
+        path.join(ruleDir, "api-auth.md"),
+        addManagedMetadata(ruleBody).replace("ORIGINAL rule.", "TAMPERED rule."),
+        "utf-8",
+      );
+      await fs.writeFile(
+        path.join(agentDir, "reviewer.md"),
+        addManagedMetadata(agentBody).replace("ORIGINAL agent.", "TAMPERED agent."),
+        "utf-8",
+      );
+
+      const lockfile = {
+        version: "1.0.0",
+        synced_at: new Date().toISOString(),
+        source: { type: "local" as const, path: canonicalDir },
+        content: {
+          agents_md: { global_block_hash: "sha256:abc", merged: true },
+          skills: [],
+          targets: ["claude"],
+        },
+      };
+      await fs.mkdir(path.join(downstreamDir, ".agconf"), { recursive: true });
+      await fs.writeFile(
+        path.join(downstreamDir, ".agconf", "lockfile.json"),
+        JSON.stringify(lockfile, null, 2),
+        "utf-8",
+      );
+
+      const result = await detectProposedChanges({ cwd: downstreamDir });
+      const paths = result.changes.map((c) => c.canonicalPath).sort();
+      expect(paths).toEqual(["my-agents/reviewer.md", "my-rules/security/api-auth.md"]);
     });
   });
 
