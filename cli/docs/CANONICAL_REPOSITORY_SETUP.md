@@ -336,14 +336,14 @@ The scaffolded workflows in `.github/workflows/` are **reusable workflows** that
 
 ### CLI Installation
 
-The generated workflow files install the `agconf` CLI with a pinned version:
+The generated workflow files install the latest published `agconf` CLI (unpinned):
 
 ```yaml
 - name: Install agconf CLI
-  run: npm install -g agconf@1.2.0
+  run: npm install -g agconf
 ```
 
-The version is automatically set to the CLI version used when running `agconf canonical init`. This ensures consistent behavior between local development and CI.
+Workflows are generated without a pinned CLI version so downstream CI always picks up the latest release. See [VERSIONING.md](./VERSIONING.md) for how content (not the CLI) is pinned via the lockfile.
 
 ### How Reusable Workflows Work
 

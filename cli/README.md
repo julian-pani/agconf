@@ -62,7 +62,7 @@ agconf init --source your-org/engineering-standards
 
 ## CLAUDE.md Handling
 
-During sync, agconf consolidates any existing `CLAUDE.md` files into `AGENTS.md` and creates `.claude/CLAUDE.md` with a reference to it. This ensures a single source of truth while maintaining compatibility with both Claude Code and GitHub Copilot.
+During sync, agconf consolidates any existing `CLAUDE.md` files into `AGENTS.md`, then creates/keeps a root `CLAUDE.md` containing an `@AGENTS.md` reference and removes any legacy `.claude/CLAUDE.md`. This ensures a single source of truth while maintaining compatibility with both Claude Code and GitHub Copilot.
 
 ## Rules
 

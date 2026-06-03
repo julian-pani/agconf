@@ -5,7 +5,9 @@ import { readLockfile } from "../core/lockfile.js";
 import {
   checkAllManagedFiles,
   computeContentHash,
+  getManagedMetadata,
   parseFrontmatter,
+  readManagedMetadata,
   stripManagedMetadata,
 } from "../core/managed-content.js";
 import {
@@ -121,10 +123,7 @@ export async function checkCommand(options: CheckOptions = {}): Promise<void> {
       // asset files changed (assets_hash mismatch). Both are reported.
       const skillPath = path.join(targetDir, file.path);
       const content = await fs.readFile(skillPath, "utf-8");
-      const { frontmatter } = parseFrontmatter(content);
-
-      const metadata = frontmatter.metadata as Record<string, string> | undefined;
-      const storedHash = metadata?.[`${keyPrefix}content_hash`] ?? "unknown";
+      const storedHash = getManagedMetadata(content, markerPrefix).contentHash ?? "unknown";
       const currentHash = computeContentHash(
         content,
         markerPrefix ? { metadataPrefix: markerPrefix } : undefined,
@@ -144,9 +143,8 @@ export async function checkCommand(options: CheckOptions = {}): Promise<void> {
       const rulePath = path.join(targetDir, file.path);
       const content = await fs.readFile(rulePath, "utf-8");
       const { frontmatter } = parseFrontmatter(content);
-
-      const metadata = frontmatter.metadata as Record<string, string> | undefined;
-      const storedHash = metadata?.[`${keyPrefix}content_hash`] ?? "unknown";
+      const storedHash =
+        readManagedMetadata(frontmatter.metadata, markerPrefix).contentHash ?? "unknown";
       const currentHash = computeContentHash(
         content,
         markerPrefix ? { metadataPrefix: markerPrefix } : undefined,
@@ -213,10 +211,7 @@ export async function checkCommand(options: CheckOptions = {}): Promise<void> {
       // Get hash info for agent file
       const agentFilePath = path.join(targetDir, file.path);
       const content = await fs.readFile(agentFilePath, "utf-8");
-      const { frontmatter } = parseFrontmatter(content);
-
-      const metadata = frontmatter.metadata as Record<string, string> | undefined;
-      const storedHash = metadata?.[`${keyPrefix}content_hash`] ?? "unknown";
+      const storedHash = getManagedMetadata(content, markerPrefix).contentHash ?? "unknown";
       const currentHash = computeContentHash(
         content,
         markerPrefix ? { metadataPrefix: markerPrefix } : undefined,

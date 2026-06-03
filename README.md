@@ -308,7 +308,7 @@ When you run `agconf init` or `agconf sync` in a downstream repository:
 | File | Purpose |
 |------|---------|
 | `AGENTS.md` | Global + repo-specific standards |
-| `.claude/CLAUDE.md` | Reference to AGENTS.md |
+| `CLAUDE.md` (root) | Reference to AGENTS.md (`@AGENTS.md`) |
 | `.claude/skills/` | Skill definitions |
 | `.claude/rules/` | Modular, topic-specific instructions (Claude targets) |
 | `.claude/agents/` | Sub-agent definitions (Claude targets) |

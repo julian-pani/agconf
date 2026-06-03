@@ -23,7 +23,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
   prompts.intro(pc.bold("agconf init"));
 
   // Resolve target directory to git root
-  const targetDir = await resolveTargetDirectory();
+  const targetDir = await resolveTargetDirectory(options.cwd);
 
   // Parse targets
   const targets = await parseAndValidateTargets(options.target);

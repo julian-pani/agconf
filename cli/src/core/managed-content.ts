@@ -46,7 +46,56 @@ export function getMetadataKeys(prefix: string = DEFAULT_METADATA_PREFIX) {
     managed: `${keyPrefix}_managed`,
     contentHash: `${keyPrefix}_content_hash`,
     assetsHash: `${keyPrefix}_assets_hash`,
+    sourcePath: `${keyPrefix}_source_path`,
   };
+}
+
+/**
+ * The agconf-managed metadata fields read from a file's frontmatter.
+ * Every field is optional because the underlying frontmatter is untrusted.
+ */
+export interface ManagedMetadata {
+  managed?: string | undefined;
+  contentHash?: string | undefined;
+  assetsHash?: string | undefined;
+  sourcePath?: string | undefined;
+}
+
+/**
+ * Read agconf-managed metadata fields from a parsed frontmatter `metadata` value
+ * in a type-safe way.
+ *
+ * `metadata` originates from a hand-rolled YAML parser and is typed `unknown`;
+ * its entries may be arrays/objects/undefined, so each field is returned only
+ * when it is actually a string. Centralizes the prefix→key derivation so callers
+ * never rebuild metadata key names inline.
+ */
+export function readManagedMetadata(
+  metadata: unknown,
+  prefix: string = DEFAULT_METADATA_PREFIX,
+): ManagedMetadata {
+  if (!metadata || typeof metadata !== "object") return {};
+  const record = metadata as Record<string, unknown>;
+  const keys = getMetadataKeys(prefix);
+  const str = (value: unknown): string | undefined =>
+    typeof value === "string" ? value : undefined;
+  return {
+    managed: str(record[keys.managed]),
+    contentHash: str(record[keys.contentHash]),
+    assetsHash: str(record[keys.assetsHash]),
+    sourcePath: str(record[keys.sourcePath]),
+  };
+}
+
+/**
+ * Convenience wrapper: parse `content`'s frontmatter and read its managed metadata.
+ */
+export function getManagedMetadata(
+  content: string,
+  prefix: string = DEFAULT_METADATA_PREFIX,
+): ManagedMetadata {
+  const { frontmatter } = parseFrontmatter(content);
+  return readManagedMetadata(frontmatter.metadata, prefix);
 }
 
 /**
@@ -183,15 +232,7 @@ export async function hasModifiedAssets(
   options: MetadataOptions = {},
 ): Promise<boolean> {
   const { metadataPrefix = DEFAULT_METADATA_PREFIX } = options;
-  const { frontmatter } = parseFrontmatter(content);
-
-  if (!frontmatter.metadata || typeof frontmatter.metadata !== "object") {
-    return false;
-  }
-
-  const metadata = frontmatter.metadata as Record<string, string>;
-  const keys = getMetadataKeys(metadataPrefix);
-  const storedHash = metadata[keys.assetsHash];
+  const { assetsHash: storedHash } = getManagedMetadata(content, metadataPrefix);
   if (!storedHash) return false;
 
   const currentHash = await computeAssetsHash(assetDir, excludeFiles);
@@ -215,8 +256,8 @@ export function stripManagedMetadata(content: string, options: MetadataOptions =
 
   // Remove managed fields from metadata
   if (frontmatter.metadata && typeof frontmatter.metadata === "object") {
-    const metadata = frontmatter.metadata as Record<string, string>;
-    const cleanedMetadata: Record<string, string> = {};
+    const metadata = frontmatter.metadata as Record<string, unknown>;
+    const cleanedMetadata: Record<string, unknown> = {};
 
     for (const [key, value] of Object.entries(metadata)) {
       // Skip keys with configured prefix
@@ -266,7 +307,7 @@ export function addManagedMetadata(
     frontmatter.metadata = {};
   }
 
-  const metadata = frontmatter.metadata as Record<string, string>;
+  const metadata = frontmatter.metadata as Record<string, unknown>;
   const keys = getMetadataKeys(metadataPrefix);
 
   // Add managed fields (only managed flag and hash - source/timestamp in lockfile)
@@ -287,18 +328,10 @@ export function addManagedMetadata(
  */
 export function hasManualChanges(content: string, options: MetadataOptions = {}): boolean {
   const { metadataPrefix = DEFAULT_METADATA_PREFIX } = options;
-  const { frontmatter } = parseFrontmatter(content);
-
-  if (!frontmatter.metadata || typeof frontmatter.metadata !== "object") {
-    return false; // No metadata means not managed
-  }
-
-  const metadata = frontmatter.metadata as Record<string, string>;
-  const keys = getMetadataKeys(metadataPrefix);
-  const storedHash = metadata[keys.contentHash];
+  const { contentHash: storedHash } = getManagedMetadata(content, metadataPrefix);
 
   if (!storedHash) {
-    return false; // No hash stored
+    return false; // No hash stored (or not managed)
   }
 
   const currentHash = computeContentHash(content, options);
@@ -310,15 +343,7 @@ export function hasManualChanges(content: string, options: MetadataOptions = {})
  */
 export function isManaged(content: string, options: MetadataOptions = {}): boolean {
   const { metadataPrefix = DEFAULT_METADATA_PREFIX } = options;
-  const { frontmatter } = parseFrontmatter(content);
-
-  if (!frontmatter.metadata || typeof frontmatter.metadata !== "object") {
-    return false;
-  }
-
-  const metadata = frontmatter.metadata as Record<string, string>;
-  const keys = getMetadataKeys(metadataPrefix);
-  return metadata[keys.managed] === "true";
+  return getManagedMetadata(content, metadataPrefix).managed === "true";
 }
 
 /**
@@ -514,10 +539,7 @@ export async function checkRuleFiles(
         const hasChanges = fileIsManaged && hasManualChanges(content, options);
 
         // Extract rulePath from metadata if available
-        const { frontmatter } = parseFrontmatter(content);
-        const metadata = frontmatter.metadata as Record<string, string> | undefined;
-        const keyPrefix = toMetadataPrefix(options.metadataPrefix || "agconf");
-        const rulePath = metadata?.[`${keyPrefix}_source_path`] || ruleFile;
+        const rulePath = getManagedMetadata(content, options.metadataPrefix).sourcePath || ruleFile;
 
         results.push({
           path: relativePath,
