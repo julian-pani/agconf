@@ -16,6 +16,7 @@
     "start": "tsx src/index.ts",
     "build": "tsup",
     "dev": "tsx --watch src/index.ts",
+    "pretest": "pnpm build",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
