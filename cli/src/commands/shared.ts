@@ -8,7 +8,11 @@ import { getModifiedManagedFiles } from "../core/managed-content.js";
 import type { ResolvedSource } from "../core/source.js";
 import { formatSourceString, resolveGithubSource, resolveLocalSource } from "../core/source.js";
 import {
+  deleteOrphanedAgents,
+  deleteOrphanedRules,
   deleteOrphanedSkills,
+  findOrphanedAgents,
+  findOrphanedRules,
   findOrphanedSkills,
   type SyncStatus,
   sync,
@@ -325,6 +329,56 @@ export async function checkModifiedFilesBeforeSync(
   return true;
 }
 
+/**
+ * Resolve orphaned managed objects (skills, rules, or agents) that were
+ * previously synced but are no longer present in canonical. In non-interactive
+ * mode they are deleted by default; otherwise the user is prompted. The actual
+ * deletion (with its managed/unmodified safety checks) is performed by
+ * `doDelete`. Shared by all content types so behavior stays identical.
+ */
+async function resolveOrphans(
+  orphaned: string[],
+  label: string,
+  yes: boolean,
+  logger: { info: (message: string) => void },
+  doDelete: () => Promise<{ deleted: string[]; skipped: string[] }>,
+): Promise<{ deleted: string[]; skipped: string[] }> {
+  if (orphaned.length === 0) {
+    return { deleted: [], skipped: [] };
+  }
+
+  if (yes) {
+    // Non-interactive mode: delete by default
+    return doDelete();
+  }
+
+  // Interactive mode: prompt user
+  console.log();
+  console.log(
+    pc.yellow(
+      `⚠ ${orphaned.length} ${label}(s) were previously synced but are no longer in the source:`,
+    ),
+  );
+  for (const item of orphaned) {
+    console.log(`  ${pc.yellow("·")} ${item}`);
+  }
+  console.log();
+
+  const confirmDelete = await prompts.confirm({
+    message: `Delete these orphaned ${label}s?`,
+    initialValue: true,
+  });
+
+  if (prompts.isCancel(confirmDelete)) {
+    logger.info("Skipping orphan deletion.");
+    return { deleted: [], skipped: [] };
+  }
+  if (confirmDelete) {
+    return doDelete();
+  }
+  return { deleted: [], skipped: [] };
+}
+
 export interface PerformSyncOptions {
   targetDir: string;
   resolvedSource: ResolvedSource;
@@ -358,6 +412,15 @@ export async function performSync(options: PerformSyncOptions): Promise<void> {
   const previousRules = previousLockfileResult?.lockfile.content.rules?.files ?? [];
   const previousAgents = previousLockfileResult?.lockfile.content.agents?.files ?? [];
   const previousTargets = previousLockfileResult?.lockfile.content.targets ?? ["claude"];
+  // Marker prefix the orphaned downstream files were written with. Prefer the
+  // previous lockfile's value (matches the files on disk); fall back to the
+  // source's prefix. Used so orphan cleanup recognizes managed files written
+  // with a custom prefix instead of silently skipping them.
+  const orphanMetadataPrefix =
+    previousLockfileResult?.lockfile.content.marker_prefix ?? resolvedSource.markerPrefix;
+  const orphanPrefixOption = orphanMetadataPrefix
+    ? { metadataPrefix: orphanMetadataPrefix }
+    : undefined;
 
   const syncSpinner = logger.spinner("Syncing...");
   syncSpinner.start();
@@ -373,53 +436,33 @@ export async function performSync(options: PerformSyncOptions): Promise<void> {
     const result = await sync(targetDir, resolvedSource, syncOptions);
     syncSpinner.stop();
 
-    // Detect and handle orphaned skills
+    // Detect and handle orphaned skills, rules, and agents. All three behave
+    // identically: deleted from canonical means deleted downstream (with
+    // managed/unmodified safety checks). Targets to check are the union of the
+    // previous and current sync targets.
+    const allTargets = [...new Set([...previousTargets, ...targets])];
+    const yes = options.yes === true;
+
     const orphanedSkills = findOrphanedSkills(previousSkills, result.skills.synced);
-    let orphanResult: { deleted: string[]; skipped: string[] } = { deleted: [], skipped: [] };
+    const orphanResult = await resolveOrphans(orphanedSkills, "skill", yes, logger, () =>
+      deleteOrphanedSkills(
+        targetDir,
+        orphanedSkills,
+        allTargets,
+        previousSkills,
+        orphanPrefixOption,
+      ),
+    );
 
-    if (orphanedSkills.length > 0) {
-      // Determine which targets to check (union of previous and current)
-      const allTargets = [...new Set([...previousTargets, ...targets])];
+    const orphanedRules = findOrphanedRules(previousRules, result.rules?.synced ?? []);
+    const ruleOrphanResult = await resolveOrphans(orphanedRules, "rule", yes, logger, () =>
+      deleteOrphanedRules(targetDir, orphanedRules, allTargets, previousRules, orphanPrefixOption),
+    );
 
-      if (options.yes) {
-        // Non-interactive mode: delete by default
-        orphanResult = await deleteOrphanedSkills(
-          targetDir,
-          orphanedSkills,
-          allTargets,
-          previousSkills,
-        );
-      } else {
-        // Interactive mode: prompt user
-        console.log();
-        console.log(
-          pc.yellow(
-            `⚠ ${orphanedSkills.length} skill(s) were previously synced but are no longer in the source:`,
-          ),
-        );
-        for (const skill of orphanedSkills) {
-          console.log(`  ${pc.yellow("·")} ${skill}`);
-        }
-        console.log();
-
-        const deleteOrphans = await prompts.confirm({
-          message: "Delete these orphaned skills?",
-          initialValue: true,
-        });
-
-        if (prompts.isCancel(deleteOrphans)) {
-          // User cancelled, skip deletion but continue with sync summary
-          logger.info("Skipping orphan deletion.");
-        } else if (deleteOrphans) {
-          orphanResult = await deleteOrphanedSkills(
-            targetDir,
-            orphanedSkills,
-            allTargets,
-            previousSkills,
-          );
-        }
-      }
-    }
+    const orphanedAgents = findOrphanedAgents(previousAgents, result.agents?.synced ?? []);
+    const agentOrphanResult = await resolveOrphans(orphanedAgents, "agent", yes, logger, () =>
+      deleteOrphanedAgents(targetDir, orphanedAgents, previousAgents, orphanPrefixOption),
+    );
 
     // Show validation errors if any
     if (result.skills.validationErrors.length > 0) {
@@ -466,6 +509,8 @@ export async function performSync(options: PerformSyncOptions): Promise<void> {
       previousRules,
       previousAgents,
       orphanResult,
+      ruleOrphanResult,
+      agentOrphanResult,
       workflowResult,
       hookResult,
       resolvedSource,

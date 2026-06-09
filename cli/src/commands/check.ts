@@ -5,7 +5,9 @@ import { readLockfile } from "../core/lockfile.js";
 import {
   checkAllManagedFiles,
   computeContentHash,
+  findOrphanedManagedFiles,
   getManagedMetadata,
+  type OrphanedManagedFile,
   parseFrontmatter,
   readManagedMetadata,
   stripManagedMetadata,
@@ -249,10 +251,27 @@ export async function checkCommand(options: CheckOptions = {}): Promise<void> {
     process.exit(1);
   }
 
+  // Reconcile managed files on disk against the lockfile's expected set. This
+  // surfaces objects removed from canonical but left behind downstream (ghosts)
+  // and lockfile-tracked objects deleted manually after sync (missing).
+  const expected = {
+    skills: lockfile.content.skills ?? [],
+    rules: lockfile.content.rules?.files ?? [],
+    agents: lockfile.content.agents?.files ?? [],
+  };
+  const { ghosts, missing } = await findOrphanedManagedFiles(
+    targetDir,
+    targets,
+    expected,
+    checkOptions,
+  );
+
+  const hasProblems = modifiedFiles.length > 0 || ghosts.length > 0 || missing.length > 0;
+
   // Output results
   if (options.quiet) {
     // Quiet mode: just exit with appropriate code
-    if (modifiedFiles.length > 0) {
+    if (hasProblems) {
       process.exit(1);
     }
     return;
@@ -264,43 +283,77 @@ export async function checkCommand(options: CheckOptions = {}): Promise<void> {
   console.log("Checking managed files...");
   console.log();
 
-  if (modifiedFiles.length === 0) {
+  if (!hasProblems) {
     console.log(`${pc.green("✓")} All managed files are unchanged`);
     console.log();
     return;
   }
 
-  // Modified files found
-  console.log(`${pc.red("✗")} ${modifiedFiles.length} managed file(s) have been modified:`);
-  console.log();
+  const typeLabel = (type: OrphanedManagedFile["type"]): string => type;
 
-  for (const file of modifiedFiles) {
-    let label = "";
-    if (file.type === "agents") {
-      label = " (global block)";
-    } else if (file.type === "rules-section") {
-      label = " (rules section)";
-    } else if (file.type === "rule" && file.rulePath) {
-      label = ` (rule: ${file.rulePath})`;
-    } else if (file.type === "agent" && file.agentPath) {
-      label = ` (agent: ${file.agentPath})`;
-    } else if (file.type === "skill") {
-      // Distinguish "SKILL.md body changed" from "sibling assets changed"
-      // so users know where to look (and that `propose` has more detail).
-      const parts: string[] = [];
-      if (file.contentChanged) parts.push("body");
-      if (file.assetsChanged) parts.push("assets");
-      if (parts.length > 0) label = ` (${parts.join(" + ")})`;
+  // Modified files
+  if (modifiedFiles.length > 0) {
+    console.log(`${pc.red("✗")} ${modifiedFiles.length} managed file(s) have been modified:`);
+    console.log();
+
+    for (const file of modifiedFiles) {
+      let label = "";
+      if (file.type === "agents") {
+        label = " (global block)";
+      } else if (file.type === "rules-section") {
+        label = " (rules section)";
+      } else if (file.type === "rule" && file.rulePath) {
+        label = ` (rule: ${file.rulePath})`;
+      } else if (file.type === "agent" && file.agentPath) {
+        label = ` (agent: ${file.agentPath})`;
+      } else if (file.type === "skill") {
+        // Distinguish "SKILL.md body changed" from "sibling assets changed"
+        // so users know where to look (and that `propose` has more detail).
+        const parts: string[] = [];
+        if (file.contentChanged) parts.push("body");
+        if (file.assetsChanged) parts.push("assets");
+        if (parts.length > 0) label = ` (${parts.join(" + ")})`;
+      }
+      console.log(`  ${file.path}${pc.dim(label)}`);
+      console.log(`    Expected hash: ${pc.dim(file.expectedHash)}`);
+      console.log(`    Current hash:  ${pc.dim(file.currentHash)}`);
+      console.log();
     }
-    console.log(`  ${file.path}${pc.dim(label)}`);
-    console.log(`    Expected hash: ${pc.dim(file.expectedHash)}`);
-    console.log(`    Current hash:  ${pc.dim(file.currentHash)}`);
+  }
+
+  // Orphaned files: removed from canonical but still present on disk.
+  if (ghosts.length > 0) {
+    console.log(
+      `${pc.red("✗")} ${ghosts.length} orphaned managed file(s) are no longer in canonical but remain on disk:`,
+    );
+    console.log();
+    for (const ghost of ghosts) {
+      console.log(`  ${ghost.path} ${pc.dim(`(orphaned ${typeLabel(ghost.type)})`)}`);
+    }
     console.log();
   }
 
-  console.log(pc.dim("These files are managed by agconf and should not be modified manually."));
-  console.log(pc.dim("To propose these changes to canonical: agconf propose"));
-  console.log(pc.dim("To restore original content: agconf sync"));
+  // Missing files: tracked in the lockfile but deleted from disk.
+  if (missing.length > 0) {
+    console.log(
+      `${pc.red("✗")} ${missing.length} managed file(s) are tracked in the lockfile but missing on disk:`,
+    );
+    console.log();
+    for (const file of missing) {
+      console.log(`  ${file.path} ${pc.dim(`(missing ${typeLabel(file.type)})`)}`);
+    }
+    console.log();
+  }
+
+  if (modifiedFiles.length > 0) {
+    console.log(pc.dim("Modified files are managed by agconf and should not be edited manually."));
+    console.log(pc.dim("To propose these changes to canonical: agconf propose"));
+  }
+  if (ghosts.length > 0 || missing.length > 0) {
+    console.log(pc.dim("Run 'agconf sync' to remove orphaned files and restore missing ones."));
+  } else {
+    console.log(pc.dim("To restore original content: agconf sync"));
+  }
   console.log();
 
   process.exit(1);

@@ -832,3 +832,124 @@ export async function getModifiedManagedFiles(
   const allFiles = await checkAllManagedFiles(targetDir, targets, options);
   return allFiles.filter((f) => f.hasChanges);
 }
+
+/** A managed file that is out of sync with the lockfile's expected set. */
+export interface OrphanedManagedFile {
+  /** Relative path used for display (e.g. ".claude/rules/security/auth.md"). */
+  path: string;
+  /** Content type. */
+  type: "skill" | "rule" | "agent";
+  /** Lockfile identity: skill name, or rule/agent relative path. */
+  identity: string;
+}
+
+/** The set of managed objects the lockfile says should exist, by type. */
+export interface ExpectedManagedContent {
+  /** Skill names (e.g. "my-skill"). */
+  skills: string[];
+  /** Rule paths relative to the rules dir (e.g. "security/auth.md"). */
+  rules: string[];
+  /** Agent file names (e.g. "code-reviewer.md"). */
+  agents: string[];
+}
+
+/**
+ * Reconcile managed files on disk against the set recorded in the lockfile.
+ *
+ * - **ghosts**: managed files present on disk whose identity is NOT in the
+ *   lockfile. These are objects that were removed from canonical but never
+ *   cleaned up downstream (the leftover-after-deletion case).
+ * - **missing**: lockfile-tracked objects with no corresponding managed file on
+ *   disk. These were deleted manually after the last sync.
+ *
+ * Only managed files participate, so user-authored files dropped into
+ * `.claude/rules/` etc. are never flagged. Rule and agent reconciliation is
+ * gated on file-based targets (Claude); Codex stores rules inside AGENTS.md and
+ * has no per-file agents, so those types are skipped when Claude is absent.
+ */
+export async function findOrphanedManagedFiles(
+  targetDir: string,
+  targets: string[],
+  expected: ExpectedManagedContent,
+  options: MetadataOptions = {},
+): Promise<{ ghosts: OrphanedManagedFile[]; missing: OrphanedManagedFile[] }> {
+  const ghosts: OrphanedManagedFile[] = [];
+  const missing: OrphanedManagedFile[] = [];
+  const fileBasedTarget = targets.includes("claude") ? "claude" : (targets[0] ?? "claude");
+
+  const pathExists = async (p: string): Promise<boolean> => {
+    try {
+      await fs.access(p);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  // Ghosts are managed files agconf still owns on disk but that the lockfile no
+  // longer lists. Missing is presence-based (a tracked file deleted from disk),
+  // independent of managed metadata so a file whose metadata was stripped is not
+  // mistaken for missing.
+
+  // --- Skills (synced to every target as a directory) ---
+  const skillFiles = (await checkSkillFiles(targetDir, targets, options)).filter(
+    (s) => s.isManaged,
+  );
+  for (const skill of skillFiles) {
+    if (!expected.skills.includes(skill.skillName)) {
+      ghosts.push({ path: skill.path, type: "skill", identity: skill.skillName });
+    }
+  }
+  for (const name of expected.skills) {
+    const existsInAnyTarget = await Promise.all(
+      targets.map((t) => pathExists(path.join(targetDir, `.${t}`, "skills", name, "SKILL.md"))),
+    );
+    if (!existsInAnyTarget.some(Boolean)) {
+      missing.push({
+        path: path.join(`.${fileBasedTarget}`, "skills", name, "SKILL.md"),
+        type: "skill",
+        identity: name,
+      });
+    }
+  }
+
+  // --- Rules (file-based for Claude only) ---
+  const ruleFiles = (await checkRuleFiles(targetDir, targets, options)).filter((r) => r.isManaged);
+  for (const rule of ruleFiles) {
+    if (!expected.rules.includes(rule.rulePath)) {
+      ghosts.push({ path: rule.path, type: "rule", identity: rule.rulePath });
+    }
+  }
+  if (targets.includes("claude")) {
+    for (const rulePath of expected.rules) {
+      if (!(await pathExists(path.join(targetDir, ".claude", "rules", rulePath)))) {
+        missing.push({
+          path: path.join(".claude", "rules", rulePath),
+          type: "rule",
+          identity: rulePath,
+        });
+      }
+    }
+  }
+
+  // --- Agents (Claude only) ---
+  if (targets.includes("claude")) {
+    const agentFiles = (await checkAgentFiles(targetDir, options)).filter((a) => a.isManaged);
+    for (const agent of agentFiles) {
+      if (!expected.agents.includes(agent.agentPath)) {
+        ghosts.push({ path: agent.path, type: "agent", identity: agent.agentPath });
+      }
+    }
+    for (const agentPath of expected.agents) {
+      if (!(await pathExists(path.join(targetDir, ".claude", "agents", agentPath)))) {
+        missing.push({
+          path: path.join(".claude", "agents", agentPath),
+          type: "agent",
+          identity: agentPath,
+        });
+      }
+    }
+  }
+
+  return { ghosts, missing };
+}

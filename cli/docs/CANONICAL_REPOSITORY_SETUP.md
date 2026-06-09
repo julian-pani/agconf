@@ -612,11 +612,12 @@ jobs:
 3. Commit, push, and create release
 4. Downstream repos receive the skill on next sync
 
-### Deprecating Skills
+### Deprecating Skills, Rules, and Agents
 
-1. Remove the skill directory
+1. Remove the skill directory (or rule/agent file) from canonical
 2. Create a new release
-3. Downstream repos will be prompted to delete orphaned skills on sync
+3. On the next sync, downstream repos are prompted to delete the orphaned skills, rules, and agents (auto-deleted with `--yes`). Locally-modified or unmanaged files are skipped and kept.
+4. `agconf check` fails if an orphaned managed file is left behind, or if a tracked file is missing from disk
 
 ## Troubleshooting
 

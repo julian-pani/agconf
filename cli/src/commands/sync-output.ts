@@ -19,6 +19,10 @@ export interface RenderSyncSummaryInput {
   previousAgents: string[];
   /** Outcome of orphaned-skill handling performed by the caller. */
   orphanResult: { deleted: string[]; skipped: string[] };
+  /** Outcome of orphaned-rule handling performed by the caller. */
+  ruleOrphanResult: { deleted: string[]; skipped: string[] };
+  /** Outcome of orphaned-agent handling performed by the caller. */
+  agentOrphanResult: { deleted: string[]; skipped: string[] };
   workflowResult: WorkflowSyncResult | null;
   hookResult: HookInstallResult;
   resolvedSource: ResolvedSource;
@@ -54,6 +58,8 @@ export function renderSyncSummary(input: RenderSyncSummaryInput): RenderedSyncSu
     previousRules,
     previousAgents,
     orphanResult,
+    ruleOrphanResult,
+    agentOrphanResult,
     workflowResult,
     hookResult,
     resolvedSource,
@@ -300,6 +306,32 @@ export function renderSyncSummary(input: RenderSyncSummaryInput): RenderedSyncSu
         `  ${pc.yellow("!")} ${pc.dim("Agents skipped")} ${pc.yellow("(Codex does not support sub-agents)")}`,
       );
       summaryLines.push("- Agents skipped (Codex does not support sub-agents)");
+    }
+
+    // Removed / skipped orphaned rules and agents (Claude-managed files only).
+    // Rendered regardless of whether any rules/agents remain, so a fully-removed
+    // set is still reported.
+    if (targetResult.target === "claude") {
+      const renderOrphans = (
+        orphans: { deleted: string[]; skipped: string[] },
+        subdir: "rules" | "agents",
+      ) => {
+        for (const item of [...orphans.deleted].sort()) {
+          const orphanPath = formatPath(path.join(targetDir, config.dir, subdir, item));
+          consoleLines.push(`    ${pc.red("-")} ${orphanPath} ${pc.dim("(removed)")}`);
+          summaryLines.push(`  - \`${config.dir}/${subdir}/${item}\` (removed)`);
+        }
+        for (const item of [...orphans.skipped].sort()) {
+          const orphanPath = formatPath(path.join(targetDir, config.dir, subdir, item));
+          consoleLines.push(
+            `    ${pc.yellow("!")} ${orphanPath} ${pc.dim("(orphaned but skipped)")}`,
+          );
+          summaryLines.push(`  - \`${config.dir}/${subdir}/${item}\` (orphaned but skipped)`);
+        }
+      };
+
+      renderOrphans(ruleOrphanResult, "rules");
+      renderOrphans(agentOrphanResult, "agents");
     }
   }
 

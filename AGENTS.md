@@ -40,7 +40,7 @@ pnpm install:global       # Build + install globally
 ## Architecture
 
 ### Core Modules (`cli/src/core/`)
-- `sync.ts` - Main sync logic between canonical and downstream repos. Includes a pre-flight **overwrite guard** (`detectUnmanagedCollisions`): before writing, any pre-existing *unmanaged* skill/rule/agent file that is byte-identical to canonical (modulo metadata) is **adopted** (reported in `SyncResult.adopted`), while one that *differs* aborts the whole sync with `UnmanagedOverwriteError` unless `--override` is passed. Managed files are exempt (canonical owns them). Reuses `skillMatchesCanonical`/`fileMatchesCanonical` from `managed-content.ts`.
+- `sync.ts` - Main sync logic between canonical and downstream repos. Includes a pre-flight **overwrite guard** (`detectUnmanagedCollisions`): before writing, any pre-existing *unmanaged* skill/rule/agent file that is byte-identical to canonical (modulo metadata) is **adopted** (reported in `SyncResult.adopted`), while one that *differs* aborts the whole sync with `UnmanagedOverwriteError` unless `--override` is passed. Managed files are exempt (canonical owns them). Reuses `skillMatchesCanonical`/`fileMatchesCanonical` from `managed-content.ts`. Also provides **orphan cleanup**: `findOrphaned{Skills,Rules,Agents}` diff the previous lockfile against the current sync, and `deleteOrphaned{Skills,Rules,Agents}` remove downstream files for objects deleted from canonical (only when managed AND either unmodified or previously tracked, so manually-authored/edited files are skipped). The orchestration (prompt vs auto-delete with `--yes`) lives in `commands/shared.ts` via the shared `resolveOrphans` helper. Rules orphan deletion applies to Claude file-based rules only; Codex rules drop out when the AGENTS.md rules section is regenerated.
 - `lockfile.ts` - Version pinning and metadata tracking
 - `markers.ts` - HTML comment markers for section separation in managed files
 - `merge.ts` - AGENTS.md merge logic (preserves repo-specific content). Also handles CLAUDE.md consolidation: merges content from both root and .claude/ locations into AGENTS.md, then keeps only root CLAUDE.md with @AGENTS.md reference (deletes .claude/CLAUDE.md if present)
@@ -184,6 +184,10 @@ Each synced content type needs:
 - Individual skill files (`.claude/skills/*/SKILL.md`) via frontmatter metadata
 - Individual rule files for Claude (`.claude/rules/**/*.md`) via frontmatter metadata
 - Individual agent files for Claude (`.claude/agents/*.md`) via frontmatter metadata
+
+Beyond per-file hash verification, `check` also reconciles the managed files on disk against the lockfile's expected set via `findOrphanedManagedFiles` (in `managed-content.ts`) and fails (exit 1) on either:
+- **Ghosts**: a *managed* skill/rule/agent left on disk that the lockfile no longer lists (e.g. deleted from canonical but never cleaned up). Unmanaged user files are never flagged.
+- **Missing**: a lockfile-tracked skill/rule/agent with no file on disk (deleted manually after sync). Missing detection is presence-based (independent of managed metadata) and gated on file-based targets (Claude) for rules/agents.
 
 ### Content Hash Consistency
 **Critical:** All content hashes MUST use the same format: `sha256:` prefix + 12 hex characters.
