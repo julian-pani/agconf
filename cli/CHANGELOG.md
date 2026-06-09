@@ -1,3 +1,9 @@
+## [0.15.0](https://github.com/julian-pani/agconf/compare/v0.14.1...v0.15.0) (2026-06-09)
+
+### Features
+
+* **cli:** delete orphaned rules/agents on sync and detect orphans in check ([#62](https://github.com/julian-pani/agconf/issues/62)) ([e958908](https://github.com/julian-pani/agconf/commit/e9589083253dd16fe11179f45e37acb727d8eda8))
+
 ## [0.14.1](https://github.com/julian-pani/agconf/compare/v0.14.0...v0.14.1) (2026-06-03)
 
 ### Bug Fixes
