@@ -23,6 +23,8 @@ function baseInput(overrides: Partial<RenderSyncSummaryInput> = {}): RenderSyncS
     previousRules: [],
     previousAgents: [],
     orphanResult: { deleted: [], skipped: [] },
+    ruleOrphanResult: { deleted: [], skipped: [] },
+    agentOrphanResult: { deleted: [], skipped: [] },
     workflowResult: null,
     hookResult: {
       installed: true,

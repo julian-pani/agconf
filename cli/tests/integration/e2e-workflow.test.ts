@@ -589,4 +589,97 @@ describe("e2e workflow: full sync + check lifecycle", () => {
       expect(checkResult.exitCode).toBeNull();
     });
   });
+
+  // ── Test 5: Rule and agent removal ─────────────────────────────────────
+
+  describe("rule and agent removal across syncs", () => {
+    const exists = (p: string): Promise<boolean> =>
+      fs
+        .access(p)
+        .then(() => true)
+        .catch(() => false);
+
+    it("removes orphaned rule and agent files on re-sync and check passes", async () => {
+      const RULE_KEEP = `---\npaths:\n  - "src/**/*.ts"\n---\n\n# Keep Rule\n\nKeep this.\n`;
+      const RULE_DROP = `---\npaths:\n  - "lib/**/*.ts"\n---\n\n# Drop Rule\n\nDrop this.\n`;
+      const AGENT_KEEP = `---\nname: keeper\ndescription: Kept agent\n---\n\n# Keeper\n`;
+      const AGENT_DROP = `---\nname: dropper\ndescription: Dropped agent\n---\n\n# Dropper\n`;
+
+      // Start with two rules and two agents.
+      await setupCanonicalRepo(canonicalDir, {
+        skills: {},
+        rules: { "keep.md": RULE_KEEP, "drop.md": RULE_DROP },
+        agents: { "keeper.md": AGENT_KEEP, "dropper.md": AGENT_DROP },
+      });
+
+      await runInit(targetDir, canonicalDir);
+
+      const ruleKeepPath = path.join(targetDir, ".claude", "rules", "keep.md");
+      const ruleDropPath = path.join(targetDir, ".claude", "rules", "drop.md");
+      const agentKeepPath = path.join(targetDir, ".claude", "agents", "keeper.md");
+      const agentDropPath = path.join(targetDir, ".claude", "agents", "dropper.md");
+
+      expect(await exists(ruleDropPath)).toBe(true);
+      expect(await exists(agentDropPath)).toBe(true);
+
+      // Remove one rule and one agent from canonical.
+      await fs.rm(path.join(canonicalDir, "rules", "drop.md"));
+      await fs.rm(path.join(canonicalDir, "agents", "dropper.md"));
+
+      // Re-sync (--yes auto-confirms orphan deletion).
+      const syncResult = await runSync(targetDir, canonicalDir);
+      expect(syncResult.exitCode).toBeNull();
+
+      // Kept files remain; orphaned files are removed downstream.
+      expect(await exists(ruleKeepPath)).toBe(true);
+      expect(await exists(agentKeepPath)).toBe(true);
+      expect(await exists(ruleDropPath)).toBe(false);
+      expect(await exists(agentDropPath)).toBe(false);
+
+      // Check passes — no ghosts remain after cleanup.
+      const checkResult = await runCheck(targetDir);
+      expect(checkResult.exitCode).toBeNull();
+    });
+
+    it("removes orphaned rule and agent files written with a custom marker prefix", async () => {
+      const RULE_KEEP = `---\npaths:\n  - "src/**/*.ts"\n---\n\n# Keep Rule\n`;
+      const RULE_DROP = `---\npaths:\n  - "lib/**/*.ts"\n---\n\n# Drop Rule\n`;
+      const AGENT_KEEP = `---\nname: keeper\ndescription: Kept agent\n---\n\n# Keeper\n`;
+      const AGENT_DROP = `---\nname: dropper\ndescription: Dropped agent\n---\n\n# Dropper\n`;
+
+      // Canonical uses a non-default marker prefix, so downstream managed files
+      // carry custom metadata keys (e.g. `fbagents_managed`).
+      await setupCanonicalRepo(canonicalDir, {
+        markerPrefix: "fbagents",
+        skills: {},
+        rules: { "keep.md": RULE_KEEP, "drop.md": RULE_DROP },
+        agents: { "keeper.md": AGENT_KEEP, "dropper.md": AGENT_DROP },
+      });
+
+      await runInit(targetDir, canonicalDir);
+
+      const ruleDropPath = path.join(targetDir, ".claude", "rules", "drop.md");
+      const agentDropPath = path.join(targetDir, ".claude", "agents", "dropper.md");
+
+      // Sanity check: the downstream files really are tagged with the custom prefix.
+      expect(await fs.readFile(ruleDropPath, "utf-8")).toContain("fbagents_managed");
+
+      // Remove one rule and one agent from canonical.
+      await fs.rm(path.join(canonicalDir, "rules", "drop.md"));
+      await fs.rm(path.join(canonicalDir, "agents", "dropper.md"));
+
+      const syncResult = await runSync(targetDir, canonicalDir);
+      expect(syncResult.exitCode).toBeNull();
+
+      // Orphans are recognized via the custom prefix and removed (not skipped).
+      expect(await exists(ruleDropPath)).toBe(false);
+      expect(await exists(agentDropPath)).toBe(false);
+      expect(await exists(path.join(targetDir, ".claude", "rules", "keep.md"))).toBe(true);
+      expect(await exists(path.join(targetDir, ".claude", "agents", "keeper.md"))).toBe(true);
+
+      // Check passes — no ghosts remain.
+      const checkResult = await runCheck(targetDir);
+      expect(checkResult.exitCode).toBeNull();
+    });
+  });
 });

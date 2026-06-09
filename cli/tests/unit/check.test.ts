@@ -1337,4 +1337,167 @@ metadata:
       expect(mockExit).toHaveBeenCalledWith(1);
     });
   });
+
+  describe("orphaned (ghost) and missing managed files", () => {
+    // A valid managed AGENTS.md keeps at least one managed file present, so the
+    // "No managed files found" early-exit never masks ghost/missing reporting.
+    const writeManagedAgentsMd = async (): Promise<void> => {
+      const { createHash } = await import("node:crypto");
+      const globalContent = "# Global Standards";
+      const globalHash = createHash("sha256").update(globalContent.trim()).digest("hex");
+      const agentsMd = `<!-- agconf:global:start -->
+<!-- DO NOT EDIT THIS SECTION - Managed by agconf -->
+<!-- Content hash: sha256:${globalHash.slice(0, 12)} -->
+
+${globalContent}
+
+<!-- agconf:global:end -->
+`;
+      await fs.writeFile(path.join(tempDir, "AGENTS.md"), agentsMd);
+    };
+
+    const writeLockfile = async (content: Record<string, unknown>): Promise<void> => {
+      const lockfile = {
+        version: "1.0.0",
+        synced_at: new Date().toISOString(),
+        source: { type: "local", path: "/some/path", ref: "abc123" },
+        content: {
+          agents_md: { global_block_hash: "sha256:abc123def456", merged: true },
+          targets: ["claude"],
+          skills: [],
+          ...content,
+        },
+        cli_version: "1.0.0",
+      };
+      await fs.writeFile(
+        path.join(tempDir, ".agconf", "lockfile.json"),
+        JSON.stringify(lockfile, null, 2),
+      );
+    };
+
+    it("fails when a managed rule remains on disk but is not in the lockfile", async () => {
+      const { addRuleMetadata, parseRule } = await import("../../src/core/rules.js");
+      await writeManagedAgentsMd();
+      await writeLockfile({ rules: { files: [], content_hash: "sha256:abc123" } });
+
+      const rule = parseRule(`---\npaths:\n  - "src/**"\n---\n\n# Orphan Rule\n`, "orphan.md");
+      await fs.mkdir(path.join(tempDir, ".claude", "rules"), { recursive: true });
+      await fs.writeFile(
+        path.join(tempDir, ".claude", "rules", "orphan.md"),
+        addRuleMetadata(rule, "agconf"),
+      );
+
+      await expect(checkCommand({ cwd: tempDir })).rejects.toThrow("process.exit called");
+
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("no longer in canonical"));
+      expect(consoleLogSpy).toHaveBeenCalledWith(
+        expect.stringContaining(path.join(".claude", "rules", "orphan.md")),
+      );
+      expect(mockExit).toHaveBeenCalledWith(1);
+    });
+
+    it("fails when a managed agent remains on disk but is not in the lockfile", async () => {
+      const { addAgentMetadata, parseAgent } = await import("../../src/core/agents.js");
+      await writeManagedAgentsMd();
+      await writeLockfile({ agents: { files: [], content_hash: "sha256:abc123" } });
+
+      const agent = parseAgent(
+        `---\nname: ghost\ndescription: Ghost agent\n---\n\n# Ghost\n`,
+        "ghost.md",
+      );
+      await fs.mkdir(path.join(tempDir, ".claude", "agents"), { recursive: true });
+      await fs.writeFile(
+        path.join(tempDir, ".claude", "agents", "ghost.md"),
+        addAgentMetadata(agent, "agconf"),
+      );
+
+      await expect(checkCommand({ cwd: tempDir })).rejects.toThrow("process.exit called");
+
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("no longer in canonical"));
+      expect(mockExit).toHaveBeenCalledWith(1);
+    });
+
+    it("fails when a managed skill remains on disk but is not in the lockfile", async () => {
+      const { addManagedMetadata } = await import("../../src/core/managed-content.js");
+      await writeManagedAgentsMd();
+      await writeLockfile({ skills: [] });
+
+      const skillDir = path.join(tempDir, ".claude", "skills", "ghost-skill");
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(
+        path.join(skillDir, "SKILL.md"),
+        addManagedMetadata(
+          `---\nname: ghost-skill\ndescription: Ghost skill\n---\n\n# Ghost Skill\n`,
+        ),
+      );
+
+      await expect(checkCommand({ cwd: tempDir })).rejects.toThrow("process.exit called");
+
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("no longer in canonical"));
+      expect(mockExit).toHaveBeenCalledWith(1);
+    });
+
+    it("fails when a lockfile-tracked rule is missing from disk", async () => {
+      await writeManagedAgentsMd();
+      await writeLockfile({ rules: { files: ["gone.md"], content_hash: "sha256:abc123" } });
+
+      await expect(checkCommand({ cwd: tempDir })).rejects.toThrow("process.exit called");
+
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("missing on disk"));
+      expect(consoleLogSpy).toHaveBeenCalledWith(
+        expect.stringContaining(path.join(".claude", "rules", "gone.md")),
+      );
+      expect(mockExit).toHaveBeenCalledWith(1);
+    });
+
+    it("fails when a lockfile-tracked agent is missing from disk", async () => {
+      await writeManagedAgentsMd();
+      await writeLockfile({ agents: { files: ["gone.md"], content_hash: "sha256:abc123" } });
+
+      await expect(checkCommand({ cwd: tempDir })).rejects.toThrow("process.exit called");
+
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("missing on disk"));
+      expect(mockExit).toHaveBeenCalledWith(1);
+    });
+
+    it("ignores an unmanaged rule file that is not in the lockfile", async () => {
+      await writeManagedAgentsMd();
+      await writeLockfile({ rules: { files: [], content_hash: "sha256:abc123" } });
+
+      // User-authored, unmanaged rule must never be flagged as a ghost.
+      await fs.mkdir(path.join(tempDir, ".claude", "rules"), { recursive: true });
+      await fs.writeFile(
+        path.join(tempDir, ".claude", "rules", "user-authored.md"),
+        "# My own rule\n\nNot managed by agconf.\n",
+      );
+
+      await checkCommand({ cwd: tempDir });
+
+      expect(consoleLogSpy).toHaveBeenCalledWith(
+        expect.stringContaining("All managed files are unchanged"),
+      );
+      expect(mockExit).not.toHaveBeenCalled();
+    });
+
+    it("exits 1 in quiet mode when a ghost file remains on disk", async () => {
+      const { addAgentMetadata, parseAgent } = await import("../../src/core/agents.js");
+      await writeManagedAgentsMd();
+      await writeLockfile({ agents: { files: [], content_hash: "sha256:abc123" } });
+
+      const agent = parseAgent(
+        `---\nname: ghost\ndescription: Ghost agent\n---\n\n# Ghost\n`,
+        "ghost.md",
+      );
+      await fs.mkdir(path.join(tempDir, ".claude", "agents"), { recursive: true });
+      await fs.writeFile(
+        path.join(tempDir, ".claude", "agents", "ghost.md"),
+        addAgentMetadata(agent, "agconf"),
+      );
+
+      await expect(checkCommand({ quiet: true, cwd: tempDir })).rejects.toThrow(
+        "process.exit called",
+      );
+      expect(mockExit).toHaveBeenCalledWith(1);
+    });
+  });
 });

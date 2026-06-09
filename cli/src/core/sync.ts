@@ -1036,3 +1036,113 @@ export async function deleteOrphanedSkills(
 
   return { deleted, skipped };
 }
+
+/**
+ * Find rules that were previously synced but are no longer in the current sync.
+ */
+export function findOrphanedRules(previousRules: string[], currentRules: string[]): string[] {
+  return previousRules.filter((rule) => !currentRules.includes(rule));
+}
+
+/**
+ * Remove now-empty parent directories up to (but not including) `stopDir`.
+ * Used after deleting a nested rule file so the rules tree does not accumulate
+ * empty directories.
+ */
+async function removeEmptyDirsUp(startDir: string, stopDir: string): Promise<void> {
+  let current = startDir;
+  const stop = path.resolve(stopDir);
+  while (path.resolve(current) !== stop && path.resolve(current).startsWith(stop)) {
+    try {
+      const entries = await fs.readdir(current);
+      if (entries.length > 0) break;
+      await fs.rmdir(current);
+    } catch {
+      // Directory missing or not empty - stop walking up.
+      break;
+    }
+    current = path.dirname(current);
+  }
+}
+
+/**
+ * Delete orphaned rule files from file-based targets (Claude). Rules are only
+ * stored as individual files for the Claude target; for Codex they are
+ * concatenated into AGENTS.md and the rules section is regenerated on sync, so
+ * removed rules drop out automatically there.
+ *
+ * Mirrors {@link deleteOrphanedSkills}: only deletes a rule that is managed AND
+ * either was in the previous lockfile or is unmodified, so manually-authored or
+ * locally-edited rule files are preserved.
+ */
+export async function deleteOrphanedRules(
+  targetDir: string,
+  orphanedRules: string[],
+  targets: string[],
+  previouslyTrackedRules: string[],
+  options: { metadataPrefix?: string } = {},
+): Promise<{ deleted: string[]; skipped: string[] }> {
+  const deleted: string[] = [];
+  const skipped: string[] = [];
+  const metadataOptions = options.metadataPrefix
+    ? { metadataPrefix: options.metadataPrefix }
+    : undefined;
+
+  for (const rulePath of orphanedRules) {
+    let wasDeleted = false;
+
+    for (const target of targets) {
+      const rulesDir = path.join(targetDir, `.${target}`, "rules");
+      const fullPath = path.join(rulesDir, rulePath);
+
+      // Check if rule file exists for this target
+      try {
+        await fs.access(fullPath);
+      } catch {
+        // Expected: rule file may not exist for this target (e.g. Codex)
+        continue;
+      }
+
+      try {
+        const content = await fs.readFile(fullPath, "utf-8");
+
+        if (!isManaged(content, metadataOptions)) {
+          if (!skipped.includes(rulePath)) {
+            skipped.push(rulePath);
+          }
+          continue;
+        }
+
+        // Additional safety check: only delete if either:
+        // 1. The rule was in the previous lockfile (confirming it was synced), OR
+        // 2. The content hash matches (rule hasn't been modified)
+        const wasInPreviousLockfile = previouslyTrackedRules.includes(rulePath);
+        const isUnmodified = !hasManualChanges(content, metadataOptions);
+
+        if (!wasInPreviousLockfile && !isUnmodified) {
+          if (!skipped.includes(rulePath)) {
+            skipped.push(rulePath);
+          }
+          continue;
+        }
+      } catch {
+        // Can't read file, skip deletion to be safe
+        if (!skipped.includes(rulePath)) {
+          skipped.push(rulePath);
+        }
+        continue;
+      }
+
+      // Delete the rule file and prune any directories it leaves empty.
+      await fs.unlink(fullPath);
+      await removeEmptyDirsUp(path.dirname(fullPath), rulesDir);
+      wasDeleted = true;
+    }
+
+    if (wasDeleted && !deleted.includes(rulePath)) {
+      deleted.push(rulePath);
+    }
+  }
+
+  return { deleted, skipped };
+}

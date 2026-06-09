@@ -2,7 +2,13 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addManagedMetadata, isManaged } from "../../src/core/managed-content.js";
-import { deleteOrphanedSkills, findOrphanedSkills, syncRules } from "../../src/core/sync.js";
+import {
+  deleteOrphanedRules,
+  deleteOrphanedSkills,
+  findOrphanedRules,
+  findOrphanedSkills,
+  syncRules,
+} from "../../src/core/sync.js";
 
 describe("sync", () => {
   describe("findOrphanedSkills", () => {
@@ -296,6 +302,115 @@ description: A test skill
         expect(result.skipped).toEqual(["orphan-skill"]);
         expect(await skillExists("orphan-skill", "claude")).toBe(true);
       });
+    });
+  });
+
+  describe("findOrphanedRules", () => {
+    it("returns rules that were in previous but not in current", () => {
+      expect(findOrphanedRules(["a.md", "security/b.md", "c.md"], ["a.md", "c.md"])).toEqual([
+        "security/b.md",
+      ]);
+    });
+
+    it("returns empty array when no orphans", () => {
+      expect(findOrphanedRules(["a.md"], ["a.md", "b.md"])).toEqual([]);
+    });
+
+    it("returns all previous rules when current is empty", () => {
+      expect(findOrphanedRules(["a.md", "b.md"], [])).toEqual(["a.md", "b.md"]);
+    });
+
+    it("returns empty array when previous is empty", () => {
+      expect(findOrphanedRules([], ["a.md"])).toEqual([]);
+    });
+  });
+
+  describe("deleteOrphanedRules", () => {
+    let tempDir: string;
+
+    beforeEach(async () => {
+      tempDir = await fs.mkdtemp(path.join(process.cwd(), ".test-orphan-rules-"));
+    });
+
+    afterEach(async () => {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    });
+
+    const SAMPLE_RULE = `---\npaths:\n  - "src/**/*.ts"\n---\n\n# Rule\n\nDo the thing.\n`;
+
+    const createRuleFile = async (
+      relativePath: string,
+      target: string,
+      content: string,
+    ): Promise<void> => {
+      const fullPath = path.join(tempDir, `.${target}`, "rules", relativePath);
+      await fs.mkdir(path.dirname(fullPath), { recursive: true });
+      await fs.writeFile(fullPath, content);
+    };
+
+    const ruleExists = async (relativePath: string, target: string): Promise<boolean> => {
+      try {
+        await fs.access(path.join(tempDir, `.${target}`, "rules", relativePath));
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    it("deletes a managed rule that was in the previous lockfile", async () => {
+      await createRuleFile("security/auth.md", "claude", addManagedMetadata(SAMPLE_RULE));
+
+      const result = await deleteOrphanedRules(
+        tempDir,
+        ["security/auth.md"],
+        ["claude"],
+        ["security/auth.md"],
+      );
+
+      expect(result.deleted).toEqual(["security/auth.md"]);
+      expect(result.skipped).toEqual([]);
+      expect(await ruleExists("security/auth.md", "claude")).toBe(false);
+    });
+
+    it("removes now-empty parent directories left behind by deletion", async () => {
+      await createRuleFile("security/auth.md", "claude", addManagedMetadata(SAMPLE_RULE));
+
+      await deleteOrphanedRules(tempDir, ["security/auth.md"], ["claude"], ["security/auth.md"]);
+
+      const securityDir = path.join(tempDir, ".claude", "rules", "security");
+      const exists = await fs
+        .access(securityDir)
+        .then(() => true)
+        .catch(() => false);
+      expect(exists).toBe(false);
+    });
+
+    it("skips unmanaged rule files", async () => {
+      await createRuleFile("auth.md", "claude", SAMPLE_RULE);
+
+      const result = await deleteOrphanedRules(tempDir, ["auth.md"], ["claude"], ["auth.md"]);
+
+      expect(result.deleted).toEqual([]);
+      expect(result.skipped).toEqual(["auth.md"]);
+      expect(await ruleExists("auth.md", "claude")).toBe(true);
+    });
+
+    it("skips a managed rule that was modified and not in the previous lockfile", async () => {
+      const modified = `${addManagedMetadata(SAMPLE_RULE)}\nLocally edited.\n`;
+      await createRuleFile("auth.md", "claude", modified);
+
+      const result = await deleteOrphanedRules(tempDir, ["auth.md"], ["claude"], []);
+
+      expect(result.deleted).toEqual([]);
+      expect(result.skipped).toEqual(["auth.md"]);
+      expect(await ruleExists("auth.md", "claude")).toBe(true);
+    });
+
+    it("handles non-existent rule files gracefully", async () => {
+      const result = await deleteOrphanedRules(tempDir, ["missing.md"], ["claude"], ["missing.md"]);
+
+      expect(result.deleted).toEqual([]);
+      expect(result.skipped).toEqual([]);
     });
   });
 
