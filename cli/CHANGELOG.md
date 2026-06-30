@@ -1,3 +1,9 @@
+## [0.16.0](https://github.com/julian-pani/agconf/compare/v0.15.0...v0.16.0) (2026-06-30)
+
+### Features
+
+* **cli:** compile installable Claude Code & Codex plugins from canonical content ([#63](https://github.com/julian-pani/agconf/issues/63)) ([61867a2](https://github.com/julian-pani/agconf/commit/61867a290833bbfa8c50c2a663f04611f4b64d17))
+
 ## [0.15.0](https://github.com/julian-pani/agconf/compare/v0.14.1...v0.15.0) (2026-06-09)
 
 ### Features
