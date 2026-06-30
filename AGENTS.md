@@ -49,9 +49,11 @@ pnpm install:global       # Build + install globally
 - `hooks.ts` - Pre-commit hook installation
 - `targets.ts` - Multi-agent target support
 - `rules.ts` - Sync modular rule files from canonical to downstream repos
+- `mcp.ts` - MCP server content type (discover/parse/validate one JSON file per server). Used only by plugin compilation, not by `sync`.
+- `plugins.ts` - **Plugin compilation** (canonical-side, push-based). Compiles canonical skills/agents/mcps into installable Claude Code (`.claude-plugin/`) and Codex (`.codex-plugin/`) plugins plus per-target marketplace indexes, committed into the canonical repo. Output is a pure projection (no managed metadata injected). Freshness is enforced by `verifyPluginsFresh` (recompile to temp + tree diff), not per-file hashes. See [Plugin Compilation](#plugin-compilation).
 
 ### Commands (`cli/src/commands/`)
-Commands: init, sync, check, propose, upgrade-cli (with `--package-manager` option), canonical (init), config, completion
+Commands: init, sync, check, compile, propose, upgrade-cli (with `--package-manager` option), canonical (init), config, completion
 
 > **Reminder**: When modifying command options in `cli/src/cli.ts`, you MUST also update `cli/src/commands/completion.ts`. See [CLI Command Changes](#cli-command-changes).
 
@@ -123,6 +125,35 @@ Agents are Claude Code sub-agents (markdown files with YAML frontmatter) synced 
 - `agents_dir` in canonical `agconf.yaml` (optional) - path to agents directory
 - Agents tracked in lockfile under `content.agents` with file list and content hash
 
+### Plugin Compilation
+
+`agconf compile` is the **inverse** of sync: canonical-side and push-based. It
+compiles the canonical `skills/`, `agents/`, and `mcps/` into installable
+plugins + marketplace indexes committed into the canonical repo, so they can be
+installed directly over git (`/plugin marketplace add <repo>` for Claude,
+`codex plugin marketplace add <repo>` for Codex) **without** `sync`. Core logic
+lives in `cli/src/core/plugins.ts`; the full guide is `cli/docs/PLUGINS.md`.
+
+**Key functions in `cli/src/core/plugins.ts`:**
+- `resolvePluginTargets(config, canonicalTargets)` - resolve enabled targets (claude/codex), warn on unknown
+- `compilePlugins(targetDir, source, config, targets)` - real compile (cleans managed roots, then writes)
+- `compilePluginsToDir(outRoot, ...)` - pure projection into any root (used by real compile and the freshness check)
+- `verifyPluginsFresh(targetDir, ...)` - recompile to a temp dir + tree-diff against committed artifacts; reports `drifted`/`missing`/`extra`
+
+**Target-specific behavior:**
+- **Per-target output subtrees** (`<output_dir>/<target>/<plugin>`) so divergences never collide.
+- **Claude**: native `agents/` in the plugin; manifest `.claude-plugin/plugin.json`; marketplace `.claude-plugin/marketplace.json` (`owner` + string `source`); `.mcp.json` uses the `mcpServers` wrapper.
+- **Codex**: no agents slot → each agent is **down-converted to a skill**; manifest `.codex-plugin/plugin.json`; marketplace `.agents/plugins/marketplace.json` (`interface` + `{source:"local",path}` + `policy`); `.mcp.json` uses the `mcp_servers` wrapper.
+- **`rules/` and the global `AGENTS.md`** have no plugin slot in either tool → they remain `sync`-only.
+
+**Configuration:**
+- `plugins` block in canonical `agconf.yaml` (`PluginsConfigSchema`): `version`, `marketplace` (`name`/`owner`/`display_name`), `output_dir`, optional `targets`, optional `definitions` (curated plugins with skill/agent/mcp selectors; omit for a single all-content plugin).
+- `mcp_servers_dir` in `content` (optional) - one JSON file per MCP server (`cli/src/core/mcp.ts`).
+- Output is a pure projection — **no managed metadata injected** into published files. Versioning is explicit semver (per-plugin `version` ?? `plugins.version`), stamped verbatim so `--check` is deterministic.
+- `canonical init` scaffolds the `plugins` block, a self-CI workflow (`agconf-ci.yml`, runs `agconf check`), and an initial compile. `--no-plugins` skips all of it.
+
+> **Reminder**: `compile` is registered in `cli/src/cli.ts` and `cli/src/commands/completion.ts`. When changing compile/marketplace output, update `cli/docs/PLUGINS.md` and `verifyPluginsFresh` together.
+
 ## Commit Conventions
 
 Uses Conventional Commits with commitlint enforcement:
@@ -188,6 +219,8 @@ Each synced content type needs:
 Beyond per-file hash verification, `check` also reconciles the managed files on disk against the lockfile's expected set via `findOrphanedManagedFiles` (in `managed-content.ts`) and fails (exit 1) on either:
 - **Ghosts**: a *managed* skill/rule/agent left on disk that the lockfile no longer lists (e.g. deleted from canonical but never cleaned up). Unmanaged user files are never flagged.
 - **Missing**: a lockfile-tracked skill/rule/agent with no file on disk (deleted manually after sync). Missing detection is presence-based (independent of managed metadata) and gated on file-based targets (Claude) for rules/agents.
+
+**`check` is context-aware.** The above is the *downstream* path (lockfile present). In a *canonical* repo (an `agconf.yaml` with a `plugins` block), `check` instead — or additionally — runs `verifyPluginsFresh` (in `plugins.ts`) and fails (exit 1) if the committed plugin/marketplace artifacts have drifted from the canonical source. When modifying plugin compilation you MUST keep this canonical-side check (and `compile --check`, which shares `verifyPluginsFresh`) correct and tested in `check.test.ts` / `compile-command.test.ts`.
 
 ### Content Hash Consistency
 **Critical:** All content hashes MUST use the same format: `sha256:` prefix + 12 hex characters.

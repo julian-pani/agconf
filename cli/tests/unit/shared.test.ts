@@ -364,6 +364,7 @@ describe("shared command utilities", () => {
         skillsPath: "/auto/found/skills",
         rulesPath: null,
         agentsPath: null,
+        mcpsPath: null,
         markerPrefix: "agconf",
       };
       vi.mocked(resolveLocalSource).mockResolvedValue(mockSource);
@@ -385,6 +386,7 @@ describe("shared command utilities", () => {
         skillsPath: "/explicit/path/skills",
         rulesPath: null,
         agentsPath: null,
+        mcpsPath: null,
         markerPrefix: "agconf",
       };
       vi.mocked(resolveLocalSource).mockResolvedValue(mockSource);
@@ -419,6 +421,7 @@ describe("shared command utilities", () => {
         skillsPath: "/tmp/agconf-xyz/skills",
         rulesPath: null,
         agentsPath: null,
+        mcpsPath: null,
         markerPrefix: "agconf",
       };
       vi.mocked(createTempDir).mockResolvedValue("/tmp/agconf-xyz");

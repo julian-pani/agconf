@@ -40,6 +40,7 @@ function baseInput(overrides: Partial<RenderSyncSummaryInput> = {}): RenderSyncS
       skillsPath: "/canonical/skills",
       rulesPath: null,
       agentsPath: null,
+      mcpsPath: null,
       markerPrefix: "agconf",
     },
     resolvedVersion: { version: undefined },

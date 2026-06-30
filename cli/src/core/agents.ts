@@ -1,3 +1,6 @@
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import fg from "fast-glob";
 import { toMarkerPrefix } from "../utils/prefix.js";
 import { parseFrontmatter as parseFrontmatterShared, serializeFrontmatter } from "./frontmatter.js";
 import { computeContentHash } from "./managed-content.js";
@@ -99,6 +102,32 @@ function parseFrontmatter(content: string): {
  * @param relativePath - Relative path from agents directory (e.g., "code-reviewer.md")
  * @returns Parsed Agent object
  */
+/**
+ * Discover all agent markdown files (flat `*.md`) in a directory.
+ * Returns an empty array if the directory does not exist. Results are sorted by
+ * path for deterministic lockfile/compile ordering. Shared by sync and plugin
+ * compilation so discovery semantics stay in one place.
+ */
+export async function discoverAgents(agentsDir: string): Promise<Agent[]> {
+  try {
+    await fs.access(agentsDir);
+  } catch {
+    // Directory doesn't exist - return empty array
+    return [];
+  }
+
+  const agentFiles = await fg("*.md", { cwd: agentsDir, absolute: false });
+
+  const agents: Agent[] = [];
+  for (const relativePath of agentFiles) {
+    const content = await fs.readFile(path.join(agentsDir, relativePath), "utf-8");
+    agents.push(parseAgent(content, relativePath));
+  }
+
+  agents.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  return agents;
+}
+
 export function parseAgent(content: string, relativePath: string): Agent {
   const { frontmatter, body } = parseFrontmatter(content);
 

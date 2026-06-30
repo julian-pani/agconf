@@ -1,6 +1,8 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import pc from "picocolors";
+import { loadCanonicalRepoConfig } from "../config/loader.js";
+import type { CanonicalRepoConfig } from "../config/schema.js";
 import { readLockfile } from "../core/lockfile.js";
 import {
   checkAllManagedFiles,
@@ -22,6 +24,8 @@ import {
   stripMetadataComments,
   stripRulesSectionMetadata,
 } from "../core/markers.js";
+import { resolvePluginTargets, verifyPluginsFresh } from "../core/plugins.js";
+import { resolveLocalSource } from "../core/source.js";
 import { toMetadataPrefix } from "../utils/prefix.js";
 
 export interface CheckOptions {
@@ -46,16 +50,38 @@ export interface ModifiedFileInfo {
 }
 
 /**
- * Check if managed files have been modified.
- * Exits with code 0 if all files are unchanged, code 1 if changes detected.
+ * Check that this repository is consistent with its source(s) of truth.
+ *
+ * The command is context-aware:
+ * - **Canonical repo** (agconf.yaml with a `plugins` block): verifies the
+ *   committed plugin/marketplace artifacts match what compilation would produce
+ *   now (the freshness gate; see `core/plugins.ts`).
+ * - **Downstream repo** (a `.agconf/lockfile.json` exists): verifies synced
+ *   managed files (skills/rules/agents/AGENTS.md) are unmodified and reconciled
+ *   against the lockfile.
+ *
+ * A repo can be both; whichever context applies runs. Exits 1 if any problems
+ * are found, 0 otherwise.
  */
 export async function checkCommand(options: CheckOptions = {}): Promise<void> {
   const targetDir = options.cwd ?? process.cwd();
 
+  // Best-effort: a malformed/incompatible agconf.yaml co-located with a lockfile
+  // must not make `check` throw — degrade to "no plugin context" so the
+  // downstream check still runs (preserving pre-plugins behavior).
+  let canonicalConfig: Awaited<ReturnType<typeof loadCanonicalRepoConfig>>;
+  try {
+    canonicalConfig = await loadCanonicalRepoConfig(targetDir);
+  } catch {
+    canonicalConfig = undefined;
+  }
+  const hasPlugins = Boolean(canonicalConfig?.plugins);
+
   // Check if synced (lockfile exists)
   const result = await readLockfile(targetDir);
 
-  if (!result) {
+  // Neither a canonical-with-plugins repo nor a synced downstream repo.
+  if (!hasPlugins && !result) {
     if (!options.quiet) {
       console.log();
       console.log(pc.yellow("Not synced"));
@@ -68,6 +94,99 @@ export async function checkCommand(options: CheckOptions = {}): Promise<void> {
     return;
   }
 
+  let hasProblems = false;
+
+  if (hasPlugins && canonicalConfig) {
+    const pluginProblems = await checkCanonicalPlugins(targetDir, canonicalConfig, options);
+    hasProblems = hasProblems || pluginProblems;
+  }
+
+  if (result) {
+    const downstreamProblems = await checkDownstream(targetDir, result, options);
+    hasProblems = hasProblems || downstreamProblems;
+  }
+
+  if (hasProblems) {
+    process.exit(1);
+  }
+}
+
+/**
+ * Verify the committed plugin artifacts in a canonical repo are up to date with
+ * the canonical source. Returns true if drift was found (a problem).
+ */
+async function checkCanonicalPlugins(
+  targetDir: string,
+  canonicalConfig: CanonicalRepoConfig,
+  options: CheckOptions,
+): Promise<boolean> {
+  const pluginsConfig = canonicalConfig.plugins;
+  if (!pluginsConfig) return false;
+
+  const { targets, warnings } = resolvePluginTargets(pluginsConfig, canonicalConfig.targets);
+  if (!options.quiet) {
+    for (const w of warnings) console.log(pc.yellow(`Warning: ${w}`));
+  }
+  if (targets.length === 0) return false;
+
+  let source: Awaited<ReturnType<typeof resolveLocalSource>>;
+  try {
+    source = await resolveLocalSource({ path: targetDir });
+  } catch (error) {
+    if (!options.quiet) {
+      console.log();
+      console.log(
+        pc.red(`✗ Cannot verify plugins: ${error instanceof Error ? error.message : error}`),
+      );
+      console.log();
+    }
+    return true;
+  }
+
+  const drift = await verifyPluginsFresh(targetDir, source, pluginsConfig, targets);
+  const hasDrift = drift.drifted.length > 0 || drift.missing.length > 0 || drift.extra.length > 0;
+
+  if (!hasDrift) {
+    if (!options.quiet) {
+      console.log();
+      console.log(`${pc.green("✓")} Compiled plugins are up to date`);
+      console.log();
+    }
+    return false;
+  }
+
+  if (options.quiet) return true;
+
+  console.log();
+  console.log(`${pc.red("✗")} Compiled plugin artifacts are out of date with canonical source:`);
+  console.log();
+  printDriftList("Stale (content differs)", drift.drifted);
+  printDriftList("Missing (expected but absent)", drift.missing);
+  printDriftList("Stale (no longer produced)", drift.extra);
+  console.log(pc.dim("Run `agconf compile` and commit the result."));
+  console.log();
+  return true;
+}
+
+function printDriftList(label: string, files: string[]): void {
+  if (files.length === 0) return;
+  console.log(`${pc.yellow(label)}:`);
+  for (const f of files) {
+    console.log(`  ${f.split(path.sep).join("/")}`);
+  }
+  console.log();
+}
+
+/**
+ * Check synced managed files in a downstream repo against the lockfile.
+ * Returns true if any problems were found (modifications, ghosts, missing,
+ * schema incompatibility, or no managed files).
+ */
+async function checkDownstream(
+  targetDir: string,
+  result: NonNullable<Awaited<ReturnType<typeof readLockfile>>>,
+  options: CheckOptions,
+): Promise<boolean> {
   // Check schema compatibility
   const { lockfile, schemaCompatibility } = result;
   if (!schemaCompatibility.compatible) {
@@ -76,7 +195,7 @@ export async function checkCommand(options: CheckOptions = {}): Promise<void> {
       console.log(pc.red(`Schema error: ${schemaCompatibility.error}`));
       console.log();
     }
-    process.exit(1);
+    return true;
   }
   if (schemaCompatibility.warning && !options.quiet) {
     console.log();
@@ -235,7 +354,7 @@ export async function checkCommand(options: CheckOptions = {}): Promise<void> {
   // Check if any managed files were found
   if (allFiles.length === 0) {
     if (options.quiet) {
-      process.exit(1);
+      return true;
     }
     console.log();
     console.log(pc.bold("agconf check"));
@@ -248,7 +367,7 @@ export async function checkCommand(options: CheckOptions = {}): Promise<void> {
     }
     console.log(pc.dim("Run 'agconf sync' to restore the managed files."));
     console.log();
-    process.exit(1);
+    return true;
   }
 
   // Reconcile managed files on disk against the lockfile's expected set. This
@@ -270,11 +389,8 @@ export async function checkCommand(options: CheckOptions = {}): Promise<void> {
 
   // Output results
   if (options.quiet) {
-    // Quiet mode: just exit with appropriate code
-    if (hasProblems) {
-      process.exit(1);
-    }
-    return;
+    // Quiet mode: just return whether problems were found
+    return hasProblems;
   }
 
   console.log();
@@ -286,7 +402,7 @@ export async function checkCommand(options: CheckOptions = {}): Promise<void> {
   if (!hasProblems) {
     console.log(`${pc.green("✓")} All managed files are unchanged`);
     console.log();
-    return;
+    return false;
   }
 
   const typeLabel = (type: OrphanedManagedFile["type"]): string => type;
@@ -356,5 +472,5 @@ export async function checkCommand(options: CheckOptions = {}): Promise<void> {
   }
   console.log();
 
-  process.exit(1);
+  return true;
 }

@@ -17,6 +17,8 @@ export interface ResolvedSource {
   rulesPath: string | null;
   /** Path to agents directory (null if no agents_dir configured) */
   agentsPath: string | null;
+  /** Path to MCP servers directory (null if no mcp_servers_dir configured) */
+  mcpsPath: string | null;
   /** Marker prefix from canonical config (default: "agconf") */
   markerPrefix: string;
 }
@@ -50,6 +52,7 @@ export async function resolveLocalSource(
   const skillsDir = canonicalConfig?.content.skills_dir ?? "skills";
   const rulesDir = canonicalConfig?.content.rules_dir;
   const agentsDir = canonicalConfig?.content.agents_dir;
+  const mcpsDir = canonicalConfig?.content.mcp_servers_dir;
 
   // Validate against the configured content paths (honors custom skills_dir/instructions)
   await validateCanonicalRepo(basePath, instructionsPath, skillsDir);
@@ -77,6 +80,7 @@ export async function resolveLocalSource(
     skillsPath: path.join(basePath, skillsDir),
     rulesPath: rulesDir ? path.join(basePath, rulesDir) : null,
     agentsPath: agentsDir ? path.join(basePath, agentsDir) : null,
+    mcpsPath: mcpsDir ? path.join(basePath, mcpsDir) : null,
     markerPrefix,
   };
 }
@@ -100,6 +104,7 @@ export async function resolveGithubSource(
   const skillsDir = canonicalConfig?.content.skills_dir ?? "skills";
   const rulesDir = canonicalConfig?.content.rules_dir;
   const agentsDir = canonicalConfig?.content.agents_dir;
+  const mcpsDir = canonicalConfig?.content.mcp_servers_dir;
 
   const source: Source = {
     type: "github",
@@ -115,6 +120,7 @@ export async function resolveGithubSource(
     skillsPath: path.join(tempDir, skillsDir),
     rulesPath: rulesDir ? path.join(tempDir, rulesDir) : null,
     agentsPath: agentsDir ? path.join(tempDir, agentsDir) : null,
+    mcpsPath: mcpsDir ? path.join(tempDir, mcpsDir) : null,
     markerPrefix,
   };
 }
