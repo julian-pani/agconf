@@ -4,7 +4,10 @@ import * as path from "node:path";
 import * as prompts from "@clack/prompts";
 import pc from "picocolors";
 import { stringify as stringifyYaml } from "yaml";
+import { loadCanonicalRepoConfig } from "../config/loader.js";
 import { CURRENT_CONFIG_VERSION } from "../config/schema.js";
+import { compilePlugins, resolvePluginTargets } from "../core/plugins.js";
+import { resolveLocalSource } from "../core/source.js";
 import { directoryExists, ensureDir, fileExists } from "../utils/fs.js";
 import { getGitOrganization, getGitProjectName, isGitRoot } from "../utils/git.js";
 import { createLogger, formatPath } from "../utils/logger.js";
@@ -22,6 +25,8 @@ export interface CanonicalInitOptions {
   includeExamples?: boolean | undefined;
   /** Rules directory (omit or empty to skip rules) */
   rulesDir?: string | undefined;
+  /** Scaffold plugin compilation (plugins config + CI + initial compile). Default: true */
+  includePlugins?: boolean | undefined;
   /** Non-interactive mode */
   yes?: boolean | undefined;
 }
@@ -33,6 +38,7 @@ interface ResolvedOptions {
   markerPrefix: string;
   includeExamples: boolean;
   rulesDir?: string | undefined;
+  includePlugins: boolean;
 }
 
 /**
@@ -68,14 +74,71 @@ function generateConfigYaml(options: ResolvedOptions): string {
     (config.meta as Record<string, unknown>).organization = options.organization;
   }
 
-  let yaml = stringifyYaml(config, { lineWidth: 0 });
-
-  // If no rules_dir specified, add commented-out example after skills_dir
-  if (!options.rulesDir) {
-    yaml = yaml.replace(/skills_dir: skills\n/, "skills_dir: skills\n  # rules_dir: rules\n");
+  // Enable plugin compilation: a single "everything" plugin published to a
+  // marketplace named after the repo. Add `definitions` to curate multiple
+  // plugins, and "codex" to top-level `targets` to also compile Codex plugins.
+  if (options.includePlugins) {
+    config.plugins = {
+      version: "1.0.0",
+      marketplace: {
+        name: options.name,
+        owner: { name: options.organization ?? options.name },
+      },
+    };
   }
 
+  let yaml = stringifyYaml(config, { lineWidth: 0 });
+
+  // Add commented-out content hints after skills_dir.
+  const hints: string[] = [];
+  if (!options.rulesDir) hints.push("  # rules_dir: rules");
+  hints.push("  # mcp_servers_dir: mcps");
+  yaml = yaml.replace(
+    "skills_dir: skills\n",
+    `skills_dir: skills\n${hints.map((h) => `${h}\n`).join("")}`,
+  );
+
   return yaml;
+}
+
+/**
+ * Generates the canonical self-CI workflow. Unlike the reusable sync/check
+ * workflows (which downstream repos call), this runs on the canonical repo's
+ * own pushes/PRs and verifies the compiled plugin artifacts are in sync with
+ * the canonical source via `agconf check`.
+ */
+function generateCanonicalCiWorkflow(prefix: string): string {
+  return `# ${prefix} canonical CI
+# Runs on the canonical repository itself. Verifies that the compiled plugin
+# artifacts (plugins/ + marketplace files) are in sync with the canonical
+# skills/agents/mcps. Fails the build if you changed content but forgot to run
+# \`agconf compile\` and commit the result.
+
+name: agconf CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install agconf CLI
+        run: npm install -g agconf
+
+      - name: Verify compiled plugins are up to date
+        run: agconf check
+`;
 }
 
 /**
@@ -517,6 +580,7 @@ export async function canonicalInitCommand(options: CanonicalInitOptions): Promi
       markerPrefix: options.markerPrefix ?? defaultName,
       includeExamples: options.includeExamples !== false,
       rulesDir: options.rulesDir || undefined,
+      includePlugins: options.includePlugins !== false,
     };
   } else {
     // Interactive mode: prompt for values
@@ -611,6 +675,17 @@ export async function canonicalInitCommand(options: CanonicalInitOptions): Promi
       rulesDir = rulesDirInput as string;
     }
 
+    // Ask about plugin compilation
+    const includePlugins = await prompts.confirm({
+      message: "Compile installable plugins + marketplace from this content?",
+      initialValue: options.includePlugins !== false,
+    });
+
+    if (prompts.isCancel(includePlugins)) {
+      prompts.cancel("Operation cancelled");
+      process.exit(0);
+    }
+
     resolvedOptions = {
       name: name as string,
       organization: (organization as string) || undefined,
@@ -618,6 +693,7 @@ export async function canonicalInitCommand(options: CanonicalInitOptions): Promi
       markerPrefix: markerPrefix as string,
       includeExamples: includeExamples as boolean,
       rulesDir,
+      includePlugins: includePlugins as boolean,
     };
   }
 
@@ -692,7 +768,45 @@ export async function canonicalInitCommand(options: CanonicalInitOptions): Promi
       "utf-8",
     );
 
+    // Canonical self-CI workflow (verifies compiled plugin freshness).
+    const ciWorkflowPath = path.join(workflowsDir, "agconf-ci.yml");
+    if (resolvedOptions.includePlugins) {
+      await fs.writeFile(
+        ciWorkflowPath,
+        generateCanonicalCiWorkflow(resolvedOptions.markerPrefix),
+        "utf-8",
+      );
+    }
+
     spinner.succeed("Canonical repository structure created");
+
+    // Initial plugin compile so the repo is immediately consistent (and the
+    // self-CI check passes). Best-effort: a failure here must not abort init.
+    if (resolvedOptions.includePlugins) {
+      try {
+        const source = await resolveLocalSource({ path: resolvedOptions.targetDir });
+        const canonicalConfig = await loadCanonicalRepoConfig(resolvedOptions.targetDir);
+        if (canonicalConfig?.plugins) {
+          const { targets } = resolvePluginTargets(
+            canonicalConfig.plugins,
+            canonicalConfig.targets,
+          );
+          if (targets.length > 0) {
+            await compilePlugins(
+              resolvedOptions.targetDir,
+              source,
+              canonicalConfig.plugins,
+              targets,
+            );
+          }
+        }
+      } catch (error) {
+        logger.warn(
+          `Skipped initial plugin compile: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        logger.warn("Run `agconf compile` once you have added content.");
+      }
+    }
 
     // Summary
     console.log();
@@ -717,6 +831,12 @@ export async function canonicalInitCommand(options: CanonicalInitOptions): Promi
     }
     console.log(`  ${pc.green("+")} ${formatPath(syncWorkflowPath)}`);
     console.log(`  ${pc.green("+")} ${formatPath(checkWorkflowPath)}`);
+    if (resolvedOptions.includePlugins) {
+      console.log(`  ${pc.green("+")} ${formatPath(ciWorkflowPath)}`);
+      console.log(
+        `  ${pc.green("+")} ${formatPath(path.join(resolvedOptions.targetDir, "plugins"))}/ ${pc.dim("(compiled)")}`,
+      );
+    }
 
     console.log();
     console.log(pc.dim(`Name: ${resolvedOptions.name}`));

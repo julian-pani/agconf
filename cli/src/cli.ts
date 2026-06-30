@@ -2,6 +2,7 @@ import { Command } from "commander";
 import pc from "picocolors";
 import { canonicalInitCommand } from "./commands/canonical.js";
 import { checkCommand } from "./commands/check.js";
+import { compileCommand } from "./commands/compile.js";
 import { handleCompletion, installCompletion, uninstallCompletion } from "./commands/completion.js";
 import { configGetCommand, configSetCommand, configShowCommand } from "./commands/config.js";
 import { initCommand } from "./commands/init.js";
@@ -126,6 +127,21 @@ export function createCli(): Command {
     });
 
   program
+    .command("compile")
+    .description(
+      "Compile installable plugins + marketplace from canonical content (canonical repos)",
+    )
+    .option("--check", "Verify committed artifacts match source; exit 1 if stale (CI gate)")
+    .option("-t, --target <targets...>", "Targets to compile (claude, codex)")
+    .option("-o, --out <dir>", "Output directory (overrides plugins.output_dir)")
+    .option("-q, --quiet", "Minimal output, just exit code")
+    .action(
+      async (options: { check?: boolean; target?: string[]; out?: string; quiet?: boolean }) => {
+        await compileCommand(options);
+      },
+    );
+
+  program
     .command("propose")
     .description("Propose local changes to managed content back to canonical repository")
     .option("-n, --dry-run", "Show what would be proposed without creating anything")
@@ -224,6 +240,7 @@ export function createCli(): Command {
     .option("--marker-prefix <prefix>", "Marker prefix (default: agconf)")
     .option("--no-examples", "Skip example skill creation")
     .option("--rules-dir <directory>", "Rules directory (e.g., 'rules')")
+    .option("--no-plugins", "Skip plugin compilation scaffolding (config, CI, initial compile)")
     .option("-y, --yes", "Non-interactive mode")
     .action(
       async (options: {
@@ -233,6 +250,7 @@ export function createCli(): Command {
         markerPrefix?: string;
         examples?: boolean;
         rulesDir?: string;
+        plugins?: boolean;
         yes?: boolean;
       }) => {
         await canonicalInitCommand({
@@ -242,6 +260,7 @@ export function createCli(): Command {
           markerPrefix: options.markerPrefix,
           includeExamples: options.examples,
           rulesDir: options.rulesDir,
+          includePlugins: options.plugins,
           yes: options.yes,
         });
       },

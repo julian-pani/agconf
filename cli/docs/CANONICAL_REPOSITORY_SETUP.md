@@ -330,9 +330,22 @@ downstream-repo/
 
 **GitHub Copilot**: Not supported. Copilot does not have sub-agents. When agents exist in the canonical repository but only Codex target is configured, a warning is displayed and agents are skipped.
 
+## Compiling Plugins (optional)
+
+By default, `canonical init` also enables **plugin compilation**: a `plugins`
+block in `agconf.yaml`, a self-CI workflow (`.github/workflows/agconf-ci.yml`),
+and an initial `agconf compile`. This turns your skills/agents/mcps into
+installable Claude Code and Codex plugins committed into the repo, so consumers
+can install them directly over git — without `agconf sync`. Pass `--no-plugins`
+to skip. See **[PLUGINS.md](PLUGINS.md)** for the full guide.
+
 ## GitHub Workflows
 
-The scaffolded workflows in `.github/workflows/` are **reusable workflows** that downstream repositories call. The repository references are automatically populated based on your organization and repository name.
+The scaffolded `sync-reusable.yml` and `check-reusable.yml` in
+`.github/workflows/` are **reusable workflows** that downstream repositories
+call. The repository references are automatically populated based on your
+organization and repository name. (`agconf-ci.yml`, when plugins are enabled,
+runs on this repo's own pushes/PRs to verify compiled plugin freshness.)
 
 ### CLI Installation
 

@@ -8,7 +8,7 @@ import {
   type Agent,
   type AgentValidationError,
   addAgentMetadata,
-  parseAgent,
+  discoverAgents,
   validateAgentFrontmatter,
 } from "./agents.js";
 import { readLockfile, writeLockfile } from "./lockfile.js";
@@ -187,36 +187,6 @@ export async function syncRules(options: RulesSyncOptions): Promise<RulesSyncRes
   }
 
   return result;
-}
-
-/**
- * Discover all markdown agent files in a directory (flat, not recursive).
- */
-async function discoverAgents(agentsDir: string): Promise<Agent[]> {
-  try {
-    await fs.access(agentsDir);
-  } catch {
-    // Directory doesn't exist - return empty array
-    return [];
-  }
-
-  // Agents are flat files (no nested directories)
-  const agentFiles = await fg("*.md", {
-    cwd: agentsDir,
-    absolute: false,
-  });
-
-  const agents: Agent[] = [];
-  for (const relativePath of agentFiles) {
-    const fullPath = path.join(agentsDir, relativePath);
-    const content = await fs.readFile(fullPath, "utf-8");
-    agents.push(parseAgent(content, relativePath));
-  }
-
-  // Sort by path for deterministic order in lockfile and outputs
-  agents.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
-
-  return agents;
 }
 
 /**

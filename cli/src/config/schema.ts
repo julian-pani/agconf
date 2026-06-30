@@ -36,6 +36,8 @@ export const CanonicalPathsSchema = z.object({
   rules_dir: z.string().optional(),
   /** Path to the agents directory (e.g., "agents") - optional */
   agents_dir: z.string().optional(),
+  /** Path to the MCP servers directory (e.g., "mcps") - optional. Used by plugin compilation. */
+  mcp_servers_dir: z.string().optional(),
 });
 
 export const MarkersConfigSchema = z.object({
@@ -52,6 +54,92 @@ export const MergeConfigSchema = z.object({
   preserve_repo_content: z.boolean().default(true),
 });
 
+// =============================================================================
+// Plugin Compilation Schema (agconf.yaml -> plugins)
+// =============================================================================
+// Optional `plugins` block in the canonical config. When present, `agconf
+// compile` builds installable Claude Code / Codex plugins and a marketplace
+// index FROM the canonical skills/agents/mcps, committed into the canonical repo
+// so they can be installed directly (without `sync`). See core/plugins.ts.
+
+/** Author / owner metadata reused for plugin and marketplace manifests. */
+export const PluginAuthorSchema = z.object({
+  name: z.string().min(1),
+  email: z.string().optional(),
+  url: z.string().optional(),
+});
+
+/** Marketplace-level metadata (the index that lists the compiled plugins). */
+export const PluginMarketplaceSchema = z.object({
+  /** Marketplace identifier (kebab-case). Users install as `plugin@marketplace`. */
+  name: z.string().min(1),
+  /** Owner block for the Claude marketplace (`owner`). Optional. */
+  owner: PluginAuthorSchema.optional(),
+  /** Display name for the Codex marketplace (`interface.displayName`). Optional. */
+  display_name: z.string().optional(),
+  /** Marketplace description. */
+  description: z.string().optional(),
+});
+
+/**
+ * A single plugin definition: a curated bundle of canonical content.
+ *
+ * Selector semantics for `skills`/`agents`/`mcps`:
+ * - omitted  -> include ALL discovered content of that type
+ * - provided -> include only items whose name matches a selector (exact or `*` glob)
+ * - []       -> include none of that type
+ */
+export const PluginDefinitionSchema = z.object({
+  /** Plugin identifier (kebab-case). Users install as `name@marketplace`. */
+  name: z.string().min(1),
+  /** Human-readable description for the plugin manifest. */
+  description: z.string().optional(),
+  /** Plugin version (semver). Falls back to `plugins.version` when omitted. */
+  version: z
+    .string()
+    .regex(/^\d+\.\d+\.\d+$/, "Version must be in semver format (e.g., 1.0.0)")
+    .optional(),
+  /** Skill name selectors (exact names or `*` globs). Omit for all skills. */
+  skills: z.array(z.string()).optional(),
+  /** Agent name selectors (exact names or `*` globs). Omit for all agents. */
+  agents: z.array(z.string()).optional(),
+  /** MCP server name selectors (exact names or `*` globs). Omit for all servers. */
+  mcps: z.array(z.string()).optional(),
+  /** Optional marketplace category. */
+  category: z.string().optional(),
+  /** Optional discovery keywords. */
+  keywords: z.array(z.string()).optional(),
+});
+
+/**
+ * `plugins` block in the canonical config. When present, enables `agconf
+ * compile`.
+ */
+export const PluginsConfigSchema = z.object({
+  /**
+   * Single source of truth for the stamped plugin/marketplace version (semver).
+   * Bumped at release time; reproduced verbatim by compile so the freshness
+   * check stays deterministic between releases.
+   */
+  version: z
+    .string()
+    .regex(/^\d+\.\d+\.\d+$/, "Version must be in semver format (e.g., 1.0.0)")
+    .optional(),
+  marketplace: PluginMarketplaceSchema,
+  /** Output directory for compiled plugins (relative to the canonical repo root). */
+  output_dir: z.string().default("plugins"),
+  /**
+   * Override which targets to compile plugins for (e.g. ["claude", "codex"]).
+   * Defaults to the canonical config's top-level `targets`.
+   */
+  targets: z.array(z.string()).optional(),
+  /**
+   * Explicit plugin definitions. Omit entirely to synthesize a single plugin
+   * (named after the marketplace) containing all canonical content.
+   */
+  definitions: z.array(PluginDefinitionSchema).optional(),
+});
+
 /**
  * Configuration schema for canonical repositories (agconf.yaml).
  * This file lives in the canonical source repo (e.g., acme-agent-standards).
@@ -65,7 +153,14 @@ export const CanonicalRepoConfigSchema = z.object({
   targets: z.array(z.string()).default(["claude"]),
   markers: MarkersConfigSchema.default({}),
   merge: MergeConfigSchema.default({}),
+  /** Optional plugin compilation config. Enables `agconf compile` when present. */
+  plugins: PluginsConfigSchema.optional(),
 });
+
+export type PluginAuthor = z.infer<typeof PluginAuthorSchema>;
+export type PluginMarketplaceConfig = z.infer<typeof PluginMarketplaceSchema>;
+export type PluginDefinition = z.infer<typeof PluginDefinitionSchema>;
+export type PluginsConfig = z.infer<typeof PluginsConfigSchema>;
 
 export type CanonicalRepoConfig = z.infer<typeof CanonicalRepoConfigSchema>;
 
@@ -143,6 +238,8 @@ export const ResolvedConfigSchema = z.object({
   rulesDir: z.string().optional(),
   /** Path to agents directory within source - optional */
   agentsDir: z.string().optional(),
+  /** Path to MCP servers directory within source - optional */
+  mcpsDir: z.string().optional(),
   /** Marker prefix for managed content */
   markerPrefix: z.string(),
   /** Target agents to sync to */

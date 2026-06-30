@@ -36,6 +36,10 @@ const COMMANDS = {
     description: "Check if managed files have been modified",
     options: ["-q", "--quiet", "--debug"],
   },
+  compile: {
+    description: "Compile installable plugins + marketplace from canonical content",
+    options: ["--check", "-t", "--target", "-o", "--out", "-q", "--quiet"],
+  },
   propose: {
     description: "Propose local changes back to canonical",
     options: [
@@ -75,6 +79,7 @@ const COMMANDS = {
           "--marker-prefix",
           "--no-examples",
           "--rules-dir",
+          "--no-plugins",
           "-y",
           "--yes",
         ],

@@ -1,7 +1,11 @@
 import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { stringify as stringifyYaml } from "yaml";
 import { checkCommand } from "../../src/commands/check.js";
+import { compileCommand } from "../../src/commands/compile.js";
+import { addManagedMetadata } from "../../src/core/managed-content.js";
 
 describe("check command", () => {
   let tempDir: string;
@@ -1499,5 +1503,248 @@ ${globalContent}
       );
       expect(mockExit).toHaveBeenCalledWith(1);
     });
+  });
+});
+
+// =============================================================================
+// Canonical-repo plugin freshness (context-aware check)
+// =============================================================================
+
+describe("check command (canonical plugins)", () => {
+  let dir: string;
+  let mockExit: ReturnType<typeof vi.spyOn>;
+  let consoleLogSpy: ReturnType<typeof vi.spyOn>;
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+
+  async function setupCanonical(): Promise<void> {
+    await fs.mkdir(path.join(dir, "instructions"), { recursive: true });
+    await fs.writeFile(path.join(dir, "instructions", "AGENTS.md"), "# Standards\n");
+    const skillDir = path.join(dir, "skills", "alpha");
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(
+      path.join(skillDir, "SKILL.md"),
+      "---\nname: alpha\ndescription: The alpha skill\n---\n\n# alpha\n",
+    );
+    await fs.writeFile(
+      path.join(dir, "agconf.yaml"),
+      stringifyYaml({
+        version: "1.0.0",
+        meta: { name: "acme" },
+        content: { instructions: "instructions/AGENTS.md", skills_dir: "skills" },
+        targets: ["claude", "codex"],
+        plugins: { version: "1.0.0", marketplace: { name: "acme-tools", owner: { name: "Acme" } } },
+      }),
+    );
+  }
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), "agconf-check-plugins-"));
+    mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit called");
+    }) as () => never);
+    consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(async () => {
+    mockExit.mockRestore();
+    consoleLogSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it("passes when compiled artifacts are up to date", async () => {
+    await setupCanonical();
+    await compileCommand({ cwd: dir });
+
+    await checkCommand({ cwd: dir });
+    expect(mockExit).not.toHaveBeenCalled();
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("up to date"));
+  });
+
+  it("does not report 'Not synced' for a canonical repo without a lockfile", async () => {
+    await setupCanonical();
+    await compileCommand({ cwd: dir });
+
+    await checkCommand({ cwd: dir });
+    expect(consoleLogSpy).not.toHaveBeenCalledWith(expect.stringContaining("Not synced"));
+  });
+
+  it("fails (exit 1) when compiled artifacts are stale", async () => {
+    await setupCanonical();
+    await compileCommand({ cwd: dir });
+    // Tamper with a committed artifact.
+    await fs.writeFile(
+      path.join(dir, "plugins", "claude", "acme-tools", "skills", "alpha", "SKILL.md"),
+      "tampered\n",
+    );
+
+    await expect(checkCommand({ cwd: dir })).rejects.toThrow("process.exit called");
+    expect(mockExit).toHaveBeenCalledWith(1);
+  });
+
+  it("fails (exit 1) when plugins were never compiled", async () => {
+    await setupCanonical();
+    await expect(checkCommand({ cwd: dir })).rejects.toThrow("process.exit called");
+    expect(mockExit).toHaveBeenCalledWith(1);
+  });
+
+  it("exits 1 silently in quiet mode when stale", async () => {
+    await setupCanonical();
+    await expect(checkCommand({ cwd: dir, quiet: true })).rejects.toThrow("process.exit called");
+    expect(mockExit).toHaveBeenCalledWith(1);
+  });
+});
+
+// =============================================================================
+// Context combinations: canonical-plugins + downstream in one repo, and the
+// degrade-gracefully paths (cannot-verify, malformed config next to a lockfile)
+// =============================================================================
+
+describe("check command (context combinations)", () => {
+  let dir: string;
+  let mockExit: ReturnType<typeof vi.spyOn>;
+  let consoleLogSpy: ReturnType<typeof vi.spyOn>;
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+
+  /** A repo that is BOTH a canonical-plugins repo (compiled, clean) AND a synced
+   * downstream repo (lockfile + one managed skill, clean). */
+  async function setupBoth(): Promise<void> {
+    // Canonical side
+    await fs.mkdir(path.join(dir, "instructions"), { recursive: true });
+    await fs.writeFile(path.join(dir, "instructions", "AGENTS.md"), "# Standards\n");
+    await fs.mkdir(path.join(dir, "skills", "alpha"), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, "skills", "alpha", "SKILL.md"),
+      "---\nname: alpha\ndescription: The alpha skill\n---\n\n# alpha\n",
+    );
+    await fs.writeFile(
+      path.join(dir, "agconf.yaml"),
+      stringifyYaml({
+        version: "1.0.0",
+        meta: { name: "acme" },
+        content: { instructions: "instructions/AGENTS.md", skills_dir: "skills" },
+        targets: ["claude"],
+        plugins: { version: "1.0.0", marketplace: { name: "acme-tools", owner: { name: "Acme" } } },
+      }),
+    );
+    await compileCommand({ cwd: dir });
+
+    // Downstream side: lockfile + one managed skill (matching hash → clean)
+    await fs.mkdir(path.join(dir, ".agconf"), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, ".agconf", "lockfile.json"),
+      JSON.stringify({
+        version: "1.0.0",
+        synced_at: "2026-01-01T00:00:00.000Z",
+        source: { type: "local", path: "/x" },
+        content: {
+          agents_md: { global_block_hash: "sha256:abc123def456", merged: false },
+          skills: ["test-skill"],
+          targets: ["claude"],
+          marker_prefix: "agconf",
+        },
+      }),
+    );
+    await fs.mkdir(path.join(dir, ".claude", "skills", "test-skill"), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, ".claude", "skills", "test-skill", "SKILL.md"),
+      addManagedMetadata(
+        "---\nname: test-skill\ndescription: A test skill\n---\n\n# Test Skill\n",
+        {
+          metadataPrefix: "agconf",
+        },
+      ),
+    );
+  }
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), "agconf-check-ctx-"));
+    mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit called");
+    }) as () => never);
+    consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(async () => {
+    mockExit.mockRestore();
+    consoleLogSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it("passes when BOTH the plugin and downstream sides are clean", async () => {
+    await setupBoth();
+    await checkCommand({ cwd: dir });
+    expect(mockExit).not.toHaveBeenCalled();
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("up to date"));
+    expect(consoleLogSpy).toHaveBeenCalledWith(
+      expect.stringContaining("All managed files are unchanged"),
+    );
+  });
+
+  it("fails (exit 1) when downstream is dirty even though plugins are clean", async () => {
+    await setupBoth();
+    // Tamper the managed downstream skill (clean plugin side must not mask it).
+    await fs.appendFile(
+      path.join(dir, ".claude", "skills", "test-skill", "SKILL.md"),
+      "\nlocal edit\n",
+    );
+    await expect(checkCommand({ cwd: dir })).rejects.toThrow("process.exit called");
+    expect(mockExit).toHaveBeenCalledWith(1);
+  });
+
+  it("fails (exit 1) when plugins are stale even though downstream is clean", async () => {
+    await setupBoth();
+    // Tamper a committed plugin artifact (clean downstream must not mask it).
+    await fs.writeFile(
+      path.join(dir, "plugins", "claude", "acme-tools", "skills", "alpha", "SKILL.md"),
+      "tampered\n",
+    );
+    await expect(checkCommand({ cwd: dir })).rejects.toThrow("process.exit called");
+    expect(mockExit).toHaveBeenCalledWith(1);
+  });
+
+  it("reports 'Cannot verify' (exit 1) when the canonical source is broken", async () => {
+    // plugins configured, but skills/ is missing → resolveLocalSource throws
+    await fs.mkdir(path.join(dir, "instructions"), { recursive: true });
+    await fs.writeFile(path.join(dir, "instructions", "AGENTS.md"), "# S\n");
+    await fs.writeFile(
+      path.join(dir, "agconf.yaml"),
+      stringifyYaml({
+        version: "1.0.0",
+        meta: { name: "acme" },
+        content: { instructions: "instructions/AGENTS.md", skills_dir: "skills" },
+        plugins: { version: "1.0.0", marketplace: { name: "acme-tools" } },
+      }),
+    );
+    await expect(checkCommand({ cwd: dir })).rejects.toThrow("process.exit called");
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("Cannot verify"));
+  });
+
+  it("does not throw when a malformed agconf.yaml sits next to a lockfile", async () => {
+    // Downstream repo (lockfile present) with a malformed canonical config.
+    await fs.mkdir(path.join(dir, ".agconf"), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, ".agconf", "lockfile.json"),
+      JSON.stringify({
+        version: "1.0.0",
+        synced_at: "2026-01-01T00:00:00.000Z",
+        source: { type: "local", path: "/x" },
+        content: {
+          agents_md: { global_block_hash: "sha256:abc123def456", merged: false },
+          skills: [],
+          targets: ["claude"],
+        },
+      }),
+    );
+    await fs.writeFile(path.join(dir, "agconf.yaml"), "{{{ not valid yaml");
+
+    // The config-load error must be swallowed; check still runs the downstream
+    // path (which exits 1 here for "no managed files"), NOT throw a YAML error.
+    await expect(checkCommand({ cwd: dir })).rejects.toThrow("process.exit called");
+    expect(mockExit).toHaveBeenCalledWith(1);
   });
 });

@@ -5,7 +5,10 @@ import { simpleGit } from "simple-git";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
 import { canonicalInitCommand } from "../../src/commands/canonical.js";
+import { loadCanonicalRepoConfig } from "../../src/config/loader.js";
 import { CURRENT_CONFIG_VERSION } from "../../src/config/schema.js";
+import { resolvePluginTargets, verifyPluginsFresh } from "../../src/core/plugins.js";
+import { resolveLocalSource } from "../../src/core/source.js";
 import { getGitOrganization, getGitProjectName, isGitRoot } from "../../src/utils/git.js";
 
 describe("canonical init", () => {
@@ -536,5 +539,120 @@ describe("canonical init - workflow content validation", () => {
     expect(outputs.changes_detected).toBeDefined();
     expect(outputs.pr_number).toBeDefined();
     expect(outputs.pr_url).toBeDefined();
+  });
+});
+
+describe("canonical init - plugins scaffolding", () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "agconf-canonical-plugins-"));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("scaffolds a plugins block in agconf.yaml by default", async () => {
+    await canonicalInitCommand({
+      name: "acme-standards",
+      org: "Acme Corp",
+      dir: tempDir,
+      markerPrefix: "acme",
+      includeExamples: true,
+      yes: true,
+    });
+
+    const config = parseYaml(await fs.readFile(path.join(tempDir, "agconf.yaml"), "utf-8"));
+    expect(config.plugins).toBeDefined();
+    expect(config.plugins.marketplace.name).toBe("acme-standards");
+    expect(config.plugins.marketplace.owner.name).toBe("Acme Corp");
+    expect(config.plugins.version).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+
+  it("creates the canonical self-CI workflow that runs agconf check", async () => {
+    await canonicalInitCommand({
+      name: "test-standards",
+      dir: tempDir,
+      markerPrefix: "agconf",
+      includeExamples: true,
+      yes: true,
+    });
+
+    const ciPath = path.join(tempDir, ".github", "workflows", "agconf-ci.yml");
+    const ci = parseYaml(await fs.readFile(ciPath, "utf-8"));
+    expect(ci.name).toBe("agconf CI");
+    expect(ci.on.pull_request).toBeDefined();
+    expect(ci.on.push).toBeDefined();
+    const steps = ci.jobs.check.steps as Array<{ run?: string }>;
+    expect(steps.some((s) => s.run === "agconf check")).toBe(true);
+  });
+
+  it("compiles initial plugin artifacts that pass a freshness check", async () => {
+    await canonicalInitCommand({
+      name: "test-standards",
+      dir: tempDir,
+      markerPrefix: "agconf",
+      includeExamples: true,
+      yes: true,
+    });
+
+    // Marketplace + compiled plugin from the example skill exist.
+    const marketplacePath = path.join(tempDir, ".claude-plugin", "marketplace.json");
+    expect(
+      await fs
+        .access(marketplacePath)
+        .then(() => true)
+        .catch(() => false),
+    ).toBe(true);
+    expect(
+      await fs
+        .access(
+          path.join(
+            tempDir,
+            "plugins",
+            "claude",
+            "test-standards",
+            ".claude-plugin",
+            "plugin.json",
+          ),
+        )
+        .then(() => true)
+        .catch(() => false),
+    ).toBe(true);
+
+    // And the committed artifacts are in sync with the source.
+    const source = await resolveLocalSource({ path: tempDir });
+    const config = await loadCanonicalRepoConfig(tempDir);
+    expect(config?.plugins).toBeDefined();
+    const { targets } = resolvePluginTargets(config!.plugins!, config!.targets);
+    const drift = await verifyPluginsFresh(tempDir, source, config!.plugins!, targets);
+    expect(drift).toEqual({ drifted: [], missing: [], extra: [] });
+  });
+
+  it("skips plugin scaffolding with includePlugins: false", async () => {
+    await canonicalInitCommand({
+      name: "test-standards",
+      dir: tempDir,
+      markerPrefix: "agconf",
+      includeExamples: true,
+      includePlugins: false,
+      yes: true,
+    });
+
+    const config = parseYaml(await fs.readFile(path.join(tempDir, "agconf.yaml"), "utf-8"));
+    expect(config.plugins).toBeUndefined();
+
+    const ciExists = await fs
+      .access(path.join(tempDir, ".github", "workflows", "agconf-ci.yml"))
+      .then(() => true)
+      .catch(() => false);
+    expect(ciExists).toBe(false);
+
+    const marketplaceExists = await fs
+      .access(path.join(tempDir, ".claude-plugin", "marketplace.json"))
+      .then(() => true)
+      .catch(() => false);
+    expect(marketplaceExists).toBe(false);
   });
 });
