@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as prompts from "@clack/prompts";
 import pc from "picocolors";
 import { loadDownstreamConfig } from "../config/loader.js";
-import { installPreCommitHook } from "../core/hooks.js";
+import { type HookInstallResult, installPreCommitHook } from "../core/hooks.js";
 import { readLockfile } from "../core/lockfile.js";
 import { getModifiedManagedFiles } from "../core/managed-content.js";
 import type { ResolvedSource } from "../core/source.js";
@@ -498,8 +498,17 @@ export async function performSync(options: PerformSyncOptions): Promise<void> {
       workflowSpinner.stop();
     }
 
-    // Install git hooks
-    const hookResult = await installPreCommitHook(targetDir);
+    // Install git hooks. This is a best-effort convenience step — a failure
+    // here must not fail the whole sync (the content sync above already
+    // succeeded), so swallow the error and report it as a warning below.
+    let hookResult: HookInstallResult | null = null;
+    try {
+      hookResult = await installPreCommitHook(targetDir);
+    } catch (error) {
+      logger.warn(
+        `Skipped git hook installation: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
 
     const { consoleLines, summaryLines } = renderSyncSummary({
       result,

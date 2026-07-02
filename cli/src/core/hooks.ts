@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { ResolvedConfig } from "../config/schema.js";
+import { getGitHooksDir } from "../utils/git.js";
 
 // Default values for hook configuration
 const DEFAULT_CLI_NAME = "agconf";
@@ -142,7 +143,10 @@ export async function installPreCommitHook(
   config?: Partial<ResolvedConfig>,
 ): Promise<HookInstallResult> {
   const hookConfig = getHookConfig(config);
-  const hooksDir = path.join(targetDir, ".git", "hooks");
+  // Resolve the real hooks dir so this works inside a linked worktree (where
+  // `.git` is a file, not a directory) and with a custom core.hooksPath.
+  // Fall back to the conventional location if resolution fails.
+  const hooksDir = (await getGitHooksDir(targetDir)) ?? path.join(targetDir, ".git", "hooks");
   const hookPath = path.join(hooksDir, "pre-commit");
 
   const hookSection = generateHookSection(hookConfig);

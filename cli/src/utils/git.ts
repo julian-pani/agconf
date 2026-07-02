@@ -1,3 +1,4 @@
+import type { Stats } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { type SimpleGit, simpleGit } from "simple-git";
@@ -30,6 +31,63 @@ export async function getGitRoot(dir: string): Promise<string | null> {
     return root.trim();
   } catch {
     // Expected: not a git repo or git operation failed
+    return null;
+  }
+}
+
+/**
+ * Resolve the git hooks directory for a repository rooted at `dir`.
+ *
+ * Handles linked worktrees, where `.git` is a *file* containing a
+ * `gitdir: <path>` pointer to `<main>/.git/worktrees/<name>` and hooks are
+ * shared in the common `<main>/.git/hooks`. Resolution is done by inspecting
+ * `dir`'s own `.git` entry (not git's upward discovery walk), so it never
+ * escapes to an enclosing repository:
+ * - `.git` is a directory  -> `<dir>/.git/hooks`
+ * - `.git` is a file        -> `<commondir>/hooks` (shared with the main repo)
+ * - otherwise               -> null (let the caller fall back)
+ */
+export async function getGitHooksDir(dir: string): Promise<string | null> {
+  const dotGit = path.join(dir, ".git");
+  let stat: Stats;
+  try {
+    stat = await fs.stat(dotGit);
+  } catch {
+    // Expected: no .git entry here
+    return null;
+  }
+
+  if (stat.isDirectory()) {
+    return path.join(dotGit, "hooks");
+  }
+
+  if (!stat.isFile()) {
+    return null;
+  }
+
+  // Linked worktree: `.git` is a file pointing at the worktree's gitdir.
+  try {
+    const pointer = await fs.readFile(dotGit, "utf-8");
+    const match = pointer.match(/^gitdir:\s*(.+)\s*$/m);
+    const pointerPath = match?.[1]?.trim();
+    if (!pointerPath) {
+      return null;
+    }
+    const gitDir = path.resolve(dir, pointerPath);
+    // `commondir` (relative to the worktree gitdir) points at the shared
+    // `.git` where hooks live; without it, fall back to the worktree gitdir.
+    let commonDir = gitDir;
+    try {
+      const commonRel = (await fs.readFile(path.join(gitDir, "commondir"), "utf-8")).trim();
+      if (commonRel) {
+        commonDir = path.resolve(gitDir, commonRel);
+      }
+    } catch {
+      // Expected: no commondir (older git) — use the gitdir itself
+    }
+    return path.join(commonDir, "hooks");
+  } catch {
+    // Expected: unreadable/malformed pointer file
     return null;
   }
 }
