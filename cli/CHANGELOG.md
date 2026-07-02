@@ -1,3 +1,9 @@
+## [0.16.1](https://github.com/julian-pani/agconf/compare/v0.16.0...v0.16.1) (2026-07-02)
+
+### Bug Fixes
+
+* **sync:** resolve git hooks dir for worktrees instead of crashing ([#64](https://github.com/julian-pani/agconf/issues/64)) ([337b874](https://github.com/julian-pani/agconf/commit/337b87418000e5231db1a21ef6b66ae9456c1695))
+
 ## [0.16.0](https://github.com/julian-pani/agconf/compare/v0.15.0...v0.16.0) (2026-06-30)
 
 ### Features
