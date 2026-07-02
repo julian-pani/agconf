@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { simpleGit } from "simple-git";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   generateHookSection,
@@ -196,6 +197,32 @@ describe("hooks", () => {
       expect(content).toContain("_agconf_check");
       // Legacy content should be replaced entirely
       expect(content).not.toContain("set -e");
+    });
+
+    it("should install into the shared hooks dir from a linked worktree", async () => {
+      // A real git repo + worktree: inside a worktree `.git` is a file, so a
+      // naive `mkdir .git/hooks` would throw ENOTDIR. The hook must land in
+      // the main repo's shared hooks dir instead.
+      const git = simpleGit(tempDir);
+      await git.init();
+      await git.addConfig("user.email", "test@example.com", false, "local");
+      await git.addConfig("user.name", "Test", false, "local");
+      await fs.writeFile(path.join(tempDir, "README.md"), "hello\n");
+      await git.add("README.md");
+      await git.commit("initial");
+
+      const worktreeDir = path.join(tempDir, "wt");
+      await git.raw(["worktree", "add", "-b", "feature", worktreeDir]);
+
+      const result = await installPreCommitHook(worktreeDir);
+      expect(result.installed).toBe(true);
+
+      // The hook is written to the shared (main) hooks dir, not <wt>/.git/hooks.
+      const sharedHook = path.join(tempDir, ".git", "hooks", "pre-commit");
+      const content = await fs.readFile(sharedHook, "utf-8");
+      expect(content).toContain("# agconf:hook:start");
+      // Compare via realpath in case git canonicalized the worktree pointer.
+      expect(await fs.realpath(result.path)).toBe(await fs.realpath(sharedHook));
     });
   });
 

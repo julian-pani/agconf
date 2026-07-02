@@ -60,6 +60,14 @@ describe("renderSyncSummary", () => {
     expect(summaryLines.some((l) => l.includes("Sync complete:"))).toBe(false);
   });
 
+  it("marks the pre-commit hook as skipped when installation was not performed", () => {
+    const { consoleLines, summaryLines } = renderSyncSummary(baseInput({ hookResult: null }));
+    expect(summaryLines).toContain("- `.git/hooks/pre-commit` (skipped)");
+    expect(consoleLines.some((l) => l.includes("pre-commit") && l.includes("(skipped)"))).toBe(
+      true,
+    );
+  });
+
   it("reports AGENTS.md as created when not merged", () => {
     const input = baseInput({
       result: baseResult({

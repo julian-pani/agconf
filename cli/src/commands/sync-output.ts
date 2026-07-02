@@ -24,7 +24,8 @@ export interface RenderSyncSummaryInput {
   /** Outcome of orphaned-agent handling performed by the caller. */
   agentOrphanResult: { deleted: string[]; skipped: string[] };
   workflowResult: WorkflowSyncResult | null;
-  hookResult: HookInstallResult;
+  /** Outcome of hook installation, or null if the step was skipped/failed. */
+  hookResult: HookInstallResult | null;
   resolvedSource: ResolvedSource;
   resolvedVersion: { version: string | undefined };
   commandName: "init" | "sync";
@@ -361,7 +362,10 @@ export function renderSyncSummary(input: RenderSyncSummaryInput): RenderedSyncSu
 
   // Git hook status
   const hookPath = formatPath(path.join(targetDir, ".git/hooks/pre-commit"));
-  if (hookResult.installed) {
+  if (hookResult === null) {
+    consoleLines.push(`  ${pc.yellow("!")} ${hookPath} ${pc.dim("(skipped)")}`);
+    summaryLines.push("- `.git/hooks/pre-commit` (skipped)");
+  } else if (hookResult.installed) {
     if (hookResult.wasAppended && hookResult.wasUpdated) {
       consoleLines.push(`  ${pc.yellow("~")} ${hookPath} ${pc.dim("(updated in existing hook)")}`);
       summaryLines.push("- `.git/hooks/pre-commit` (updated in existing hook)");

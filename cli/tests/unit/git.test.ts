@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { simpleGit } from "simple-git";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  getGitHooksDir,
   getGitOrganization,
   getGitProjectName,
   getGitRoot,
@@ -113,6 +114,51 @@ describe("git utilities", () => {
 
       const result = await isGitRoot(subDir);
       expect(result).toBe(false);
+    });
+  });
+
+  describe("getGitHooksDir", () => {
+    it("should return null for non-existent directory", async () => {
+      const result = await getGitHooksDir("/non/existent/path");
+      expect(result).toBeNull();
+    });
+
+    it("should return null for non-git directory", async () => {
+      const result = await getGitHooksDir(tempDir);
+      expect(result).toBeNull();
+    });
+
+    it("should return .git/hooks for a normal repo", async () => {
+      const git = simpleGit(tempDir);
+      await git.init();
+
+      const result = await getGitHooksDir(tempDir);
+      expect(result).not.toBeNull();
+      // Compare via realpath to absorb macOS /var -> /private/var symlinks.
+      expect(await fs.realpath(result as string)).toBe(path.join(realTempDir, ".git", "hooks"));
+    });
+
+    it("should resolve the shared hooks dir inside a linked worktree", async () => {
+      const git = simpleGit(tempDir);
+      await git.init();
+      await git.addConfig("user.email", "test@example.com", false, "local");
+      await git.addConfig("user.name", "Test", false, "local");
+      // A worktree can only be added once the repo has a commit.
+      await fs.writeFile(path.join(tempDir, "README.md"), "hello\n");
+      await git.add("README.md");
+      await git.commit("initial");
+
+      const worktreeDir = path.join(tempDir, "wt");
+      await git.raw(["worktree", "add", "-b", "feature", worktreeDir]);
+
+      // Inside the worktree, `.git` is a file, not a directory.
+      const dotGit = await fs.stat(path.join(worktreeDir, ".git"));
+      expect(dotGit.isFile()).toBe(true);
+
+      // Hooks are shared: the worktree resolves to the main repo's hooks dir.
+      const result = await getGitHooksDir(worktreeDir);
+      expect(result).not.toBeNull();
+      expect(await fs.realpath(result as string)).toBe(path.join(realTempDir, ".git", "hooks"));
     });
   });
 
