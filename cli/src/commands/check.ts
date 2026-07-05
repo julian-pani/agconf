@@ -1,8 +1,9 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import pc from "picocolors";
-import { loadCanonicalRepoConfig } from "../config/loader.js";
-import type { CanonicalRepoConfig } from "../config/schema.js";
+import { loadCanonicalRepoConfig, loadDownstreamConfig } from "../config/loader.js";
+import type { CanonicalRepoConfig, EnrollmentConfig } from "../config/schema.js";
+import { buildEnrollmentPlan, readClaudeSettings, verifyEnrollment } from "../core/enrollment.js";
 import { readLockfile } from "../core/lockfile.js";
 import {
   checkAllManagedFiles,
@@ -91,11 +92,21 @@ export async function checkCommand(options: CheckOptions = {}): Promise<void> {
   }
   const hasPlugins = Boolean(canonicalConfig?.plugins);
 
+  // Downstream config may declare experimental plugin enrollment. Best-effort:
+  // a malformed config must not make `check` throw.
+  let downstreamConfig: Awaited<ReturnType<typeof loadDownstreamConfig>>;
+  try {
+    downstreamConfig = await loadDownstreamConfig(targetDir);
+  } catch {
+    downstreamConfig = undefined;
+  }
+  const enrollment = downstreamConfig?.experimental?.enrollment;
+
   // Check if synced (lockfile exists)
   const result = await readLockfile(targetDir);
 
-  // Neither a canonical-with-plugins repo nor a synced downstream repo.
-  if (!hasPlugins && !result) {
+  // None of the recognized contexts apply.
+  if (!hasPlugins && !result && !enrollment) {
     // In hook mode this must be a silent no-op so it never disrupts commits in
     // repos that don't use agconf.
     if (!options.quiet && !options.hook) {
@@ -115,6 +126,11 @@ export async function checkCommand(options: CheckOptions = {}): Promise<void> {
   if (hasPlugins && canonicalConfig) {
     const pluginProblems = await checkCanonicalPlugins(targetDir, canonicalConfig, options);
     hasProblems = hasProblems || pluginProblems;
+  }
+
+  if (enrollment) {
+    const enrollmentProblems = await checkEnrollment(targetDir, enrollment, options);
+    hasProblems = hasProblems || enrollmentProblems;
   }
 
   if (result) {
@@ -236,6 +252,54 @@ function printDriftList(label: string, files: string[]): void {
     console.log(`  ${f.split(path.sep).join("/")}`);
   }
   console.log();
+}
+
+/**
+ * Verify the committed `.claude/settings.json` still satisfies the downstream's
+ * `experimental.enrollment` declaration (marketplace registered with the pinned
+ * source, and every declared plugin enabled). Returns true if drift was found.
+ */
+async function checkEnrollment(
+  targetDir: string,
+  enrollment: EnrollmentConfig,
+  options: CheckOptions,
+): Promise<boolean> {
+  const plan = buildEnrollmentPlan(enrollment);
+
+  let settings: Record<string, unknown>;
+  try {
+    settings = await readClaudeSettings(targetDir);
+  } catch (error) {
+    if (!options.quiet) {
+      console.log();
+      console.log(
+        pc.red(`✗ Cannot verify enrollment: ${error instanceof Error ? error.message : error}`),
+      );
+      console.log();
+    }
+    return true;
+  }
+
+  const problems = verifyEnrollment(settings, plan);
+  if (problems.length === 0) {
+    if (!options.quiet) {
+      console.log();
+      console.log(`${pc.green("✓")} Plugin enrollment is up to date`);
+      console.log();
+    }
+    return false;
+  }
+
+  if (options.quiet) return true;
+
+  console.log();
+  console.log(`${pc.red("✗")} .claude/settings.json is out of sync with configured enrollment:`);
+  console.log();
+  for (const p of problems) console.log(`  ${p}`);
+  console.log();
+  console.log(pc.dim("Run `agconf enroll` to update .claude/settings.json."));
+  console.log();
+  return true;
 }
 
 /**

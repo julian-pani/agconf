@@ -701,6 +701,29 @@ describe("compile — optional metadata fields in output", () => {
     expect(xEntry?.category).toBe("productivity");
   });
 
+  it("stamps marketplace.repository into both target manifests when set", async () => {
+    const cfg = PluginsConfigSchema.parse({
+      version: "1.0.0",
+      marketplace: {
+        name: "acme-tools",
+        owner: { name: "Acme" },
+        repository: "https://github.com/acme/standards",
+      },
+    });
+    await compilePlugins(base, makeSource(base), cfg, ["claude", "codex"]);
+
+    const claude = await readJson(base, "plugins/claude/acme-tools/.claude-plugin/plugin.json");
+    const codex = await readJson(base, "plugins/codex/acme-tools/.codex-plugin/plugin.json");
+    expect(claude.repository).toBe("https://github.com/acme/standards");
+    expect(codex.repository).toBe("https://github.com/acme/standards");
+  });
+
+  it("omits repository from manifests when not configured", async () => {
+    await compilePlugins(base, makeSource(base), config(), ["claude"]);
+    const claude = await readJson(base, "plugins/claude/acme-tools/.claude-plugin/plugin.json");
+    expect(claude.repository).toBeUndefined();
+  });
+
   describe("bumpSemver", () => {
     it("increments patch/minor/major and resets lower components", () => {
       expect(bumpSemver("1.2.3", "patch")).toBe("1.2.4");

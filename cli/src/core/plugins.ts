@@ -220,10 +220,12 @@ function claudePluginManifest(
   def: PluginDefinition,
   version: string,
   hasMcp: boolean,
+  repository?: string,
 ): Record<string, unknown> {
   // Claude auto-discovers root skills/ and agents/, so we only declare extras.
   const manifest: Record<string, unknown> = { name: def.name, version };
   if (def.description) manifest.description = def.description;
+  if (repository) manifest.repository = repository;
   if (def.keywords && def.keywords.length > 0) manifest.keywords = def.keywords;
   if (hasMcp) manifest.mcpServers = "./.mcp.json";
   return manifest;
@@ -234,10 +236,12 @@ function codexPluginManifest(
   version: string,
   hasSkills: boolean,
   hasMcp: boolean,
+  repository?: string,
 ): Record<string, unknown> {
   // Codex requires explicit component pointers.
   const manifest: Record<string, unknown> = { name: def.name, version };
   if (def.description) manifest.description = def.description;
+  if (repository) manifest.repository = repository;
   if (def.keywords && def.keywords.length > 0) manifest.keywords = def.keywords;
   if (hasSkills) manifest.skills = "./skills/";
   if (hasMcp) manifest.mcpServers = "./.mcp.json";
@@ -492,9 +496,10 @@ export async function compilePluginsToDir(
       // Plugin manifest.
       const hasMcp = selectedMcps.length > 0;
       const hasSkills = skillDirNames.size > 0;
+      const repository = config.marketplace.repository;
       const manifest = spec.supportsAgents
-        ? claudePluginManifest(def, pluginVersion, hasMcp)
-        : codexPluginManifest(def, pluginVersion, hasSkills, hasMcp);
+        ? claudePluginManifest(def, pluginVersion, hasMcp, repository)
+        : codexPluginManifest(def, pluginVersion, hasSkills, hasMcp, repository);
       await writeFileRecording(
         outRoot,
         path.join(pluginRel, spec.manifestDir, "plugin.json"),

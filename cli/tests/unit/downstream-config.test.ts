@@ -256,4 +256,62 @@ describe("downstream config", () => {
       expect(() => DownstreamConfigSchema.parse({ delivery: { skills: "bogus" } })).toThrow();
     });
   });
+
+  describe("experimental enrollment", () => {
+    it("parses a valid enrollment block", () => {
+      const result = DownstreamConfigSchema.safeParse({
+        experimental: {
+          enrollment: {
+            marketplace: "acme-tools",
+            source: { repository: "acme/standards", ref: "v2.3.0" },
+            plugins: ["base", "frontend"],
+          },
+        },
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.experimental?.enrollment?.marketplace).toBe("acme-tools");
+        expect(result.data.experimental?.enrollment?.plugins).toEqual(["base", "frontend"]);
+      }
+    });
+
+    it("allows omitting the ref", () => {
+      const result = DownstreamConfigSchema.safeParse({
+        experimental: {
+          enrollment: {
+            marketplace: "acme-tools",
+            source: { repository: "acme/standards" },
+            plugins: ["base"],
+          },
+        },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("requires marketplace, source.repository and at least one plugin", () => {
+      expect(
+        DownstreamConfigSchema.safeParse({
+          experimental: { enrollment: { source: { repository: "x/y" }, plugins: ["a"] } },
+        }).success,
+      ).toBe(false);
+      expect(
+        DownstreamConfigSchema.safeParse({
+          experimental: { enrollment: { marketplace: "m", source: {}, plugins: ["a"] } },
+        }).success,
+      ).toBe(false);
+      expect(
+        DownstreamConfigSchema.safeParse({
+          experimental: {
+            enrollment: { marketplace: "m", source: { repository: "x/y" }, plugins: [] },
+          },
+        }).success,
+      ).toBe(false);
+    });
+
+    it("stays backward compatible (no experimental block)", () => {
+      const result = DownstreamConfigSchema.safeParse({ targets: ["claude"] });
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.data.experimental).toBeUndefined();
+    });
+  });
 });

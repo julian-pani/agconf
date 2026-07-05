@@ -5,6 +5,7 @@ import { checkCommand } from "./commands/check.js";
 import { compileCommand } from "./commands/compile.js";
 import { handleCompletion, installCompletion, uninstallCompletion } from "./commands/completion.js";
 import { configGetCommand, configSetCommand, configShowCommand } from "./commands/config.js";
+import { enrollCommand } from "./commands/enroll.js";
 import { initCommand } from "./commands/init.js";
 import { proposeCommand } from "./commands/propose.js";
 import { syncCommand } from "./commands/sync.js";
@@ -154,6 +155,17 @@ export function createCli(): Command {
         await compileCommand(options);
       },
     );
+
+  program
+    .command("enroll")
+    .description(
+      "[experimental] Enroll this repo in a compiled plugin marketplace via .claude/settings.json (Claude)",
+    )
+    .option("--local <path>", "Path to the compiled canonical repo (enables overlap warnings)")
+    .option("-q, --quiet", "Minimal output, just exit code")
+    .action(async (options: { local?: string; quiet?: boolean }) => {
+      await enrollCommand({ local: options.local, quiet: options.quiet });
+    });
 
   program
     .command("propose")

@@ -79,6 +79,12 @@ export const PluginMarketplaceSchema = z.object({
   display_name: z.string().optional(),
   /** Marketplace description. */
   description: z.string().optional(),
+  /**
+   * Canonical repository URL. When set, stamped into every compiled plugin
+   * manifest's `repository` field so consumers (and agents) can trace a plugin
+   * back to its source for provenance / proposing changes.
+   */
+  repository: z.string().optional(),
 });
 
 /**
@@ -226,6 +232,34 @@ export const DeliveryConfigSchema = z.object({
 });
 
 /**
+ * EXPERIMENTAL (Claude-only): plugin enrollment. Instead of syncing skills/
+ * agents into `.claude/`, a repo can enroll in a compiled marketplace by
+ * committing an `extraKnownMarketplaces` + `enabledPlugins` block to
+ * `.claude/settings.json`. `agconf enroll` writes it; `agconf check` verifies it.
+ */
+export const EnrollmentSourceSchema = z.object({
+  /** GitHub repo (owner/repo) hosting the compiled marketplace. */
+  repository: z.string().min(1),
+  /** Git ref (tag or branch) to pin the marketplace to. Omit to track default branch. */
+  ref: z.string().optional(),
+});
+
+export const EnrollmentConfigSchema = z.object({
+  /** Marketplace name (must match the canonical marketplace's `name`). */
+  marketplace: z.string().min(1),
+  /** GitHub source written into `extraKnownMarketplaces`. */
+  source: EnrollmentSourceSchema,
+  /** Plugin names to enable; each becomes `<plugin>@<marketplace>` in `enabledPlugins`. */
+  plugins: z.array(z.string().min(1)).min(1),
+});
+
+/** Opt-in experimental features for downstream repos. */
+export const ExperimentalConfigSchema = z.object({
+  /** Plugin enrollment (Claude-only). See {@link EnrollmentConfigSchema}. */
+  enrollment: EnrollmentConfigSchema.optional(),
+});
+
+/**
  * Configuration schema for downstream repositories (.agconf/config.yaml).
  * This file lives in repos that consume content from canonical repos.
  * Unlike the canonical config (agconf.yaml), this contains user preferences
@@ -246,12 +280,16 @@ export const DownstreamConfigSchema = z.object({
    * Omit for the default: everything is synced into the repo.
    */
   delivery: DeliveryConfigSchema.optional(),
+  /** Opt-in experimental features (e.g. plugin enrollment). */
+  experimental: ExperimentalConfigSchema.optional(),
 });
 
 export type WorkflowConfig = z.infer<typeof WorkflowConfigSchema>;
 export type DeliveryMode = z.infer<typeof DeliveryModeSchema>;
 export type DeliveryConfig = z.infer<typeof DeliveryConfigSchema>;
 export type DownstreamConfig = z.infer<typeof DownstreamConfigSchema>;
+export type EnrollmentConfig = z.infer<typeof EnrollmentConfigSchema>;
+export type ExperimentalConfig = z.infer<typeof ExperimentalConfigSchema>;
 
 // =============================================================================
 // Resolved Configuration (Runtime)

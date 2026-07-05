@@ -113,6 +113,7 @@ GitHub Actions workflows are created automatically to keep downstream repos in s
 | `sync` | Sync content from canonical repo (fetches latest by default) |
 | `check` | Verify managed files are unchanged (in a canonical repo, verifies compiled plugin freshness) |
 | `compile` | Compile installable Claude Code / Codex plugins + marketplace from canonical content (canonical repos) |
+| `enroll` | **[experimental, Claude]** Enroll a repo in a compiled marketplace via committed `.claude/settings.json` |
 | `propose` | Propose local changes (or new skills/rules/agents via `--new`) back to canonical as a PR |
 | `upgrade-cli` | Upgrade the CLI to latest version (auto-detects package manager) |
 | `canonical init` | Scaffold a new canonical repository |
@@ -208,6 +209,22 @@ agconf compile --out dist      # override the output directory
 Install the result with `/plugin marketplace add <repo>` (Claude) or
 `codex plugin marketplace add <repo>` (Codex). See
 [cli/docs/PLUGINS.md](cli/docs/PLUGINS.md) for the full guide.
+
+### `agconf enroll` (experimental, Claude)
+
+Enroll a repository in a compiled marketplace instead of syncing files into it:
+`enroll` writes a committed `.claude/settings.json` (`extraKnownMarketplaces` +
+`enabledPlugins`) from an `experimental.enrollment` block in `.agconf/config.yaml`,
+so collaborators are prompted to install the declared plugins. The marketplace
+`ref` pins the version per repo, and `agconf check` verifies the block.
+
+```bash
+agconf enroll                        # write/merge .claude/settings.json
+agconf enroll --local ../standards   # also warn on overlap across the enrolled set
+```
+
+Claude-only (Codex has no project-scoped plugin enablement — keep using `sync`
+there). See [cli/docs/PLUGINS.md](cli/docs/PLUGINS.md#enrolling-a-repo-in-a-marketplace-experimental-claude-only).
 
 This command is used by the pre-commit hook and CI workflows to detect unauthorized modifications to agconf-managed files.
 
