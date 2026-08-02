@@ -1,3 +1,9 @@
+## [0.16.2](https://github.com/julian-pani/agconf/compare/v0.16.1...v0.16.2) (2026-08-02)
+
+### Bug Fixes
+
+* **sync:** skip redundant force-push when PR branch is already current ([#65](https://github.com/julian-pani/agconf/issues/65)) ([8ab6f6f](https://github.com/julian-pani/agconf/commit/8ab6f6f0b41fc581fdde1f9f84adb5ec1aae48a1))
+
 ## [0.16.1](https://github.com/julian-pani/agconf/compare/v0.16.0...v0.16.1) (2026-07-02)
 
 ### Bug Fixes
