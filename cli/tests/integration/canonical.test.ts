@@ -540,6 +540,39 @@ describe("canonical init - workflow content validation", () => {
     expect(outputs.pr_number).toBeDefined();
     expect(outputs.pr_url).toBeDefined();
   });
+
+  it("should guard the PR-branch force-push against redundant no-op pushes", async () => {
+    await canonicalInitCommand({
+      name: "test-standards",
+      dir: tempDir,
+      markerPrefix: "agconf",
+      includeExamples: false,
+      yes: true,
+    });
+
+    const syncWorkflowPath = path.join(tempDir, ".github", "workflows", "sync-reusable.yml");
+    const syncWorkflow = await fs.readFile(syncWorkflowPath, "utf-8");
+    const parsed = parseYaml(syncWorkflow);
+
+    const pushStep = parsed.jobs.sync.steps.find(
+      (s: { name: string }) => s.name === "Create or update PR branch",
+    );
+    expect(pushStep).toBeDefined();
+    expect(pushStep.id).toBe("push-branch");
+
+    const run: string = pushStep.run;
+    // Only compares against the branch when a PR is already open.
+    expect(run).toContain("steps.check-pr.outputs.existing_pr");
+    // Excludes the volatile lockfile from the meaningful-change comparison.
+    expect(run).toContain(":(exclude)$LOCKFILE_PATH");
+    expect(run).toContain('git diff --quiet --cached "origin/$BRANCH_NAME"');
+    // Skips the push (and reports it) when nothing meaningful changed.
+    expect(run).toContain("skipping push");
+    expect(run).toContain("pushed=false");
+    expect(run).toContain("pushed=true");
+    // Still force-pushes when there is a real change.
+    expect(run).toContain('git push --force -u origin "$BRANCH_NAME"');
+  });
 });
 
 describe("canonical init - plugins scaffolding", () => {

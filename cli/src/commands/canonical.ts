@@ -396,20 +396,40 @@ jobs:
           echo "BRANCH_NAME=\$BRANCH_NAME" >> \$GITHUB_ENV
 
       - name: Create or update PR branch
+        id: push-branch
         if: steps.check-changes.outputs.changes_detected == 'true' && inputs.commit_strategy == 'pr'
         run: |
           BRANCH_NAME="\${{ inputs.pr_branch_prefix }}"
+          LOCKFILE_PATH=".agconf/lockfile.json"
+
+          # Stage everything first so the comparison below (and the eventual commit)
+          # accounts for additions, deletions, and modifications alike.
+          git add -A
+
+          # If a PR is already open for this branch, only force-push when the meaningful
+          # content differs from what's already on the branch. The lockfile is excluded
+          # from this comparison because its 'synced_at' timestamp changes on every run;
+          # without this guard each scheduled sync would push a new commit and re-trigger
+          # downstream CI even when nothing of substance changed.
+          if [ "\${{ steps.check-pr.outputs.existing_pr }}" == "true" ]; then
+            git fetch --depth=1 origin "\$BRANCH_NAME" || true
+            if git diff --quiet --cached "origin/\$BRANCH_NAME" -- . ":(exclude)\$LOCKFILE_PATH"; then
+              echo "No meaningful changes vs existing PR branch; skipping push."
+              echo "pushed=false" >> \$GITHUB_OUTPUT
+              exit 0
+            fi
+          fi
 
           # Create branch from current HEAD (base branch with sync changes in working dir)
           # -B handles the case where a local branch with this name might already exist
           git checkout -B "\$BRANCH_NAME"
 
-          git add -A
           git commit --no-verify -m "\${{ inputs.pr_title }}" || echo "No changes to commit"
 
           # Force push to overwrite any existing remote branch
           # This ensures the PR only contains changes from the current sync run
           git push --force -u origin "\$BRANCH_NAME"
+          echo "pushed=true" >> \$GITHUB_OUTPUT
 
       - name: Create or update pull request
         id: create-pr
