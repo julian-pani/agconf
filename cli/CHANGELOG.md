@@ -1,3 +1,9 @@
+## [0.17.0](https://github.com/julian-pani/agconf/compare/v0.16.2...v0.17.0) (2026-08-03)
+
+### Features
+
+* **hooks:** integrate with pre-commit framework instead of appending dead code ([#66](https://github.com/julian-pani/agconf/issues/66)) ([6d1bea2](https://github.com/julian-pani/agconf/commit/6d1bea2aa420dee36aa3fbfb858bf0647b751795))
+
 ## [0.16.2](https://github.com/julian-pani/agconf/compare/v0.16.1...v0.16.2) (2026-08-02)
 
 ### Bug Fixes
