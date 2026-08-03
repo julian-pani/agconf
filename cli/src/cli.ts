@@ -122,7 +122,11 @@ export function createCli(): Command {
     .description("Check if managed files have been modified")
     .option("-q, --quiet", "Minimal output, just exit code")
     .option("--debug", "Show detailed debug information for hash computation")
-    .action(async (options: { quiet?: boolean; debug?: boolean }) => {
+    .option(
+      "--hook",
+      "Pre-commit mode: branch-aware exit (block on master/main, warn on feature branches)",
+    )
+    .action(async (options: { quiet?: boolean; debug?: boolean; hook?: boolean }) => {
       await checkCommand(options);
     });
 

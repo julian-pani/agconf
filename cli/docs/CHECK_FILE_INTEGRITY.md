@@ -155,7 +155,28 @@ The hook is installed automatically during `agconf init` or `agconf sync`. If yo
 agconf sync
 ```
 
-The CLI will not overwrite existing custom pre-commit hooks. If you have a custom hook, you'll need to integrate the agconf check manually.
+For an existing **custom** shell hook (not managed by agconf), the CLI appends its check inside marker comments (`# agconf:hook:start` … `# agconf:hook:end`) rather than overwriting your logic, and updates that section idempotently on future syncs.
+
+### Pre-commit framework integration
+
+If your repository uses the [pre-commit framework](https://pre-commit.com), agconf detects it — a `.pre-commit-config.yaml` is present, or `.git/hooks/pre-commit` carries pre-commit's generated banner — and does **not** touch the generated launcher (appending to it would be unreachable dead code). Instead it registers a managed `agconf-check` hook in `.pre-commit-config.yaml`:
+
+```yaml
+- repo: local
+  hooks:
+    - id: agconf-check
+      name: agconf check
+      entry: agconf check --hook
+      language: system
+      pass_filenames: false
+      always_run: true
+      verbose: true
+```
+
+- The hook is identified by its `id` (`agconf-check`) and updated in place on each sync — it does not use text markers.
+- `agconf check --hook` runs the normal integrity check with a branch-aware verdict: it **blocks** the commit (exit 1) on `master`/`main` and **warns but allows** it (exit 0) on other branches, matching the standalone hook.
+- If pre-commit's git hook isn't installed yet, run `pre-commit install`.
+- To skip just this check for one commit: `SKIP=agconf-check git commit` (or `git commit --no-verify` to skip all hooks).
 
 ## CI Workflow Integration
 

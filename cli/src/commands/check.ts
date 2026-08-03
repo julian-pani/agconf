@@ -26,13 +26,25 @@ import {
 } from "../core/markers.js";
 import { resolvePluginTargets, verifyPluginsFresh } from "../core/plugins.js";
 import { resolveLocalSource } from "../core/source.js";
+import { getCurrentBranch } from "../utils/git.js";
 import { toMetadataPrefix } from "../utils/prefix.js";
 
 export interface CheckOptions {
   quiet?: boolean;
   debug?: boolean;
   cwd?: string;
+  /**
+   * Pre-commit mode. Runs the normal integrity check, then applies a
+   * branch-aware verdict: block (exit 1) on `master`/`main`, warn-and-allow
+   * (exit 0) on any other branch or a detached HEAD. Used by the pre-commit
+   * framework hook (`agconf check --hook`); a no-op that exits 0 in unsynced
+   * repos so it never disrupts commits there.
+   */
+  hook?: boolean;
 }
+
+/** Branches on which a failing check blocks the commit in `--hook` mode. */
+const PROTECTED_BRANCHES = new Set(["master", "main"]);
 
 export interface ModifiedFileInfo {
   path: string;
@@ -82,7 +94,9 @@ export async function checkCommand(options: CheckOptions = {}): Promise<void> {
 
   // Neither a canonical-with-plugins repo nor a synced downstream repo.
   if (!hasPlugins && !result) {
-    if (!options.quiet) {
+    // In hook mode this must be a silent no-op so it never disrupts commits in
+    // repos that don't use agconf.
+    if (!options.quiet && !options.hook) {
       console.log();
       console.log(pc.yellow("Not synced"));
       console.log();
@@ -106,9 +120,54 @@ export async function checkCommand(options: CheckOptions = {}): Promise<void> {
     hasProblems = hasProblems || downstreamProblems;
   }
 
+  // Pre-commit mode: turn the check result into a branch-aware commit verdict.
+  // The detailed report above (modified files, hashes, propose/sync hints) has
+  // already printed, so here we only add the verdict line(s).
+  if (options.hook) {
+    if (hasProblems) {
+      await printHookVerdict(targetDir);
+    }
+    return;
+  }
+
   if (hasProblems) {
     process.exit(1);
   }
+}
+
+/**
+ * Print the pre-commit verdict for a failing check and, on a protected branch,
+ * block the commit via `process.exit(1)`. On feature branches (or a detached
+ * HEAD) it warns and returns so the commit is allowed — mirroring the
+ * branch-aware behavior of the standalone shell hook.
+ */
+async function printHookVerdict(targetDir: string): Promise<void> {
+  const branch = await getCurrentBranch(targetDir);
+  const isProtected = branch !== null && PROTECTED_BRANCHES.has(branch);
+
+  console.log();
+  if (isProtected) {
+    console.log(pc.red(`✗ Cannot commit: agconf-managed files were modified on '${branch}'.`));
+    console.log();
+    console.log("Options:");
+    console.log(pc.dim("  1. Discard changes:  git checkout -- <file>"));
+    console.log(pc.dim("  2. Restore managed:  agconf sync"));
+    console.log(pc.dim("  3. Propose upstream: agconf propose"));
+    console.log(
+      pc.dim("  4. Bypass this hook: SKIP=agconf-check git commit  (or git commit --no-verify)"),
+    );
+    console.log();
+    process.exit(1);
+  }
+
+  const branchLabel = branch ?? "this branch";
+  console.log(
+    pc.yellow(
+      `⚠ Committing changes to agconf-managed files on '${branchLabel}' (allowed on feature branches).`,
+    ),
+  );
+  console.log(pc.dim("  Propose these changes upstream when ready: agconf propose"));
+  console.log();
 }
 
 /**

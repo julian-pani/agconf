@@ -93,6 +93,24 @@ export async function getGitHooksDir(dir: string): Promise<string | null> {
 }
 
 /**
+ * Get the name of the currently checked-out branch for the repo at `dir`.
+ *
+ * Returns `null` when the branch can't be determined — a detached HEAD
+ * (`git rev-parse --abbrev-ref HEAD` yields the literal `"HEAD"`) or `dir` not
+ * being a git repository. Callers treat `null` as "not a protected branch".
+ */
+export async function getCurrentBranch(dir: string): Promise<string | null> {
+  try {
+    const git: SimpleGit = simpleGit(dir);
+    const branch = (await git.revparse(["--abbrev-ref", "HEAD"])).trim();
+    return branch === "" || branch === "HEAD" ? null : branch;
+  } catch {
+    // Expected: not a git repo, no commits yet, or git operation failed
+    return null;
+  }
+}
+
+/**
  * Get the git project name (basename of the git root directory).
  * Returns null if not in a git repository or directory doesn't exist.
  */

@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { simpleGit } from "simple-git";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stringify as stringifyYaml } from "yaml";
 import { checkCommand } from "../../src/commands/check.js";
@@ -1502,6 +1503,94 @@ ${globalContent}
         "process.exit called",
       );
       expect(mockExit).toHaveBeenCalledWith(1);
+    });
+  });
+
+  describe("--hook mode (pre-commit branch-aware verdict)", () => {
+    async function initGitOnBranch(branch: string): Promise<void> {
+      const git = simpleGit(tempDir);
+      await git.init();
+      await git.addConfig("user.email", "test@example.com", false, "local");
+      await git.addConfig("user.name", "Test", false, "local");
+      // A commit is required so `git rev-parse --abbrev-ref HEAD` resolves.
+      await git.raw(["commit", "--allow-empty", "-m", "init"]);
+      await git.raw(["checkout", "-B", branch]);
+    }
+
+    async function writeSyncedRepoWithModifiedSkill(): Promise<void> {
+      const lockfile = {
+        version: "1.0.0",
+        synced_at: new Date().toISOString(),
+        source: { type: "local", path: "/some/path", ref: "abc123" },
+        content: {
+          agents_md: { global_block_hash: "sha256:abc123def456", merged: true },
+          skills: ["test-skill"],
+          targets: ["claude"],
+        },
+        cli_version: "1.0.0",
+      };
+      await fs.writeFile(
+        path.join(tempDir, ".agconf", "lockfile.json"),
+        JSON.stringify(lockfile, null, 2),
+      );
+      await fs.writeFile(path.join(tempDir, "AGENTS.md"), "# AGENTS.md\n\nSome content");
+      const skillContent = `---
+name: test-skill
+description: A test skill
+metadata:
+  agconf_managed: "true"
+  agconf_content_hash: "sha256:originalHash"
+---
+
+# Test Skill - MODIFIED
+`;
+      await fs.writeFile(
+        path.join(tempDir, ".claude", "skills", "test-skill", "SKILL.md"),
+        skillContent,
+      );
+    }
+
+    it("blocks the commit (exit 1) when managed files are modified on main", async () => {
+      await initGitOnBranch("main");
+      await writeSyncedRepoWithModifiedSkill();
+
+      await expect(checkCommand({ hook: true, cwd: tempDir })).rejects.toThrow(
+        "process.exit called",
+      );
+      expect(mockExit).toHaveBeenCalledWith(1);
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("Cannot commit"));
+    });
+
+    it("blocks the commit (exit 1) on master too", async () => {
+      await initGitOnBranch("master");
+      await writeSyncedRepoWithModifiedSkill();
+
+      await expect(checkCommand({ hook: true, cwd: tempDir })).rejects.toThrow(
+        "process.exit called",
+      );
+      expect(mockExit).toHaveBeenCalledWith(1);
+    });
+
+    it("warns but allows the commit (exit 0) on a feature branch", async () => {
+      await initGitOnBranch("feature/thing");
+      await writeSyncedRepoWithModifiedSkill();
+
+      await checkCommand({ hook: true, cwd: tempDir });
+
+      expect(mockExit).not.toHaveBeenCalled();
+      expect(consoleLogSpy).toHaveBeenCalledWith(
+        expect.stringContaining("allowed on feature branches"),
+      );
+      // The detailed report still prints so the user sees what changed.
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("have been modified"));
+    });
+
+    it("is a silent no-op (exit 0) when the repo is not synced", async () => {
+      // No lockfile in tempDir (outer beforeEach only created the .agconf dir).
+      await checkCommand({ hook: true, cwd: tempDir });
+
+      expect(mockExit).not.toHaveBeenCalled();
+      expect(consoleLogSpy).not.toHaveBeenCalled();
     });
   });
 });
