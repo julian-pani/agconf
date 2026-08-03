@@ -1,5 +1,6 @@
 import * as path from "node:path";
 import pc from "picocolors";
+import { codexAgentFileName } from "../core/agents.js";
 import type { HookInstallResult, PreCommitAction } from "../core/hooks.js";
 import type { ResolvedSource } from "../core/source.js";
 import { formatSourceString } from "../core/source.js";
@@ -275,7 +276,7 @@ export function renderSyncSummary(input: RenderSyncSummaryInput): RenderedSyncSu
     // identities (e.g. `code-reviewer.md`) shared across targets.
     // Codex stores agents as `<name>.toml`; Claude keeps the canonical `<name>.md`.
     const agentFileName = (agent: string) =>
-      targetResult.target === "codex" ? agent.replace(/\.md$/, ".toml") : agent;
+      targetResult.target === "codex" ? codexAgentFileName(agent) : agent;
 
     if (result.agents && result.agents.synced.length > 0) {
       const agentsPath = formatPath(path.join(targetDir, config.dir, "agents"));
@@ -339,21 +340,24 @@ export function renderSyncSummary(input: RenderSyncSummaryInput): RenderedSyncSu
     renderOrphans(agentOrphanResult, (item) => `${config.dir}/agents/${agentFileName(item)}`);
   }
 
-  // Legacy Codex skills relocated from `.codex/skills` to `.agents/skills`.
+  // Legacy `.codex/skills` cleanup. Codex now reads project skills from
+  // `.agents/skills`, so obsolete managed copies under `.codex/skills` are
+  // removed (whether the skill was re-synced to the new location or dropped
+  // from canonical); locally-modified/unmanaged copies are left in place.
   const migrated = result.migratedCodexSkills ?? { moved: [], skipped: [] };
   if (migrated.moved.length > 0) {
     consoleLines.push(
       `  ${pc.yellow("~")} ${pc.dim(
-        `Migrated ${migrated.moved.length} Codex skill(s): .codex/skills → .agents/skills`,
+        `Removed ${migrated.moved.length} legacy Codex skill(s) from .codex/skills (now read from .agents/skills)`,
       )}`,
     );
     summaryLines.push(
-      `- Migrated ${migrated.moved.length} Codex skill(s) from \`.codex/skills/\` to \`.agents/skills/\``,
+      `- Removed ${migrated.moved.length} legacy Codex skill(s) from \`.codex/skills/\` (Codex now reads \`.agents/skills/\`)`,
     );
     for (const skill of [...migrated.moved].sort()) {
       const legacyPath = formatPath(path.join(targetDir, ".codex", "skills", skill));
-      consoleLines.push(`    ${pc.red("-")} ${legacyPath}/ ${pc.dim("(migrated)")}`);
-      summaryLines.push(`  - \`.codex/skills/${skill}/\` (migrated)`);
+      consoleLines.push(`    ${pc.red("-")} ${legacyPath}/ ${pc.dim("(legacy removed)")}`);
+      summaryLines.push(`  - \`.codex/skills/${skill}/\` (legacy removed)`);
     }
   }
   for (const skill of [...migrated.skipped].sort()) {

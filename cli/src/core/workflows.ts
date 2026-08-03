@@ -8,6 +8,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { ResolvedConfig, WorkflowConfig as WorkflowConfigSchema } from "../config/schema.js";
+import { escapeRegExp } from "../utils/regex.js";
 
 /**
  * Per-downstream-repo workflow settings from .agconf/config.yaml.
@@ -164,7 +165,7 @@ export function extractWorkflowRef(
   sourceRepo: string,
 ): string | undefined {
   const pattern = new RegExp(
-    `uses:\\s*${escapeRegex(sourceRepo)}\\/.github\\/workflows\\/${reusableWorkflow}@([^\\s]+)`,
+    `uses:\\s*${escapeRegExp(sourceRepo)}\\/.github\\/workflows\\/${reusableWorkflow}@([^\\s]+)`,
   );
   const match = content.match(pattern);
   return match?.[1];
@@ -180,7 +181,7 @@ export function updateWorkflowRef(
   sourceRepo: string,
 ): string {
   const pattern = new RegExp(
-    `(uses:\\s*${escapeRegex(sourceRepo)}\\/.github\\/workflows\\/${reusableWorkflow})@[^\\s]+`,
+    `(uses:\\s*${escapeRegExp(sourceRepo)}\\/.github\\/workflows\\/${reusableWorkflow})@[^\\s]+`,
     "g",
   );
   return content.replace(pattern, `$1@${newRef}`);
@@ -449,11 +450,4 @@ export async function getCurrentWorkflowVersion(
   }
 
   return undefined;
-}
-
-/**
- * Escape special regex characters in a string.
- */
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

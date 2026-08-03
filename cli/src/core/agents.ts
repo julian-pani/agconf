@@ -260,29 +260,60 @@ export function addAgentMetadata(agent: Agent, metadataPrefix: string): string {
 // Codex agent (TOML) emitter
 // =============================================================================
 
+/** Map a canonical agent identity (`code-reviewer.md`) to its Codex TOML file name. */
+export function codexAgentFileName(relativePath: string): string {
+  return relativePath.replace(/\.md$/, ".toml");
+}
+
+/**
+ * Escape the control characters that TOML basic strings forbid as literals
+ * (`U+0000`–`U+0008`, `U+000B`, `U+000C`, `U+000E`–`U+001F`, `U+007F`) as
+ * `\uXXXX`. `\t`/`\n`/`\r` are intentionally excluded — they are handled
+ * explicitly (single-line) or allowed literally (multi-line). Run LAST, after
+ * backslashes have been doubled, so the `\u` escapes it introduces survive.
+ */
+function escapeTomlControlChars(value: string): string {
+  let out = "";
+  for (const ch of value) {
+    const code = ch.charCodeAt(0);
+    const isControl =
+      code <= 0x08 ||
+      code === 0x0b ||
+      code === 0x0c ||
+      (code >= 0x0e && code <= 0x1f) ||
+      code === 0x7f;
+    out += isControl ? `\\u${code.toString(16).padStart(4, "0")}` : ch;
+  }
+  return out;
+}
+
 /**
  * Serialize a string as a TOML single-line basic string (quoted + escaped).
  * Used for scalar agent fields like `name` and `description`.
  */
 function tomlBasicString(value: string): string {
-  const escaped = value
-    .replace(/\\/g, "\\\\")
-    .replace(/"/g, '\\"')
-    .replace(/\r/g, "\\r")
-    .replace(/\n/g, "\\n")
-    .replace(/\t/g, "\\t");
+  const escaped = escapeTomlControlChars(
+    value
+      .replace(/\\/g, "\\\\")
+      .replace(/"/g, '\\"')
+      .replace(/\r/g, "\\r")
+      .replace(/\n/g, "\\n")
+      .replace(/\t/g, "\\t"),
+  );
   return `"${escaped}"`;
 }
 
 /**
  * Serialize a (possibly multi-line) string as a TOML multi-line basic string.
  * A leading newline is emitted after the opening delimiter (the TOML spec trims
- * it) purely for readability. Backslashes are escaped and any literal `"""`
- * sequence is broken up so the body can neither terminate the string early nor
- * introduce a line-continuation escape.
+ * it) purely for readability; the newline before the closing delimiter is part
+ * of the value, so every emitted value ends with a trailing `\n`. Backslashes
+ * are escaped, any literal `"""` is broken up so the body can neither terminate
+ * the string early nor introduce a line-continuation escape, and control chars
+ * are escaped so the output is always valid TOML.
  */
 function tomlMultilineString(value: string): string {
-  const escaped = value.replace(/\\/g, "\\\\").replace(/"""/g, '\\"\\"\\"');
+  const escaped = escapeTomlControlChars(value.replace(/\\/g, "\\\\").replace(/"""/g, '\\"\\"\\"'));
   return `"""\n${escaped}\n"""`;
 }
 

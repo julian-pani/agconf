@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import fg from "fast-glob";
 import { toMetadataPrefix } from "../utils/prefix.js";
+import { escapeRegExp } from "../utils/regex.js";
 import {
   frontmatterIsSimple,
   parseFrontmatter as parseFrontmatterShared,
@@ -367,7 +368,7 @@ export function isManaged(content: string, options: MetadataOptions = {}): boole
 export function stripCodexAgentMetadata(content: string, options: MetadataOptions = {}): string {
   const { metadataPrefix = DEFAULT_METADATA_PREFIX } = options;
   const keyPrefix = `${toMetadataPrefix(metadataPrefix)}_`;
-  const metaLine = new RegExp(`^#\\s*${keyPrefix}\\w+\\s*:`);
+  const metaLine = new RegExp(`^#\\s*${escapeRegExp(keyPrefix)}\\w+\\s*:`);
   const lines = content.split("\n");
   let i = 0;
   while (i < lines.length && metaLine.test(lines[i] ?? "")) i++;
@@ -384,10 +385,12 @@ export function readCodexAgentMetadata(
   const { metadataPrefix = DEFAULT_METADATA_PREFIX } = options;
   const keys = getMetadataKeys(metadataPrefix);
   const managed =
-    new RegExp(`^#\\s*${keys.managed}\\s*:\\s*(\\S+)`, "m").exec(content)?.[1] === "true";
-  const contentHash = new RegExp(`^#\\s*${keys.contentHash}\\s*:\\s*(\\S+)`, "m").exec(
-    content,
-  )?.[1];
+    new RegExp(`^#\\s*${escapeRegExp(keys.managed)}\\s*:\\s*(\\S+)`, "m").exec(content)?.[1] ===
+    "true";
+  const contentHash = new RegExp(
+    `^#\\s*${escapeRegExp(keys.contentHash)}\\s*:\\s*(\\S+)`,
+    "m",
+  ).exec(content)?.[1];
   return contentHash !== undefined ? { managed, contentHash } : { managed };
 }
 
@@ -1027,10 +1030,19 @@ export async function findOrphanedManagedFiles(
     }
   }
   for (const name of expected.skills) {
-    const existsInAnyTarget = await Promise.all(
-      targets.map((t) => pathExists(path.join(targetDir, getSkillsDir(t), name, "SKILL.md"))),
+    const candidateDirs = targets.flatMap((t) => {
+      const dirs = [getSkillsDir(t)];
+      // Transitional: a repo synced by an older CLI still has Codex skills at the
+      // legacy `.codex/skills` location; `sync` migrates them to `.agents/skills`.
+      // Treat either as "present" so `check` doesn't false-positive before the
+      // migrating sync runs.
+      if (t === "codex") dirs.push(path.join(".codex", "skills"));
+      return dirs;
+    });
+    const existsSomewhere = await Promise.all(
+      candidateDirs.map((d) => pathExists(path.join(targetDir, d, name, "SKILL.md"))),
     );
-    if (!existsInAnyTarget.some(Boolean)) {
+    if (!existsSomewhere.some(Boolean)) {
       missing.push({
         path: path.join(getSkillsDir(fileBasedTarget), name, "SKILL.md"),
         type: "skill",
@@ -1089,14 +1101,21 @@ export async function findOrphanedManagedFiles(
         ghosts.push({ path: agent.path, type: "codex-agent", identity });
       }
     }
-    for (const agentPath of expected.agents) {
-      const tomlName = agentPath.replace(/\.md$/, ".toml");
-      if (!(await pathExists(path.join(targetDir, ".codex", "agents", tomlName)))) {
-        missing.push({
-          path: path.join(".codex", "agents", tomlName),
-          type: "codex-agent",
-          identity: agentPath,
-        });
+    // Only enforce presence once the repo has actually been synced with Codex
+    // subagent support (i.e. at least one managed `.codex/agents/*.toml` exists).
+    // A repo synced by an older CLI has no TOML agents yet — a plain `agconf
+    // sync` creates them — so flagging them here would be an upgrade-time false
+    // positive that `check` alone cannot heal.
+    if (codexAgentFiles.length > 0) {
+      for (const agentPath of expected.agents) {
+        const tomlName = agentPath.replace(/\.md$/, ".toml");
+        if (!(await pathExists(path.join(targetDir, ".codex", "agents", tomlName)))) {
+          missing.push({
+            path: path.join(".codex", "agents", tomlName),
+            type: "codex-agent",
+            identity: agentPath,
+          });
+        }
       }
     }
   }

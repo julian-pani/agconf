@@ -9,7 +9,9 @@ import {
   type AgentValidationError,
   addAgentMetadata,
   buildCodexAgentToml,
+  codexAgentFileName,
   discoverAgents,
+  emitCodexAgentToml,
   validateAgentFrontmatter,
 } from "./agents.js";
 import { readLockfile, writeLockfile } from "./lockfile.js";
@@ -24,6 +26,7 @@ import {
   isManaged,
   type SkillValidationError,
   skillMatchesCanonical,
+  stripCodexAgentMetadata,
   validateSkillFrontmatter,
 } from "./managed-content.js";
 import { consolidateClaudeMd, mergeAgentsMd, writeAgentsMd } from "./merge.js";
@@ -207,11 +210,6 @@ function computeAgentsHash(agents: Agent[]): string {
   return `sha256:${hash.slice(0, 12)}`;
 }
 
-/** Map a canonical agent identity (`code-reviewer.md`) to its Codex TOML name. */
-function codexAgentFileName(relativePath: string): string {
-  return relativePath.replace(/\.md$/, ".toml");
-}
-
 /**
  * Sync agents from a canonical source to the configured targets.
  *
@@ -345,7 +343,7 @@ export async function deleteOrphanedAgents(
     }
     if (target === "codex") {
       return {
-        fullPath: path.join(targetDir, ".codex", "agents", agentPath.replace(/\.md$/, ".toml")),
+        fullPath: path.join(targetDir, ".codex", "agents", codexAgentFileName(agentPath)),
         isManagedFn: (c) => codexAgentIsManaged(c, metadataOptions),
         hasChangesFn: (c) => codexAgentHasManualChanges(c, metadataOptions),
       };
@@ -396,7 +394,10 @@ export async function deleteOrphanedAgents(
     if (wasDeleted && !deleted.includes(agentPath)) deleted.push(agentPath);
   }
 
-  return { deleted, skipped };
+  // An identity deleted in one target must not also be reported as skipped
+  // (e.g. deleted from `.claude/agents` but unmanaged in `.codex/agents`);
+  // "removed" takes precedence so the summary can't show both for one agent.
+  return { deleted, skipped: skipped.filter((a) => !deleted.includes(a)) };
 }
 
 export interface TargetResult {
@@ -445,12 +446,13 @@ export interface SyncResult {
    */
   adopted: string[];
   /**
-   * Legacy Codex skill directories relocated from `.codex/skills/` to
-   * `.agents/skills/` during this sync (skill names). See
-   * {@link migrateLegacyCodexSkills}. Empty in the common case.
+   * Legacy `.codex/skills/` cleanup performed during this sync (skill names).
+   * Codex now reads project skills from `.agents/skills/`, so obsolete managed
+   * copies under `.codex/skills/` are removed. See {@link migrateLegacyCodexSkills}.
+   * Empty in the common case.
    */
   migratedCodexSkills: {
-    /** Skill names removed from the legacy `.codex/skills/` location. */
+    /** Skill names whose obsolete legacy `.codex/skills/` copy was removed. */
     moved: string[];
     /** Legacy skills left in place (unmanaged or locally modified). */
     skipped: string[];
@@ -568,7 +570,7 @@ async function detectUnmanagedCollisions(
     }
   }
 
-  // Agents — Claude target only.
+  // Agents — Claude target (.claude/agents/<name>.md).
   if (resolvedSource.agentsPath && targets.includes("claude")) {
     const agents = await discoverAgents(resolvedSource.agentsPath);
     for (const agent of agents) {
@@ -579,6 +581,30 @@ async function detectUnmanagedCollisions(
       const canonicalPath = path.join(resolvedSource.agentsPath, agent.relativePath);
       const downstreamPath = `.claude/agents/${agent.relativePath}`;
       if (await fileMatchesCanonical(localPath, canonicalPath, metaOpts)) {
+        adopted.push(downstreamPath);
+      } else {
+        conflicts.push({ type: "agent", path: downstreamPath });
+      }
+    }
+  }
+
+  // Agents — Codex target (.codex/agents/<name>.toml). Compared against the
+  // projection `emitCodexAgentToml` (with managed comments stripped from the
+  // local file), mirroring how Claude agents compare against canonical.
+  if (resolvedSource.agentsPath && targets.includes("codex")) {
+    const agents = await discoverAgents(resolvedSource.agentsPath);
+    for (const agent of agents) {
+      const localPath = path.join(
+        targetDir,
+        ".codex",
+        "agents",
+        codexAgentFileName(agent.relativePath),
+      );
+      if (!(await exists(localPath))) continue;
+      const content = await fs.readFile(localPath, "utf-8");
+      if (codexAgentIsManaged(content, metaOpts)) continue; // managed: canonical owns it
+      const downstreamPath = `.codex/agents/${codexAgentFileName(agent.relativePath)}`;
+      if (stripCodexAgentMetadata(content, metaOpts) === emitCodexAgentToml(agent)) {
         adopted.push(downstreamPath);
       } else {
         conflicts.push({ type: "agent", path: downstreamPath });
@@ -1079,10 +1105,12 @@ export async function deleteOrphanedSkills(
 /**
  * One-time migration: Codex skills used to be written to `.codex/skills/`, but
  * current Codex only discovers project skills under `.agents/skills/` (see
- * `TARGET_CONFIGS.codex.skillsDir`). After skills are synced to the new
- * location, relocate any leftover managed skill dirs from the legacy
+ * `TARGET_CONFIGS.codex.skillsDir`). Once skills have been synced to the new
+ * location, remove obsolete managed skill dirs left under the legacy
  * `.codex/skills/` path so they are not silently stranded (Codex would never
- * load them there).
+ * load them there). This covers both skills that were re-synced to
+ * `.agents/skills/` and skills dropped from canonical, since ordinary orphan
+ * cleanup only looks at the new location.
  *
  * Mirrors {@link deleteOrphanedSkills} safety: only removes a legacy skill dir
  * that is agconf-managed AND unmodified (neither the SKILL.md body nor its

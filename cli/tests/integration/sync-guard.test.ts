@@ -2,9 +2,11 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { emitCodexAgentToml, parseAgent } from "../../src/core/agents.js";
 import {
   addManagedMetadata,
   checkAllManagedFiles,
+  codexAgentIsManaged,
   isManaged,
 } from "../../src/core/managed-content.js";
 import { resolveLocalSource } from "../../src/core/source.js";
@@ -284,5 +286,47 @@ description: Reviews code.
       "utf-8",
     );
     await expect(syncLocal()).rejects.toBeInstanceOf(UnmanagedOverwriteError);
+  });
+
+  it("guards an unmanaged Codex agent TOML: adopts identical, conflicts on divergent", async () => {
+    await writeCanonicalSkill("base");
+    await writeCanonicalConfig({ agents: true });
+    const agentBody = `---
+name: reviewer
+description: Reviews code.
+---
+
+# Reviewer
+`;
+    await fs.mkdir(path.join(canonicalDir, "agents"), { recursive: true });
+    await fs.writeFile(path.join(canonicalDir, "agents", "reviewer.md"), agentBody, "utf-8");
+
+    const localAgents = path.join(downstreamDir, ".codex", "agents");
+    await fs.mkdir(localAgents, { recursive: true });
+    const localToml = path.join(localAgents, "reviewer.toml");
+
+    // A pre-existing UNMANAGED TOML byte-identical to the projection → adopted.
+    const projection = emitCodexAgentToml(parseAgent(agentBody, "reviewer.md"));
+    await fs.writeFile(localToml, projection, "utf-8");
+
+    const resolvedSource = await resolveLocalSource({ path: canonicalDir });
+    const result = await sync(downstreamDir, resolvedSource, {
+      override: false,
+      targets: ["codex"],
+    });
+    expect(result.adopted).toContain(".codex/agents/reviewer.toml");
+    expect(codexAgentIsManaged(await fs.readFile(localToml, "utf-8"))).toBe(true);
+
+    // A divergent UNMANAGED TOML must abort the sync (no silent data loss).
+    await fs.writeFile(
+      localToml,
+      'name = "reviewer"\ndescription = "MY OWN local subagent"\ndeveloper_instructions = """\nDo not lose me.\n"""\n',
+      "utf-8",
+    );
+    await expect(
+      sync(downstreamDir, resolvedSource, { override: false, targets: ["codex"] }),
+    ).rejects.toBeInstanceOf(UnmanagedOverwriteError);
+    // The local file was left untouched by the aborted sync.
+    expect(await fs.readFile(localToml, "utf-8")).toContain("MY OWN local subagent");
   });
 });

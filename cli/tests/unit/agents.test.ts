@@ -338,6 +338,24 @@ Here is a literal """ inside the body.
     expect(toml).toContain('\\"\\"\\"');
   });
 
+  it("escapes control characters so the emitted TOML stays valid", () => {
+    // Build control chars without literal control bytes in the source.
+    const esc = String.fromCharCode(0x1b);
+    const nul = String.fromCharCode(0x00);
+    const raw = `---\nname: ctrl\ndescription: control char test\n---\n\nBody with ESC ${esc} and NUL ${nul} chars.\n`;
+    const toml = emitCodexAgentToml(parseAgent(raw, "ctrl.md"));
+
+    // No raw forbidden control chars survive into the output...
+    const hasRawControl = [...toml].some((c) => {
+      const n = c.charCodeAt(0);
+      return n <= 0x08 || n === 0x0b || n === 0x0c || (n >= 0x0e && n <= 0x1f) || n === 0x7f;
+    });
+    expect(hasRawControl).toBe(false);
+    // ...they are emitted as \uXXXX escapes instead.
+    expect(toml).toContain("\\u001b");
+    expect(toml).toContain("\\u0000");
+  });
+
   it("embeds managed metadata as leading TOML comments with a round-trippable hash", () => {
     const agent = parseAgent(SAMPLE_AGENT_MINIMAL, "simple-agent.md");
     const content = buildCodexAgentToml(agent, "agconf");

@@ -1091,6 +1091,71 @@ metadata:
       expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("missing on disk"));
       expect(mockExit).toHaveBeenCalledWith(1);
     });
+
+    // Write a managed AGENTS.md global block so `check` has at least one managed
+    // file and doesn't short-circuit on "no managed files found".
+    const writeManagedAgentsMd = async () => {
+      const { createHash } = await import("node:crypto");
+      const globalContent = "# Global Standards";
+      const hash = createHash("sha256").update(globalContent.trim()).digest("hex").slice(0, 12);
+      const md = `<!-- agconf:global:start -->
+<!-- DO NOT EDIT THIS SECTION - Managed by agconf -->
+<!-- Content hash: sha256:${hash} -->
+
+${globalContent}
+
+<!-- agconf:global:end -->
+`;
+      await fs.writeFile(path.join(tempDir, "AGENTS.md"), md);
+    };
+
+    it("does NOT report missing Codex agents before the repo is re-synced (no TOML yet)", async () => {
+      // A repo synced by an older CLI: the lockfile tracks agents, but no
+      // `.codex/agents/*.toml` exists yet (only a plain `agconf sync` creates them).
+      // `check` must not false-positive on upgrade.
+      await writeCodexLockfile(["code-reviewer.md"]);
+      await writeManagedAgentsMd();
+
+      await checkCommand({ cwd: tempDir });
+
+      expect(consoleLogSpy).toHaveBeenCalledWith(
+        expect.stringContaining("All managed files are unchanged"),
+      );
+      expect(mockExit).not.toHaveBeenCalled();
+    });
+
+    it("accepts a Codex skill still at the legacy .codex/skills location", async () => {
+      // Pre-migration codex-only repo: skill lives at the legacy `.codex/skills`
+      // path, not yet relocated to `.agents/skills`. `check` must not report it missing.
+      const lockfile = {
+        version: "1.0.0",
+        synced_at: new Date().toISOString(),
+        source: { type: "local", path: "/some/path", ref: "abc123" },
+        content: {
+          agents_md: { global_block_hash: "sha256:abc123def456", merged: true },
+          skills: ["legacy-skill"],
+          targets: ["codex"],
+        },
+        cli_version: "1.0.0",
+      };
+      await fs.writeFile(
+        path.join(tempDir, ".agconf", "lockfile.json"),
+        JSON.stringify(lockfile, null, 2),
+      );
+      await writeManagedAgentsMd();
+
+      const skillDir = path.join(tempDir, ".codex", "skills", "legacy-skill");
+      await fs.mkdir(skillDir, { recursive: true });
+      const skillContent = `---\nname: legacy-skill\ndescription: A legacy skill\n---\n\n# Legacy Skill\n`;
+      await fs.writeFile(path.join(skillDir, "SKILL.md"), addManagedMetadata(skillContent));
+
+      await checkCommand({ cwd: tempDir });
+
+      expect(consoleLogSpy).toHaveBeenCalledWith(
+        expect.stringContaining("All managed files are unchanged"),
+      );
+      expect(mockExit).not.toHaveBeenCalled();
+    });
   });
 
   describe("rules checking", () => {
