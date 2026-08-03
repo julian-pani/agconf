@@ -196,6 +196,7 @@ on:
       - 'AGENTS.md'
       - '.claude/**'
       - '.codex/**'
+      - '.agents/**'
 
 jobs:
   check:

@@ -4,7 +4,7 @@ import type { HookInstallResult, PreCommitAction } from "../core/hooks.js";
 import type { ResolvedSource } from "../core/source.js";
 import { formatSourceString } from "../core/source.js";
 import type { SyncResult } from "../core/sync.js";
-import { getTargetConfig, type Target } from "../core/targets.js";
+import { getSkillsDir, getTargetConfig, type Target } from "../core/targets.js";
 import type { WorkflowSyncResult } from "../core/workflows.js";
 import { formatPath } from "../utils/logger.js";
 
@@ -151,10 +151,13 @@ export function renderSyncSummary(input: RenderSyncSummaryInput): RenderedSyncSu
   // Per-target results
   for (const targetResult of result.targets) {
     const config = getTargetConfig(targetResult.target);
+    // Skills live under a target-specific dir (.claude/skills for Claude,
+    // .agents/skills for Codex), which is NOT always `${config.dir}/skills`.
+    const skillsDir = getSkillsDir(targetResult.target);
 
     // Skills status for this target
-    const skillsPath = formatPath(path.join(targetDir, config.dir, "skills"));
-    const skillsRelPath = `${config.dir}/skills/`;
+    const skillsPath = formatPath(path.join(targetDir, skillsDir));
+    const skillsRelPath = `${skillsDir}/`;
 
     // Compute new vs actually modified skills
     const newSkills = result.skills.synced.filter((s) => !previousSkills.includes(s)).sort();
@@ -177,8 +180,8 @@ export function renderSyncSummary(input: RenderSyncSummaryInput): RenderedSyncSu
     );
 
     const formatSkillItem = (skill: string) => ({
-      display: `${formatPath(path.join(targetDir, config.dir, "skills", skill))}/`,
-      summary: `\`${config.dir}/skills/${skill}/\``,
+      display: `${formatPath(path.join(targetDir, skillsDir, skill))}/`,
+      summary: `\`${skillsDir}/${skill}/\``,
     });
 
     // Show new skills
@@ -189,8 +192,8 @@ export function renderSyncSummary(input: RenderSyncSummaryInput): RenderedSyncSu
 
     // Show removed skills
     for (const skill of removedSkills) {
-      const orphanPath = formatPath(path.join(targetDir, config.dir, "skills", skill));
-      const orphanRelPath = `${config.dir}/skills/${skill}/`;
+      const orphanPath = formatPath(path.join(targetDir, skillsDir, skill));
+      const orphanRelPath = `${skillsDir}/${skill}/`;
       consoleLines.push(`    ${pc.red("-")} ${orphanPath}/ ${pc.dim("(removed)")}`);
       summaryLines.push(`  - \`${orphanRelPath}\` (removed)`);
     }
@@ -198,8 +201,8 @@ export function renderSyncSummary(input: RenderSyncSummaryInput): RenderedSyncSu
     // Show skipped orphans
     if (orphanResult.skipped.length > 0) {
       for (const skill of orphanResult.skipped) {
-        const orphanPath = formatPath(path.join(targetDir, config.dir, "skills", skill));
-        const orphanRelPath = `${config.dir}/skills/${skill}/`;
+        const orphanPath = formatPath(path.join(targetDir, skillsDir, skill));
+        const orphanRelPath = `${skillsDir}/${skill}/`;
         consoleLines.push(
           `    ${pc.yellow("!")} ${orphanPath}/ ${pc.dim("(orphaned but skipped)")}`,
         );
@@ -301,12 +304,12 @@ export function renderSyncSummary(input: RenderSyncSummaryInput): RenderedSyncSu
       formatChangeList(updatedAgents, "~", pc.yellow, "updated", "updated", formatAgentItem);
     }
 
-    // Warning when agents were skipped due to Codex-only target
+    // Warning when agents were skipped for the Codex target
     if (result.agents?.skipped && targetResult.target === "codex") {
       consoleLines.push(
-        `  ${pc.yellow("!")} ${pc.dim("Agents skipped")} ${pc.yellow("(Codex does not support sub-agents)")}`,
+        `  ${pc.yellow("!")} ${pc.dim("Agents skipped")} ${pc.yellow("(agconf does not sync agents to Codex)")}`,
       );
-      summaryLines.push("- Agents skipped (Codex does not support sub-agents)");
+      summaryLines.push("- Agents skipped (agconf does not sync agents to Codex)");
     }
 
     // Removed / skipped orphaned rules and agents (Claude-managed files only).
@@ -334,6 +337,29 @@ export function renderSyncSummary(input: RenderSyncSummaryInput): RenderedSyncSu
       renderOrphans(ruleOrphanResult, "rules");
       renderOrphans(agentOrphanResult, "agents");
     }
+  }
+
+  // Legacy Codex skills relocated from `.codex/skills` to `.agents/skills`.
+  const migrated = result.migratedCodexSkills ?? { moved: [], skipped: [] };
+  if (migrated.moved.length > 0) {
+    consoleLines.push(
+      `  ${pc.yellow("~")} ${pc.dim(
+        `Migrated ${migrated.moved.length} Codex skill(s): .codex/skills → .agents/skills`,
+      )}`,
+    );
+    summaryLines.push(
+      `- Migrated ${migrated.moved.length} Codex skill(s) from \`.codex/skills/\` to \`.agents/skills/\``,
+    );
+    for (const skill of [...migrated.moved].sort()) {
+      const legacyPath = formatPath(path.join(targetDir, ".codex", "skills", skill));
+      consoleLines.push(`    ${pc.red("-")} ${legacyPath}/ ${pc.dim("(migrated)")}`);
+      summaryLines.push(`  - \`.codex/skills/${skill}/\` (migrated)`);
+    }
+  }
+  for (const skill of [...migrated.skipped].sort()) {
+    const legacyPath = formatPath(path.join(targetDir, ".codex", "skills", skill));
+    consoleLines.push(`    ${pc.yellow("!")} ${legacyPath}/ ${pc.dim("(legacy, left in place)")}`);
+    summaryLines.push(`  - \`.codex/skills/${skill}/\` (legacy, left in place)`);
   }
 
   // Workflow files status

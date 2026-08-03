@@ -285,6 +285,7 @@ on:
     paths:
       - '.claude/**'
       - '.codex/**'
+      - '.agents/**'
       - 'AGENTS.md'
   push:
     branches:
@@ -293,6 +294,7 @@ on:
     paths:
       - '.claude/**'
       - '.codex/**'
+      - '.agents/**'
       - 'AGENTS.md'
 
 concurrency:

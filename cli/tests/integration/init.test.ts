@@ -161,9 +161,10 @@ describe("init integration", () => {
       targets: ["claude", "codex"],
     });
 
-    // Check skills were copied to both targets
+    // Check skills were copied to both targets. Codex discovers project skills
+    // under `.agents/skills` (not `.codex/skills`).
     const claudeSkillPath = path.join(tempTargetDir, ".claude", "skills", "test-skill", "SKILL.md");
-    const codexSkillPath = path.join(tempTargetDir, ".codex", "skills", "test-skill", "SKILL.md");
+    const codexSkillPath = path.join(tempTargetDir, ".agents", "skills", "test-skill", "SKILL.md");
 
     const claudeSkillExists = await fs
       .access(claudeSkillPath)
@@ -194,6 +195,46 @@ describe("init integration", () => {
     expect(result.targets).toHaveLength(2);
     expect(result.targets.map((t) => t.target)).toContain("claude");
     expect(result.targets.map((t) => t.target)).toContain("codex");
+  });
+
+  it("migrates legacy .codex/skills to .agents/skills on sync", async () => {
+    const resolvedSource = await resolveLocalSource({ path: agentConfDir });
+
+    // First sync writes Codex skills to the current `.agents/skills` location.
+    await sync(tempTargetDir, resolvedSource, { override: false, targets: ["codex"] });
+    const newSkillDir = path.join(tempTargetDir, ".agents", "skills", "test-skill");
+    const legacySkillDir = path.join(tempTargetDir, ".codex", "skills", "test-skill");
+
+    // Simulate a repo synced by an older agconf: a managed, unmodified copy of
+    // the skill still living under the legacy `.codex/skills` path.
+    await fs.cp(newSkillDir, legacySkillDir, { recursive: true });
+
+    // Re-sync: the legacy copy should be migrated away, the new one kept.
+    const result = await sync(tempTargetDir, resolvedSource, {
+      override: false,
+      targets: ["codex"],
+    });
+
+    expect(result.migratedCodexSkills.moved).toContain("test-skill");
+    expect(result.migratedCodexSkills.skipped).toEqual([]);
+
+    const legacyExists = await fs
+      .access(legacySkillDir)
+      .then(() => true)
+      .catch(() => false);
+    expect(legacyExists).toBe(false);
+
+    // The emptied `.codex/skills` dir is pruned; the new skill remains.
+    const legacyRootExists = await fs
+      .access(path.join(tempTargetDir, ".codex", "skills"))
+      .then(() => true)
+      .catch(() => false);
+    expect(legacyRootExists).toBe(false);
+    const newExists = await fs
+      .access(path.join(newSkillDir, "SKILL.md"))
+      .then(() => true)
+      .catch(() => false);
+    expect(newExists).toBe(true);
   });
 
   it("should consolidate root CLAUDE.md into AGENTS.md and update root reference", async () => {

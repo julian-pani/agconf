@@ -242,9 +242,9 @@ downstream-repo/
             └── unit-tests.md
 ```
 
-**GitHub Copilot**: Rules are concatenated into AGENTS.md under a `# Project Rules` section between `<!-- agconf:rules:start/end -->` markers. Heading levels are automatically adjusted (h1 becomes h2, etc.) to nest properly. Source attribution comments (`<!-- Rule: path/to/rule.md -->`) are included for each rule.
+**Codex**: Rules are concatenated into AGENTS.md under a `# Project Rules` section between `<!-- agconf:rules:start/end -->` markers. Heading levels are automatically adjusted (h1 becomes h2, etc.) to nest properly. Source attribution comments (`<!-- Rule: path/to/rule.md -->`) are included for each rule.
 
-For Copilot, `paths` frontmatter is included as comments since Copilot doesn't support conditional loading:
+For Codex, `paths` frontmatter is included as comments since AGENTS.md doesn't support conditional loading:
 
 ```markdown
 <!-- agconf:rules:start -->
@@ -328,7 +328,7 @@ downstream-repo/
         └── doc-planner.md
 ```
 
-**GitHub Copilot**: Not supported. Copilot does not have sub-agents. When agents exist in the canonical repository but only Codex target is configured, a warning is displayed and agents are skipped.
+**Codex**: Not synced by agconf. When agents exist in the canonical repository but only the Codex target is configured, a warning is displayed and agents are skipped.
 
 ## Compiling Plugins (optional)
 

@@ -20,6 +20,7 @@ import {
   validateSkillFrontmatter,
 } from "./managed-content.js";
 import { parseAgentsMd, stripMetadataComments } from "./markers.js";
+import { getSkillsDir } from "./targets.js";
 
 const execAsync = promisify(exec);
 
@@ -220,7 +221,7 @@ async function detectSkillAssetChanges(
   const canonicalSkillDir = path.join(canonicalCloneDir, skillsDir, skillName);
 
   for (const target of targets) {
-    const downstreamSkillDir = path.join(targetDir, `.${target}`, "skills", skillName);
+    const downstreamSkillDir = path.join(targetDir, getSkillsDir(target), skillName);
     try {
       await fs.access(downstreamSkillDir);
     } catch {
@@ -274,7 +275,7 @@ async function diffSkillDir(
 
     // Use POSIX separators in canonical paths so the canonical commit is
     // platform-portable regardless of which OS the proposer is on.
-    const downstreamPath = path.join(`.${target}`, "skills", skillName, relPath);
+    const downstreamPath = path.join(getSkillsDir(target), skillName, relPath);
     const canonicalPath = `${skillsDir}/${skillName}/${relPath.split(path.sep).join("/")}`;
 
     changes.push({
@@ -579,7 +580,7 @@ async function buildNewCandidate(
 
   if (raw.type === "skill") {
     const canonicalPath = `${ctx.skillsDir}/${raw.name}`;
-    const skillDir = path.join(targetDir, `.${raw.target}`, "skills", raw.name);
+    const skillDir = path.join(targetDir, getSkillsDir(raw.target), raw.name);
     const canonicalSkillDir = path.join(canonicalCloneDir, ctx.skillsDir, raw.name);
     if (await pathExists(canonicalSkillDir)) {
       if (await skillMatchesCanonical(skillDir, canonicalSkillDir, metaOpts)) {
@@ -682,7 +683,8 @@ async function discoverRawNewCandidates(
   const raws: RawNewCandidate[] = [];
 
   for (const target of targets) {
-    const skillsDir = path.join(targetDir, `.${target}`, "skills");
+    const skillsRelDir = getSkillsDir(target);
+    const skillsDir = path.join(targetDir, skillsRelDir);
     for (const sf of await globFiles(skillsDir, "*/SKILL.md")) {
       const name = path.dirname(sf);
       const key = `skill:${name}`;
@@ -690,7 +692,7 @@ async function discoverRawNewCandidates(
       seen.add(key);
       const content = await fs.readFile(path.join(skillsDir, sf), "utf-8");
       if (isManaged(content, metaOpts)) continue;
-      raws.push({ type: "skill", name, downstreamPath: `.${target}/skills/${name}`, target });
+      raws.push({ type: "skill", name, downstreamPath: `${skillsRelDir}/${name}`, target });
     }
   }
 
@@ -740,7 +742,7 @@ async function buildNewSkillChanges(
   const changes: ProposedChange[] = [];
   for (const relPath of await globFiles(skillDir, "**/*")) {
     const posix = relPath.split(path.sep).join("/");
-    const downstreamPath = `.${target}/skills/${skillName}/${posix}`;
+    const downstreamPath = `${getSkillsDir(target)}/${skillName}/${posix}`;
     const canonicalPath = `${skillsDir}/${skillName}/${posix}`;
     if (posix === "SKILL.md") {
       const content = stripManagedMetadata(

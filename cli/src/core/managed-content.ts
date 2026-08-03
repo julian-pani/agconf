@@ -17,6 +17,7 @@ import {
   parseGlobalBlockMetadata,
   parseRulesSection,
 } from "./markers.js";
+import { getSkillsDir } from "./targets.js";
 
 // Default metadata prefix
 const DEFAULT_METADATA_PREFIX = "agconf";
@@ -454,7 +455,8 @@ export async function checkSkillFiles(
   const results: SkillFileCheckResult[] = [];
 
   for (const target of targets) {
-    const skillsDir = path.join(targetDir, `.${target}`, "skills");
+    const skillsRelDir = getSkillsDir(target);
+    const skillsDir = path.join(targetDir, skillsRelDir);
 
     // Check if skills directory exists
     try {
@@ -474,7 +476,7 @@ export async function checkSkillFiles(
       const fullPath = path.join(skillsDir, skillFile);
       const skillName = path.dirname(skillFile);
       const skillDir = path.join(skillsDir, skillName);
-      const relativePath = path.join(`.${target}`, "skills", skillFile);
+      const relativePath = path.join(skillsRelDir, skillFile);
 
       try {
         const content = await fs.readFile(fullPath, "utf-8");
@@ -902,11 +904,11 @@ export async function findOrphanedManagedFiles(
   }
   for (const name of expected.skills) {
     const existsInAnyTarget = await Promise.all(
-      targets.map((t) => pathExists(path.join(targetDir, `.${t}`, "skills", name, "SKILL.md"))),
+      targets.map((t) => pathExists(path.join(targetDir, getSkillsDir(t), name, "SKILL.md"))),
     );
     if (!existsInAnyTarget.some(Boolean)) {
       missing.push({
-        path: path.join(`.${fileBasedTarget}`, "skills", name, "SKILL.md"),
+        path: path.join(getSkillsDir(fileBasedTarget), name, "SKILL.md"),
         type: "skill",
         identity: name,
       });

@@ -63,11 +63,11 @@ agconf init --source your-org/engineering-standards
 
 ## CLAUDE.md Handling
 
-During sync, agconf consolidates any existing `CLAUDE.md` files into `AGENTS.md`, then creates/keeps a root `CLAUDE.md` containing an `@AGENTS.md` reference and removes any legacy `.claude/CLAUDE.md`. This ensures a single source of truth while maintaining compatibility with both Claude Code and GitHub Copilot.
+During sync, agconf consolidates any existing `CLAUDE.md` files into `AGENTS.md`, then creates/keeps a root `CLAUDE.md` containing an `@AGENTS.md` reference and removes any legacy `.claude/CLAUDE.md`. This ensures a single source of truth while maintaining compatibility with both Claude Code and Codex (both read `AGENTS.md`).
 
 ## Rules
 
-Rules are modular, topic-specific project instructions synced from your canonical repository. For Claude Code, they're placed in `.claude/rules/` as separate files. For GitHub Copilot, they're concatenated into AGENTS.md under a "Project Rules" section.
+Rules are modular, topic-specific project instructions synced from your canonical repository. For Claude Code, they're placed in `.claude/rules/` as separate files. For Codex, they're concatenated into AGENTS.md under a "Project Rules" section.
 
 Rules support subdirectory nesting and can include `paths` frontmatter for conditional loading (Claude only).
 
@@ -81,7 +81,7 @@ Agents are Claude Code sub-agents (markdown files with YAML frontmatter) synced 
 
 **Target-specific behavior:**
 - **Claude Code**: Agents are copied to `.claude/agents/` as flat files with metadata for change tracking
-- **GitHub Copilot**: Not supported (Copilot does not have sub-agents)
+- **Codex**: Not synced by agconf (agents are synced to Claude Code only)
 
 **Configuration**: Add `agents_dir: "agents"` to your canonical `agconf.yaml`
 

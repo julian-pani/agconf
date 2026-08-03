@@ -298,10 +298,11 @@ jobs:
       expect(content).toContain("push:");
     });
 
-    it("watches .claude and .codex directories", () => {
+    it("watches .claude, .codex, and .agents directories", () => {
       const content = generateCheckWorkflow("v1.0.0", DEFAULT_CONFIG);
       expect(content).toContain(".claude/**");
       expect(content).toContain(".codex/**");
+      expect(content).toContain(".agents/**");
       expect(content).toContain("AGENTS.md");
     });
 

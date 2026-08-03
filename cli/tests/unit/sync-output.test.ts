@@ -10,6 +10,7 @@ function baseResult(overrides: Partial<SyncResult> = {}): SyncResult {
     targets: [{ target: "claude", skills: { copied: 0 } }],
     skills: { synced: [], modified: [], totalCopied: 0, validationErrors: [] },
     adopted: [],
+    migratedCodexSkills: { moved: [], skipped: [] },
     ...overrides,
   };
 }
@@ -179,6 +180,6 @@ describe("renderSyncSummary", () => {
       }),
     });
     const { summaryLines } = renderSyncSummary(input);
-    expect(summaryLines).toContain("- Agents skipped (Codex does not support sub-agents)");
+    expect(summaryLines).toContain("- Agents skipped (agconf does not sync agents to Codex)");
   });
 });

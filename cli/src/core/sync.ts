@@ -17,6 +17,7 @@ import {
   computeAssetsHash,
   fileMatchesCanonical,
   hasManualChanges,
+  hasModifiedAssets,
   isManaged,
   type SkillValidationError,
   skillMatchesCanonical,
@@ -31,7 +32,7 @@ import {
   updateAgentsMdWithRules,
 } from "./rules.js";
 import type { ResolvedSource } from "./source.js";
-import { getTargetConfig, type Target, type TargetConfig } from "./targets.js";
+import { getSkillsDir, getTargetConfig, type Target, type TargetConfig } from "./targets.js";
 
 export interface SyncOptions {
   override: boolean;
@@ -385,6 +386,17 @@ export interface SyncResult {
    * common case.
    */
   adopted: string[];
+  /**
+   * Legacy Codex skill directories relocated from `.codex/skills/` to
+   * `.agents/skills/` during this sync (skill names). See
+   * {@link migrateLegacyCodexSkills}. Empty in the common case.
+   */
+  migratedCodexSkills: {
+    /** Skill names removed from the legacy `.codex/skills/` location. */
+    moved: string[];
+    /** Legacy skills left in place (unmanaged or locally modified). */
+    skipped: string[];
+  };
 }
 
 /** A local file that `sync` would overwrite but that differs from canonical and is not agconf-managed. */
@@ -442,14 +454,14 @@ async function detectUnmanagedCollisions(
     }
   };
 
-  // Skills — one managed dir per target (.claude/skills, .codex/skills).
+  // Skills — one managed dir per target (.claude/skills, .agents/skills for Codex).
   for (const target of targets) {
-    const targetDirName = getTargetConfig(target).dir;
+    const skillsDirName = getSkillsDir(target);
     for (const skillName of skillNames) {
-      const localSkillDir = path.join(targetDir, targetDirName, "skills", skillName);
+      const localSkillDir = path.join(targetDir, skillsDirName, skillName);
       const localSkillMd = path.join(localSkillDir, "SKILL.md");
       const canonicalSkillDir = path.join(resolvedSource.skillsPath, skillName);
-      const downstreamPath = `${targetDirName}/skills/${skillName}`;
+      const downstreamPath = `${skillsDirName}/${skillName}`;
 
       if (!(await exists(localSkillMd))) {
         // Abnormal: a skill dir without SKILL.md. We can't read its managed
@@ -607,6 +619,14 @@ export async function sync(
     });
   }
 
+  // Migrate any skills left in the legacy `.codex/skills/` location to the new
+  // `.agents/skills/` path. Only runs when Codex is a target and is a no-op once
+  // the legacy directory is gone.
+  let migratedCodexSkills: { moved: string[]; skipped: string[] } = { moved: [], skipped: [] };
+  if (options.targets.includes("codex")) {
+    migratedCodexSkills = await migrateLegacyCodexSkills(targetDir, { metadataPrefix });
+  }
+
   // Sync rules if canonical has rules configured
   let rulesResult: RulesSyncResult | null = null;
   if (resolvedSource.rulesPath) {
@@ -696,6 +716,7 @@ export async function sync(
       validationErrors,
     },
     adopted: collisions.adopted,
+    migratedCodexSkills,
   };
 
   if (rulesResult && rulesResult.rules.length > 0) {
@@ -740,7 +761,7 @@ async function syncSkillsToTarget(
   config: TargetConfig,
   metadataPrefix: string,
 ): Promise<SkillSyncResult> {
-  const targetSkillsPath = path.join(targetDir, config.dir, "skills");
+  const targetSkillsPath = path.join(targetDir, config.skillsDir);
   let copied = 0;
   const modifiedSkills: string[] = [];
 
@@ -886,18 +907,26 @@ export interface SyncStatus {
 export async function getSyncStatus(targetDir: string): Promise<SyncStatus> {
   const result = await readLockfile(targetDir);
   const agentsMdPath = path.join(targetDir, "AGENTS.md");
-  const skillsPath = path.join(targetDir, ".claude", "skills");
+  // Skills can live under either target's location (.claude/skills for Claude,
+  // .agents/skills for Codex), so treat the repo as "has skills" if either exists.
+  const skillsPaths = [
+    path.join(targetDir, ".claude", "skills"),
+    path.join(targetDir, ".agents", "skills"),
+  ];
 
-  const [agentsMdExists, skillsExist] = await Promise.all([
+  const [agentsMdExists, ...skillsExistFlags] = await Promise.all([
     fs
       .access(agentsMdPath)
       .then(() => true)
       .catch(() => false),
-    fs
-      .access(skillsPath)
-      .then(() => true)
-      .catch(() => false),
+    ...skillsPaths.map((p) =>
+      fs
+        .access(p)
+        .then(() => true)
+        .catch(() => false),
+    ),
   ]);
+  const skillsExist = skillsExistFlags.some(Boolean);
 
   return {
     hasSynced: result !== null,
@@ -949,7 +978,7 @@ export async function deleteOrphanedSkills(
     let wasDeleted = false;
 
     for (const target of targets) {
-      const skillDir = path.join(targetDir, `.${target}`, "skills", skillName);
+      const skillDir = path.join(targetDir, getSkillsDir(target), skillName);
 
       // Check if skill directory exists
       try {
@@ -1005,6 +1034,89 @@ export async function deleteOrphanedSkills(
   }
 
   return { deleted, skipped };
+}
+
+/**
+ * One-time migration: Codex skills used to be written to `.codex/skills/`, but
+ * current Codex only discovers project skills under `.agents/skills/` (see
+ * `TARGET_CONFIGS.codex.skillsDir`). After skills are synced to the new
+ * location, relocate any leftover managed skill dirs from the legacy
+ * `.codex/skills/` path so they are not silently stranded (Codex would never
+ * load them there).
+ *
+ * Mirrors {@link deleteOrphanedSkills} safety: only removes a legacy skill dir
+ * that is agconf-managed AND unmodified (neither the SKILL.md body nor its
+ * sibling assets changed). Unmanaged or locally-edited dirs are left in place
+ * and reported as skipped. The `.codex/skills` directory itself is pruned when
+ * it becomes empty; `.codex/` is never touched (Codex still uses it for agents).
+ */
+export async function migrateLegacyCodexSkills(
+  targetDir: string,
+  options: { metadataPrefix?: string } = {},
+): Promise<{ moved: string[]; skipped: string[] }> {
+  const moved: string[] = [];
+  const skipped: string[] = [];
+  const metadataOptions = options.metadataPrefix
+    ? { metadataPrefix: options.metadataPrefix }
+    : undefined;
+
+  const legacyDir = path.join(targetDir, ".codex", "skills");
+  let entries: string[];
+  try {
+    await fs.access(legacyDir);
+    entries = await fg("*/", { cwd: legacyDir, onlyDirectories: true, deep: 1 });
+  } catch {
+    // No legacy directory — nothing to migrate.
+    return { moved, skipped };
+  }
+
+  for (const entry of entries) {
+    const skillName = entry.replace(/\/$/, "");
+    const skillDir = path.join(legacyDir, skillName);
+    const skillMdPath = path.join(skillDir, "SKILL.md");
+
+    let content: string;
+    try {
+      content = await fs.readFile(skillMdPath, "utf-8");
+    } catch {
+      // No SKILL.md — not a managed skill dir we own; leave it untouched.
+      skipped.push(skillName);
+      continue;
+    }
+
+    if (!isManaged(content, metadataOptions)) {
+      skipped.push(skillName);
+      continue;
+    }
+
+    const bodyModified = hasManualChanges(content, metadataOptions);
+    const assetsModified = await hasModifiedAssets(
+      content,
+      skillDir,
+      ["SKILL.md"],
+      metadataOptions,
+    );
+    if (bodyModified || assetsModified) {
+      // Locally edited — don't delete; the user should reconcile it.
+      skipped.push(skillName);
+      continue;
+    }
+
+    await fs.rm(skillDir, { recursive: true, force: true });
+    moved.push(skillName);
+  }
+
+  // Prune the now-empty legacy skills dir, but never `.codex` itself.
+  try {
+    const remaining = await fs.readdir(legacyDir);
+    if (remaining.length === 0) {
+      await fs.rmdir(legacyDir);
+    }
+  } catch {
+    // Directory already gone or not empty — nothing to prune.
+  }
+
+  return { moved, skipped };
 }
 
 /**
