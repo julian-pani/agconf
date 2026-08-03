@@ -34,7 +34,7 @@ const COMMANDS = {
   },
   check: {
     description: "Check if managed files have been modified",
-    options: ["-q", "--quiet", "--debug"],
+    options: ["-q", "--quiet", "--debug", "--hook"],
   },
   compile: {
     description: "Compile installable plugins + marketplace from canonical content",

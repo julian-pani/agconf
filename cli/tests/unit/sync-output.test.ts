@@ -68,6 +68,47 @@ describe("renderSyncSummary", () => {
     );
   });
 
+  it("renders the .pre-commit-config.yaml registration for the pre-commit path", () => {
+    const { consoleLines, summaryLines } = renderSyncSummary(
+      baseInput({
+        hookResult: {
+          mode: "pre-commit",
+          installed: true,
+          path: "/repo/.pre-commit-config.yaml",
+          alreadyExisted: true,
+          wasUpdated: false,
+          wasAppended: true,
+          preCommit: { action: "registered", installNeeded: false },
+        },
+      }),
+    );
+    expect(summaryLines).toContain("- `.pre-commit-config.yaml` (agconf-check hook registered)");
+    // The standalone git-hook line must not appear on the pre-commit path.
+    expect(summaryLines.some((l) => l.includes(".git/hooks/pre-commit"))).toBe(false);
+    expect(
+      consoleLines.some((l) => l.includes(".pre-commit-config.yaml") && l.includes("registered")),
+    ).toBe(true);
+  });
+
+  it("uses '(updated)' and an install hint for a pre-commit update needing activation", () => {
+    const { consoleLines, summaryLines } = renderSyncSummary(
+      baseInput({
+        hookResult: {
+          mode: "pre-commit",
+          installed: true,
+          path: "/repo/.pre-commit-config.yaml",
+          alreadyExisted: true,
+          wasUpdated: true,
+          wasAppended: false,
+          preCommit: { action: "updated", installNeeded: true },
+        },
+      }),
+    );
+    expect(summaryLines).toContain("- `.pre-commit-config.yaml` (agconf-check hook updated)");
+    expect(summaryLines).toContain("  - Run `pre-commit install` to activate the hook");
+    expect(consoleLines.some((l) => l.includes("pre-commit install"))).toBe(true);
+  });
+
   it("reports AGENTS.md as created when not merged", () => {
     const input = baseInput({
       result: baseResult({

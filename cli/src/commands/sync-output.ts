@@ -1,6 +1,6 @@
 import * as path from "node:path";
 import pc from "picocolors";
-import type { HookInstallResult } from "../core/hooks.js";
+import type { HookInstallResult, PreCommitAction } from "../core/hooks.js";
 import type { ResolvedSource } from "../core/source.js";
 import { formatSourceString } from "../core/source.js";
 import type { SyncResult } from "../core/sync.js";
@@ -365,6 +365,29 @@ export function renderSyncSummary(input: RenderSyncSummaryInput): RenderedSyncSu
   if (hookResult === null) {
     consoleLines.push(`  ${pc.yellow("!")} ${hookPath} ${pc.dim("(skipped)")}`);
     summaryLines.push("- `.git/hooks/pre-commit` (skipped)");
+  } else if (hookResult.mode === "pre-commit") {
+    // Pre-commit framework path: agconf registered itself in the config file
+    // rather than writing `.git/hooks/pre-commit`.
+    const configPath = formatPath(path.join(targetDir, ".pre-commit-config.yaml"));
+    const action: PreCommitAction = hookResult.preCommit?.action ?? "unchanged";
+    const labels: Record<
+      PreCommitAction,
+      { icon: string; color: (s: string) => string; note: string }
+    > = {
+      created: { icon: "+", color: pc.green, note: "(created, agconf-check hook registered)" },
+      registered: { icon: "+", color: pc.green, note: "(agconf-check hook registered)" },
+      updated: { icon: "~", color: pc.yellow, note: "(agconf-check hook updated)" },
+      unchanged: { icon: "-", color: pc.dim, note: "(agconf-check hook unchanged)" },
+    };
+    const { icon, color, note } = labels[action];
+    consoleLines.push(`  ${color(icon)} ${configPath} ${pc.dim(note)}`);
+    summaryLines.push(`- \`.pre-commit-config.yaml\` ${note}`);
+    if (hookResult.preCommit?.installNeeded) {
+      consoleLines.push(
+        `    ${pc.yellow("!")} ${pc.dim("Run 'pre-commit install' to activate the hook")}`,
+      );
+      summaryLines.push("  - Run `pre-commit install` to activate the hook");
+    }
   } else if (hookResult.installed) {
     if (hookResult.wasAppended && hookResult.wasUpdated) {
       consoleLines.push(`  ${pc.yellow("~")} ${hookPath} ${pc.dim("(updated in existing hook)")}`);
