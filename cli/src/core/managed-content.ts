@@ -347,6 +347,69 @@ export function isManaged(content: string, options: MetadataOptions = {}): boole
   return getManagedMetadata(content, metadataPrefix).managed === "true";
 }
 
+// =============================================================================
+// Codex agent (TOML) managed-metadata
+// =============================================================================
+//
+// Codex subagents are TOML files, not markdown+frontmatter, so they can't reuse
+// the frontmatter-based helpers above. Instead, managed metadata is written as a
+// leading block of `# <prefix>_key: value` TOML comments (ignored by any TOML
+// parser). The content hash still uses the shared `computeContentHash` — for a
+// frontmatter-free string it just hashes the bytes — so the "reuse existing
+// hash functions" rule holds and no TOML parser is ever needed.
+
+/**
+ * Strip the leading agconf managed-metadata comment block from a Codex agent
+ * TOML file, returning the pure agent body. Only the leading run of
+ * `# <prefix>_key: value` lines is removed; parsing stops at the first
+ * non-metadata line, so the agent body is preserved verbatim.
+ */
+export function stripCodexAgentMetadata(content: string, options: MetadataOptions = {}): string {
+  const { metadataPrefix = DEFAULT_METADATA_PREFIX } = options;
+  const keyPrefix = `${toMetadataPrefix(metadataPrefix)}_`;
+  const metaLine = new RegExp(`^#\\s*${keyPrefix}\\w+\\s*:`);
+  const lines = content.split("\n");
+  let i = 0;
+  while (i < lines.length && metaLine.test(lines[i] ?? "")) i++;
+  return lines.slice(i).join("\n");
+}
+
+/**
+ * Read agconf managed metadata from a Codex agent TOML file's leading comments.
+ */
+export function readCodexAgentMetadata(
+  content: string,
+  options: MetadataOptions = {},
+): { managed: boolean; contentHash?: string } {
+  const { metadataPrefix = DEFAULT_METADATA_PREFIX } = options;
+  const keys = getMetadataKeys(metadataPrefix);
+  const managed =
+    new RegExp(`^#\\s*${keys.managed}\\s*:\\s*(\\S+)`, "m").exec(content)?.[1] === "true";
+  const contentHash = new RegExp(`^#\\s*${keys.contentHash}\\s*:\\s*(\\S+)`, "m").exec(
+    content,
+  )?.[1];
+  return contentHash !== undefined ? { managed, contentHash } : { managed };
+}
+
+/** Whether a Codex agent TOML file carries agconf managed metadata. */
+export function codexAgentIsManaged(content: string, options: MetadataOptions = {}): boolean {
+  return readCodexAgentMetadata(content, options).managed;
+}
+
+/**
+ * Whether a managed Codex agent TOML file has been manually edited since sync,
+ * detected by re-hashing its metadata-free body and comparing to the stored
+ * `content_hash`. Returns false when the file is unmanaged or has no stored hash.
+ */
+export function codexAgentHasManualChanges(
+  content: string,
+  options: MetadataOptions = {},
+): boolean {
+  const { managed, contentHash } = readCodexAgentMetadata(content, options);
+  if (!managed || !contentHash) return false;
+  return computeContentHash(stripCodexAgentMetadata(content, options)) !== contentHash;
+}
+
 /**
  * True when a downstream skill directory is byte-identical to its canonical
  * counterpart: SKILL.md compared with managed metadata stripped from both
@@ -566,12 +629,12 @@ export interface ManagedFileCheckResult {
   /** Relative path to the file */
   path: string;
   /** Type of file */
-  type: "skill" | "agents" | "rule" | "rules-section" | "agent";
+  type: "skill" | "agents" | "rule" | "rules-section" | "agent" | "codex-agent";
   /** Skill name if type is skill */
   skillName?: string;
   /** Rule source path if type is rule (e.g., "security/auth.md") */
   rulePath?: string;
-  /** Agent path if type is agent (e.g., "code-reviewer.md") */
+  /** Agent path if type is agent (Claude "code-reviewer.md" or Codex "code-reviewer.toml") */
   agentPath?: string;
   /** Whether the file is managed by agconf */
   isManaged: boolean;
@@ -607,7 +670,7 @@ interface RuleFileCheckResult {
 interface AgentFileCheckResult {
   /** Relative path to the agent file (from target dir) */
   path: string;
-  /** Agent file name (e.g., "code-reviewer.md") */
+  /** Agent file name (e.g., "code-reviewer.md" for Claude, "code-reviewer.toml" for Codex) */
   agentPath: string;
   /** Whether the file is managed by agconf */
   isManaged: boolean;
@@ -650,6 +713,50 @@ export async function checkAgentFiles(
       const content = await fs.readFile(fullPath, "utf-8");
       const fileIsManaged = isManaged(content, options);
       const hasChanges = fileIsManaged && hasManualChanges(content, options);
+
+      results.push({
+        path: relativePath,
+        agentPath: agentFile,
+        isManaged: fileIsManaged,
+        hasChanges,
+      });
+    } catch (_error) {
+      // Expected: file read may fail, skip this agent file
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Check all synced Codex agent TOML files (`.codex/agents/*.toml`) for manual
+ * modifications. Mirrors {@link checkAgentFiles} but uses the TOML
+ * comment-based managed metadata instead of markdown frontmatter.
+ */
+export async function checkCodexAgentFiles(
+  targetDir: string,
+  options: MetadataOptions = {},
+): Promise<AgentFileCheckResult[]> {
+  const results: AgentFileCheckResult[] = [];
+  const agentsDir = path.join(targetDir, ".codex", "agents");
+
+  try {
+    await fs.access(agentsDir);
+  } catch {
+    // Expected: Codex agents directory may not exist
+    return results;
+  }
+
+  const agentFiles = await fg("*.toml", { cwd: agentsDir, absolute: false });
+
+  for (const agentFile of agentFiles) {
+    const fullPath = path.join(agentsDir, agentFile);
+    const relativePath = path.join(".codex", "agents", agentFile);
+
+    try {
+      const content = await fs.readFile(fullPath, "utf-8");
+      const fileIsManaged = codexAgentIsManaged(content, options);
+      const hasChanges = fileIsManaged && codexAgentHasManualChanges(content, options);
 
       results.push({
         path: relativePath,
@@ -772,7 +879,7 @@ export async function checkAllManagedFiles(
     }
   }
 
-  // Check agent files (for Claude target only)
+  // Check agent files (Claude: .claude/agents/*.md)
   if (targets.includes("claude")) {
     const agentFiles = await checkAgentFiles(targetDir, metadataOptions);
     for (const agent of agentFiles) {
@@ -780,6 +887,22 @@ export async function checkAllManagedFiles(
         results.push({
           path: agent.path,
           type: "agent",
+          agentPath: agent.agentPath,
+          isManaged: agent.isManaged,
+          hasChanges: agent.hasChanges,
+        });
+      }
+    }
+  }
+
+  // Check Codex agent files (.codex/agents/*.toml)
+  if (targets.includes("codex")) {
+    const codexAgentFiles = await checkCodexAgentFiles(targetDir, metadataOptions);
+    for (const agent of codexAgentFiles) {
+      if (agent.isManaged) {
+        results.push({
+          path: agent.path,
+          type: "codex-agent",
           agentPath: agent.agentPath,
           isManaged: agent.isManaged,
           hasChanges: agent.hasChanges,
@@ -840,8 +963,8 @@ export interface OrphanedManagedFile {
   /** Relative path used for display (e.g. ".claude/rules/security/auth.md"). */
   path: string;
   /** Content type. */
-  type: "skill" | "rule" | "agent";
-  /** Lockfile identity: skill name, or rule/agent relative path. */
+  type: "skill" | "rule" | "agent" | "codex-agent";
+  /** Lockfile identity: skill name, or rule/agent relative path (always the canonical `.md` for agents). */
   identity: string;
 }
 
@@ -865,9 +988,10 @@ export interface ExpectedManagedContent {
  *   disk. These were deleted manually after the last sync.
  *
  * Only managed files participate, so user-authored files dropped into
- * `.claude/rules/` etc. are never flagged. Rule and agent reconciliation is
- * gated on file-based targets (Claude); Codex stores rules inside AGENTS.md and
- * has no per-file agents, so those types are skipped when Claude is absent.
+ * `.claude/rules/` etc. are never flagged. Rule reconciliation is gated on the
+ * Claude target (Codex stores rules inside AGENTS.md, not as files). Agents are
+ * reconciled per target: Claude as `.claude/agents/*.md`, Codex as
+ * `.codex/agents/*.toml` (same canonical `.md` identity in the lockfile).
  */
 export async function findOrphanedManagedFiles(
   targetDir: string,
@@ -934,7 +1058,7 @@ export async function findOrphanedManagedFiles(
     }
   }
 
-  // --- Agents (Claude only) ---
+  // --- Agents (Claude: .claude/agents/*.md) ---
   if (targets.includes("claude")) {
     const agentFiles = (await checkAgentFiles(targetDir, options)).filter((a) => a.isManaged);
     for (const agent of agentFiles) {
@@ -947,6 +1071,30 @@ export async function findOrphanedManagedFiles(
         missing.push({
           path: path.join(".claude", "agents", agentPath),
           type: "agent",
+          identity: agentPath,
+        });
+      }
+    }
+  }
+
+  // --- Agents (Codex: .codex/agents/*.toml) ---
+  // The lockfile tracks the canonical `.md` identity; on disk it is a `.toml`.
+  if (targets.includes("codex")) {
+    const codexAgentFiles = (await checkCodexAgentFiles(targetDir, options)).filter(
+      (a) => a.isManaged,
+    );
+    for (const agent of codexAgentFiles) {
+      const identity = agent.agentPath.replace(/\.toml$/, ".md");
+      if (!expected.agents.includes(identity)) {
+        ghosts.push({ path: agent.path, type: "codex-agent", identity });
+      }
+    }
+    for (const agentPath of expected.agents) {
+      const tomlName = agentPath.replace(/\.md$/, ".toml");
+      if (!(await pathExists(path.join(targetDir, ".codex", "agents", tomlName)))) {
+        missing.push({
+          path: path.join(".codex", "agents", tomlName),
+          type: "codex-agent",
           identity: agentPath,
         });
       }

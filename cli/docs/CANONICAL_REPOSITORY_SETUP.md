@@ -259,7 +259,7 @@ For Codex, `paths` frontmatter is included as comments since AGENTS.md doesn't s
 
 ## Agents
 
-Agents are Claude Code sub-agents that define specialized AI assistants for specific tasks. Each agent is a markdown file with YAML frontmatter.
+Agents are sub-agents that define specialized AI assistants for specific tasks. Each agent is a markdown file with YAML frontmatter. They sync to both Claude Code and Codex.
 
 ### Configuration
 
@@ -271,7 +271,8 @@ content:
   skills_dir: skills
   agents_dir: agents  # Path to agents directory
 targets:
-  - claude  # Agents only work with Claude Code
+  - claude
+  - codex
 ```
 
 ### Directory Structure
@@ -328,7 +329,16 @@ downstream-repo/
         └── doc-planner.md
 ```
 
-**Codex**: Not synced by agconf. When agents exist in the canonical repository but only the Codex target is configured, a warning is displayed and agents are skipped.
+**Codex**: Each agent is emitted as a Codex subagent at `.codex/agents/<name>.toml`, mapping the frontmatter `name`/`description` and the markdown body to `name`/`description`/`developer_instructions`. Managed metadata (`agconf_managed`, `agconf_content_hash`) is embedded as leading TOML comments for change tracking. Claude-specific `model`/`tools` fields are intentionally not carried over (their identifiers differ from Codex's); add Codex-specific options such as `model` or `sandbox_mode` manually if needed.
+
+```
+downstream-repo/
+└── .codex/
+    └── agents/
+        ├── code-reviewer.toml
+        ├── test-writer.toml
+        └── doc-planner.toml
+```
 
 ## Compiling Plugins (optional)
 

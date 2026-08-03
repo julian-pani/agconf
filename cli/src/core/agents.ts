@@ -3,7 +3,7 @@ import * as path from "node:path";
 import fg from "fast-glob";
 import { toMarkerPrefix } from "../utils/prefix.js";
 import { parseFrontmatter as parseFrontmatterShared, serializeFrontmatter } from "./frontmatter.js";
-import { computeContentHash } from "./managed-content.js";
+import { computeContentHash, getMetadataKeys } from "./managed-content.js";
 
 // =============================================================================
 // Interfaces
@@ -254,4 +254,73 @@ export function addAgentMetadata(agent: Agent, metadataPrefix: string): string {
   // Serialize
   const yamlContent = serializeFrontmatter(newFrontmatter);
   return `---\n${yamlContent}\n---\n${agent.body}`;
+}
+
+// =============================================================================
+// Codex agent (TOML) emitter
+// =============================================================================
+
+/**
+ * Serialize a string as a TOML single-line basic string (quoted + escaped).
+ * Used for scalar agent fields like `name` and `description`.
+ */
+function tomlBasicString(value: string): string {
+  const escaped = value
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n")
+    .replace(/\t/g, "\\t");
+  return `"${escaped}"`;
+}
+
+/**
+ * Serialize a (possibly multi-line) string as a TOML multi-line basic string.
+ * A leading newline is emitted after the opening delimiter (the TOML spec trims
+ * it) purely for readability. Backslashes are escaped and any literal `"""`
+ * sequence is broken up so the body can neither terminate the string early nor
+ * introduce a line-continuation escape.
+ */
+function tomlMultilineString(value: string): string {
+  const escaped = value.replace(/\\/g, "\\\\").replace(/"""/g, '\\"\\"\\"');
+  return `"""\n${escaped}\n"""`;
+}
+
+/**
+ * Project a canonical agent into a Codex subagent TOML body.
+ *
+ * Codex subagents live at `.codex/agents/<name>.toml` and are defined by
+ * `name`, `description`, and `developer_instructions`. We map the canonical
+ * frontmatter `name`/`description` and use the markdown body as the developer
+ * instructions. We deliberately do NOT carry over `model`/`tools`: Claude model
+ * identifiers and tool names do not match Codex's, so passing them through
+ * would produce invalid Codex config. Optional Codex fields (`model`,
+ * `sandbox_mode`, `mcp_servers`, …) are left for the user to add.
+ */
+export function emitCodexAgentToml(agent: Agent): string {
+  const fm = agent.frontmatter ?? ({} as AgentFrontmatter);
+  const name = typeof fm.name === "string" ? fm.name : "";
+  const description = typeof fm.description === "string" ? fm.description : "";
+  const instructions = agent.body.trim();
+
+  return (
+    `name = ${tomlBasicString(name)}\n` +
+    `description = ${tomlBasicString(description)}\n` +
+    `developer_instructions = ${tomlMultilineString(instructions)}\n`
+  );
+}
+
+/**
+ * Build the full `.codex/agents/<name>.toml` file content for an agent,
+ * including agconf managed metadata as leading TOML comments. Comments are
+ * ignored by TOML parsers, so Codex still reads a valid agent definition, while
+ * `check` can verify integrity: the stored `content_hash` is computed (via the
+ * shared {@link computeContentHash}) over the metadata-free body, and
+ * {@link stripCodexAgentMetadata} recovers exactly that body downstream.
+ */
+export function buildCodexAgentToml(agent: Agent, metadataPrefix: string): string {
+  const body = emitCodexAgentToml(agent);
+  const contentHash = computeContentHash(body);
+  const keys = getMetadataKeys(metadataPrefix);
+  return `# ${keys.managed}: true\n# ${keys.contentHash}: ${contentHash}\n${body}`;
 }

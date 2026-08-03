@@ -484,6 +484,56 @@ describe("e2e workflow: full sync + check lifecycle", () => {
       const checkResult = await runCheck(targetDir);
       expect(checkResult.exitCode).toBe(1);
     });
+
+    const CODEX_AGENT = `---\nname: code-reviewer\ndescription: Reviews code quality\n---\n\n# Code Reviewer\n\nThis agent reviews code.\n`;
+
+    it("should sync agents to .codex/agents as TOML and pass check", async () => {
+      await setupCanonicalRepo(canonicalDir, {
+        globalContent: "# Codex Standards",
+        agents: { "code-reviewer.md": CODEX_AGENT },
+        targets: ["codex"],
+      });
+
+      const initResult = await runInit(targetDir, canonicalDir, { targets: ["codex"] });
+      expect(initResult.exitCode).toBeNull();
+
+      // Emitted as .codex/agents/<name>.toml with the mapped fields + managed metadata.
+      const toml = await fs.readFile(
+        path.join(targetDir, ".codex", "agents", "code-reviewer.toml"),
+        "utf-8",
+      );
+      expect(toml).toContain("# agconf_managed: true");
+      expect(toml).toContain('name = "code-reviewer"');
+      expect(toml).toContain('description = "Reviews code quality"');
+      expect(toml).toContain("developer_instructions =");
+      expect(toml).toContain("# Code Reviewer");
+
+      // No Claude copy for a codex-only sync.
+      const claudeExists = await fs
+        .access(path.join(targetDir, ".claude", "agents", "code-reviewer.md"))
+        .then(() => true)
+        .catch(() => false);
+      expect(claudeExists).toBe(false);
+
+      // Check passes right after sync.
+      const checkResult = await runCheck(targetDir);
+      expect(checkResult.exitCode).toBeNull();
+    });
+
+    it("should detect a tampered Codex agent TOML", async () => {
+      await setupCanonicalRepo(canonicalDir, {
+        agents: { "code-reviewer.md": CODEX_AGENT },
+        targets: ["codex"],
+      });
+      await runInit(targetDir, canonicalDir, { targets: ["codex"] });
+
+      const tomlPath = path.join(targetDir, ".codex", "agents", "code-reviewer.toml");
+      const toml = await fs.readFile(tomlPath, "utf-8");
+      await fs.writeFile(tomlPath, toml.replace("This agent reviews code.", "TAMPERED."), "utf-8");
+
+      const checkResult = await runCheck(targetDir);
+      expect(checkResult.exitCode).toBe(1);
+    });
   });
 
   // ── Test 3: Repo-specific content preservation ─────────────────────────

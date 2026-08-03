@@ -165,21 +165,24 @@ describe("renderSyncSummary", () => {
     expect(expanded.summaryLines.some((l) => l.includes("more new"))).toBe(false);
   });
 
-  it("notes that agents are skipped for a Codex-only target", () => {
+  it("renders Codex agents under .codex/agents as .toml files", () => {
     const input = baseInput({
       targets: ["codex"],
+      previousAgents: [],
       result: baseResult({
         targets: [{ target: "codex", skills: { copied: 0 } }],
         agents: {
-          synced: [],
-          modified: [],
-          contentHash: "",
+          synced: ["code-reviewer.md"],
+          modified: ["code-reviewer.md"],
+          contentHash: "sha256:abcabcabcabc",
           validationErrors: [],
-          skipped: true,
         },
       }),
     });
     const { summaryLines } = renderSyncSummary(input);
-    expect(summaryLines).toContain("- Agents skipped (agconf does not sync agents to Codex)");
+    expect(summaryLines).toContain("- `.codex/agents/` (total: 1 agents) (updated)");
+    // Identity is the canonical `.md`, but the on-disk Codex file is `.toml`.
+    expect(summaryLines.some((l) => l.includes(".codex/agents/code-reviewer.toml"))).toBe(true);
+    expect(summaryLines.some((l) => l.includes("code-reviewer.md"))).toBe(false);
   });
 });

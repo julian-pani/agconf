@@ -110,20 +110,21 @@ Rules are modular, topic-specific instruction files (e.g., `security/api-auth.md
 
 ### Agents Sync
 
-Agents are Claude Code sub-agents (markdown files with YAML frontmatter) synced from a canonical repository. The `agents.ts` module handles discovery, parsing, and metadata.
+Agents are sub-agents (markdown files with YAML frontmatter) synced from a canonical repository. The `agents.ts` module handles discovery, parsing, metadata, and the Codex TOML projection.
 
 **Key functions in `cli/src/core/agents.ts`:**
 - `parseAgent(content, relativePath)` - Parses frontmatter and body
 - `validateAgentFrontmatter(content, path)` - Validates required fields (name, description)
-- `addAgentMetadata(agent, prefix)` - Adds `{prefix}_managed` and `{prefix}_content_hash` metadata
+- `addAgentMetadata(agent, prefix)` - Adds `{prefix}_managed` and `{prefix}_content_hash` metadata (Claude `.md`)
+- `emitCodexAgentToml(agent)` / `buildCodexAgentToml(agent, prefix)` - Project an agent to a Codex subagent TOML (`name`/`description`/`developer_instructions`), embedding managed metadata as leading TOML comments (`model`/`tools` are intentionally NOT mapped — Claude identifiers differ from Codex)
 
 **Target-specific behavior:**
-- **Claude**: Copies agent files to `.claude/agents/` as flat files. Adds metadata frontmatter for change tracking.
-- **Codex**: **Not supported.** Codex does not have sub-agents. When agents exist in canonical but only Codex target is configured, a warning is displayed and agents are skipped.
+- **Claude**: Copies agent files to `.claude/agents/*.md` as flat files. Adds metadata frontmatter for change tracking.
+- **Codex**: Emits one `.codex/agents/<name>.toml` per agent (a Codex subagent, personal `~/.codex/agents/` or project `.codex/agents/`, enabled by default). Managed metadata rides in leading TOML comments; integrity helpers (`stripCodexAgentMetadata`, `codexAgentIsManaged`, `codexAgentHasManualChanges`) live in `managed-content.ts` and reuse `computeContentHash`.
 
 **Configuration:**
 - `agents_dir` in canonical `agconf.yaml` (optional) - path to agents directory
-- Agents tracked in lockfile under `content.agents` with file list and content hash
+- Agents tracked in lockfile under `content.agents` with file list (canonical `.md` identities, shared across targets) and content hash. Orphan cleanup (`deleteOrphanedAgents`) and `check` reconcile both `.claude/agents/*.md` and `.codex/agents/*.toml` from that identity list.
 
 ### Plugin Compilation
 
@@ -212,13 +213,14 @@ Each synced content type needs:
 **Current content types verified by check:**
 - AGENTS.md global block (`<!-- agconf:global:start/end -->`)
 - AGENTS.md rules section for Codex (`<!-- agconf:rules:start/end -->`)
-- Individual skill files (`.claude/skills/*/SKILL.md`) via frontmatter metadata
+- Individual skill files (`.claude/skills/*/SKILL.md` for Claude, `.agents/skills/*/SKILL.md` for Codex) via frontmatter metadata
 - Individual rule files for Claude (`.claude/rules/**/*.md`) via frontmatter metadata
 - Individual agent files for Claude (`.claude/agents/*.md`) via frontmatter metadata
+- Individual Codex subagent files (`.codex/agents/*.toml`) via leading TOML-comment metadata (type `codex-agent`)
 
 Beyond per-file hash verification, `check` also reconciles the managed files on disk against the lockfile's expected set via `findOrphanedManagedFiles` (in `managed-content.ts`) and fails (exit 1) on either:
 - **Ghosts**: a *managed* skill/rule/agent left on disk that the lockfile no longer lists (e.g. deleted from canonical but never cleaned up). Unmanaged user files are never flagged.
-- **Missing**: a lockfile-tracked skill/rule/agent with no file on disk (deleted manually after sync). Missing detection is presence-based (independent of managed metadata) and gated on file-based targets (Claude) for rules/agents.
+- **Missing**: a lockfile-tracked skill/rule/agent with no file on disk (deleted manually after sync). Missing detection is presence-based (independent of managed metadata) and gated per target: rules on Claude, agents as `.claude/agents/*.md` (Claude) and `.codex/agents/*.toml` (Codex).
 
 **`check` is context-aware.** The above is the *downstream* path (lockfile present). In a *canonical* repo (an `agconf.yaml` with a `plugins` block), `check` instead — or additionally — runs `verifyPluginsFresh` (in `plugins.ts`) and fails (exit 1) if the committed plugin/marketplace artifacts have drifted from the canonical source. When modifying plugin compilation you MUST keep this canonical-side check (and `compile --check`, which shares `verifyPluginsFresh`) correct and tested in `check.test.ts` / `compile-command.test.ts`.
 
@@ -226,7 +228,7 @@ Beyond per-file hash verification, `check` also reconciles the managed files on 
 **Critical:** All content hashes MUST use the same format: `sha256:` prefix + 12 hex characters.
 
 **Reuse existing hash functions - DO NOT create new ones:**
-- `computeContentHash()` from `cli/src/core/managed-content.ts` - for skill/rule file frontmatter
+- `computeContentHash()` from `cli/src/core/managed-content.ts` - for skill/rule/agent file frontmatter, and for the metadata-free body of a Codex agent TOML (`.codex/agents/*.toml`)
 - `computeGlobalBlockHash()` from `cli/src/core/markers.ts` - for AGENTS.md global block
 - `computeRulesSectionHash()` from `cli/src/core/markers.ts` - for AGENTS.md rules section
 

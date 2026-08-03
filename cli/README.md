@@ -77,11 +77,11 @@ For detailed information on rules setup, directory structure, and target-specifi
 
 ## Agents
 
-Agents are Claude Code sub-agents (markdown files with YAML frontmatter) synced from your canonical repository. They define specialized AI assistants that can be invoked for specific tasks.
+Agents are sub-agents (markdown files with YAML frontmatter) synced from your canonical repository. They define specialized AI assistants that can be invoked for specific tasks.
 
 **Target-specific behavior:**
-- **Claude Code**: Agents are copied to `.claude/agents/` as flat files with metadata for change tracking
-- **Codex**: Not synced by agconf (agents are synced to Claude Code only)
+- **Claude Code**: Agents are copied to `.claude/agents/*.md` as flat files with metadata for change tracking
+- **Codex**: Agents are emitted as Codex subagents at `.codex/agents/*.toml` (`name`/`description`/`developer_instructions`), with managed metadata in leading TOML comments
 
 **Configuration**: Add `agents_dir: "agents"` to your canonical `agconf.yaml`
 

@@ -8,12 +8,15 @@ import {
   type Agent,
   type AgentValidationError,
   addAgentMetadata,
+  buildCodexAgentToml,
   discoverAgents,
   validateAgentFrontmatter,
 } from "./agents.js";
 import { readLockfile, writeLockfile } from "./lockfile.js";
 import {
   addManagedMetadata,
+  codexAgentHasManualChanges,
+  codexAgentIsManaged,
   computeAssetsHash,
   fileMatchesCanonical,
   hasManualChanges,
@@ -69,6 +72,7 @@ export interface RulesSyncResult {
 export interface AgentsSyncOptions {
   sourceAgentsPath: string;
   targetDir: string;
+  targets: Target[];
   metadataPrefix: string;
 }
 
@@ -203,12 +207,24 @@ function computeAgentsHash(agents: Agent[]): string {
   return `sha256:${hash.slice(0, 12)}`;
 }
 
+/** Map a canonical agent identity (`code-reviewer.md`) to its Codex TOML name. */
+function codexAgentFileName(relativePath: string): string {
+  return relativePath.replace(/\.md$/, ".toml");
+}
+
 /**
- * Sync agents from a canonical source to target directory.
- * Only Claude target supports agents (Codex does not have sub-agents).
+ * Sync agents from a canonical source to the configured targets.
+ *
+ * - **Claude**: `.claude/agents/<name>.md` with managed frontmatter metadata.
+ * - **Codex**: `.codex/agents/<name>.toml` (a Codex subagent) with managed
+ *   metadata embedded as leading TOML comments.
+ *
+ * `syncedFiles` are canonical identities (e.g. `code-reviewer.md`), shared
+ * across targets; `modifiedFiles` is the set of identities whose on-disk copy
+ * changed in any target.
  */
 export async function syncAgents(options: AgentsSyncOptions): Promise<AgentsSyncResult> {
-  const { sourceAgentsPath, targetDir, metadataPrefix } = options;
+  const { sourceAgentsPath, targetDir, targets, metadataPrefix } = options;
 
   // Discover all agents
   const agents = await discoverAgents(sourceAgentsPath);
@@ -234,37 +250,49 @@ export async function syncAgents(options: AgentsSyncOptions): Promise<AgentsSync
     }
   }
 
-  // Compute content hash for lockfile
+  // Compute content hash for lockfile (target-agnostic: canonical bodies)
   result.contentHash = computeAgentsHash(agents);
 
-  // Sync to Claude target (agents directory is .claude/agents/)
-  const claudeAgentsDir = path.join(targetDir, ".claude", "agents");
-
-  for (const agent of agents) {
-    const targetPath = path.join(claudeAgentsDir, agent.relativePath);
-
-    // Ensure directory exists
+  // Write a single agent file, skipping the write when the bytes are unchanged.
+  const modified = new Set<string>();
+  const writeAgentFile = async (targetPath: string, content: string, identity: string) => {
     await fs.mkdir(path.dirname(targetPath), { recursive: true });
-
-    // Add metadata and write file
-    const contentWithMetadata = addAgentMetadata(agent, metadataPrefix);
-
-    // Check if file exists and has same content
-    let existingContent: string | null = null;
+    let existing: string | null = null;
     try {
-      existingContent = await fs.readFile(targetPath, "utf-8");
+      existing = await fs.readFile(targetPath, "utf-8");
     } catch {
       // File doesn't exist
     }
-
-    if (existingContent !== contentWithMetadata) {
-      await fs.writeFile(targetPath, contentWithMetadata, "utf-8");
-      result.modifiedFiles.push(agent.relativePath);
+    if (existing !== content) {
+      await fs.writeFile(targetPath, content, "utf-8");
+      modified.add(identity);
     }
+  };
 
-    result.syncedFiles.push(agent.relativePath);
+  if (targets.includes("claude")) {
+    const claudeAgentsDir = path.join(targetDir, ".claude", "agents");
+    for (const agent of agents) {
+      await writeAgentFile(
+        path.join(claudeAgentsDir, agent.relativePath),
+        addAgentMetadata(agent, metadataPrefix),
+        agent.relativePath,
+      );
+    }
   }
 
+  if (targets.includes("codex")) {
+    const codexAgentsDir = path.join(targetDir, ".codex", "agents");
+    for (const agent of agents) {
+      await writeAgentFile(
+        path.join(codexAgentsDir, codexAgentFileName(agent.relativePath)),
+        buildCodexAgentToml(agent, metadataPrefix),
+        agent.relativePath,
+      );
+    }
+  }
+
+  result.syncedFiles = agents.map((a) => a.relativePath);
+  result.modifiedFiles = [...modified];
   return result;
 }
 
@@ -276,12 +304,18 @@ export function findOrphanedAgents(previousAgents: string[], currentAgents: stri
 }
 
 /**
- * Delete orphaned agent files from the Claude agents directory.
- * Only deletes agents that are managed (have managed metadata).
+ * Delete orphaned agent files across targets. Agents are stored per target as
+ * `.claude/agents/<name>.md` (Claude) and `.codex/agents/<name>.toml` (Codex);
+ * the lockfile tracks the canonical `.md` identity for both.
+ *
+ * Mirrors {@link deleteOrphanedSkills}: only deletes an agent that is managed
+ * AND either was in the previous lockfile or is unmodified, so manually-authored
+ * or locally-edited agent files are preserved.
  */
 export async function deleteOrphanedAgents(
   targetDir: string,
   orphanedAgents: string[],
+  targets: string[],
   previouslyTrackedAgents: string[],
   options: { metadataPrefix?: string } = {},
 ): Promise<{ deleted: string[]; skipped: string[] }> {
@@ -291,49 +325,75 @@ export async function deleteOrphanedAgents(
     ? { metadataPrefix: options.metadataPrefix }
     : undefined;
 
-  const agentsDir = path.join(targetDir, ".claude", "agents");
+  // Resolve the on-disk path + managed/modified predicates for an agent
+  // identity ("code-reviewer.md") in a given target. Returns null for targets
+  // that do not store agents as files.
+  const locate = (
+    target: string,
+    agentPath: string,
+  ): {
+    fullPath: string;
+    isManagedFn: (c: string) => boolean;
+    hasChangesFn: (c: string) => boolean;
+  } | null => {
+    if (target === "claude") {
+      return {
+        fullPath: path.join(targetDir, ".claude", "agents", agentPath),
+        isManagedFn: (c) => isManaged(c, metadataOptions),
+        hasChangesFn: (c) => hasManualChanges(c, metadataOptions),
+      };
+    }
+    if (target === "codex") {
+      return {
+        fullPath: path.join(targetDir, ".codex", "agents", agentPath.replace(/\.md$/, ".toml")),
+        isManagedFn: (c) => codexAgentIsManaged(c, metadataOptions),
+        hasChangesFn: (c) => codexAgentHasManualChanges(c, metadataOptions),
+      };
+    }
+    return null;
+  };
 
   for (const agentPath of orphanedAgents) {
-    const fullPath = path.join(agentsDir, agentPath);
+    let wasDeleted = false;
+    const wasInPreviousLockfile = previouslyTrackedAgents.includes(agentPath);
 
-    // Check if file exists
-    try {
-      await fs.access(fullPath);
-    } catch {
-      // File doesn't exist
-      continue;
-    }
+    for (const target of targets) {
+      const loc = locate(target, agentPath);
+      if (!loc) continue;
 
-    // Check if the agent is managed before deleting
-    try {
-      const content = await fs.readFile(fullPath, "utf-8");
-
-      if (!isManaged(content, metadataOptions)) {
-        // Not managed, skip deletion
-        skipped.push(agentPath);
+      try {
+        await fs.access(loc.fullPath);
+      } catch {
+        // Expected: agent file may not exist for this target.
         continue;
       }
 
-      // Additional safety check: only delete if either:
-      // 1. The agent was in the previous lockfile (confirming it was synced), OR
-      // 2. The content hash matches (agent hasn't been modified)
-      const wasInPreviousLockfile = previouslyTrackedAgents.includes(agentPath);
-      const isUnmodified = !hasManualChanges(content, metadataOptions);
+      let content: string;
+      try {
+        content = await fs.readFile(loc.fullPath, "utf-8");
+      } catch {
+        if (!skipped.includes(agentPath)) skipped.push(agentPath);
+        continue;
+      }
 
+      if (!loc.isManagedFn(content)) {
+        if (!skipped.includes(agentPath)) skipped.push(agentPath);
+        continue;
+      }
+
+      // Only delete if either the agent was in the previous lockfile
+      // (confirming it was synced) or it hasn't been modified locally.
+      const isUnmodified = !loc.hasChangesFn(content);
       if (!wasInPreviousLockfile && !isUnmodified) {
-        // Agent is managed but wasn't in lockfile and has been modified
-        skipped.push(agentPath);
+        if (!skipped.includes(agentPath)) skipped.push(agentPath);
         continue;
       }
-    } catch {
-      // Can't read file, skip deletion to be safe
-      skipped.push(agentPath);
-      continue;
+
+      await fs.unlink(loc.fullPath);
+      wasDeleted = true;
     }
 
-    // Delete the agent file
-    await fs.unlink(fullPath);
-    deleted.push(agentPath);
+    if (wasDeleted && !deleted.includes(agentPath)) deleted.push(agentPath);
   }
 
   return { deleted, skipped };
@@ -377,8 +437,6 @@ export interface SyncResult {
     modified: string[];
     contentHash: string;
     validationErrors: AgentValidationError[];
-    /** True if agents were skipped due to Codex-only target */
-    skipped?: boolean;
   };
   /**
    * Downstream paths of previously-unmanaged files that matched canonical and
@@ -648,27 +706,17 @@ export async function sync(
     }
   }
 
-  // Sync agents if canonical has agents configured
-  // Only Claude target supports agents (Codex does not have sub-agents)
+  // Sync agents if canonical has agents configured. Agents are written per
+  // target: Claude as `.claude/agents/*.md`, Codex as `.codex/agents/*.toml`.
   let agentsResult: AgentsSyncResult | null = null;
-  let agentsSkipped = false;
 
   if (resolvedSource.agentsPath) {
-    // Check if Claude target is included
-    const hasClaudeTarget = options.targets.includes("claude");
-
-    if (hasClaudeTarget) {
-      agentsResult = await syncAgents({
-        sourceAgentsPath: resolvedSource.agentsPath,
-        targetDir,
-        metadataPrefix: toMetadataPrefix(markerPrefix),
-      });
-    } else {
-      // Agents exist but only Codex target - skip with warning
-      // Note: In interactive mode, the caller should prompt the user
-      // For now, we just skip and set the flag
-      agentsSkipped = true;
-    }
+    agentsResult = await syncAgents({
+      sourceAgentsPath: resolvedSource.agentsPath,
+      targetDir,
+      targets: options.targets,
+      metadataPrefix: toMetadataPrefix(markerPrefix),
+    });
   }
 
   // Write lockfile
@@ -735,14 +783,6 @@ export async function sync(
       modified: agentsResult.modifiedFiles,
       contentHash: agentsResult.contentHash,
       validationErrors: agentsResult.validationErrors,
-    };
-  } else if (agentsSkipped) {
-    result.agents = {
-      synced: [],
-      modified: [],
-      contentHash: "",
-      validationErrors: [],
-      skipped: true,
     };
   }
 

@@ -270,8 +270,14 @@ export function renderSyncSummary(input: RenderSyncSummaryInput): RenderedSyncSu
       formatChangeList(updatedRules, "~", pc.yellow, "updated", "updated", formatCodexRuleItem);
     }
 
-    // Agents status for Claude target (agents are only synced to Claude)
-    if (result.agents && result.agents.synced.length > 0 && targetResult.target === "claude") {
+    // Agents status. Written per target: Claude as `.claude/agents/<name>.md`,
+    // Codex as `.codex/agents/<name>.toml`. `synced`/`modified` are canonical
+    // identities (e.g. `code-reviewer.md`) shared across targets.
+    // Codex stores agents as `<name>.toml`; Claude keeps the canonical `<name>.md`.
+    const agentFileName = (agent: string) =>
+      targetResult.target === "codex" ? agent.replace(/\.md$/, ".toml") : agent;
+
+    if (result.agents && result.agents.synced.length > 0) {
       const agentsPath = formatPath(path.join(targetDir, config.dir, "agents"));
       const agentsRelPath = `${config.dir}/agents/`;
       const agentsCount = result.agents.synced.length;
@@ -293,8 +299,8 @@ export function renderSyncSummary(input: RenderSyncSummaryInput): RenderedSyncSu
       );
 
       const formatAgentItem = (agent: string) => ({
-        display: formatPath(path.join(targetDir, config.dir, "agents", agent)),
-        summary: `\`${config.dir}/agents/${agent}\``,
+        display: formatPath(path.join(targetDir, config.dir, "agents", agentFileName(agent))),
+        summary: `\`${config.dir}/agents/${agentFileName(agent)}\``,
       });
 
       // Show new agents
@@ -304,39 +310,33 @@ export function renderSyncSummary(input: RenderSyncSummaryInput): RenderedSyncSu
       formatChangeList(updatedAgents, "~", pc.yellow, "updated", "updated", formatAgentItem);
     }
 
-    // Warning when agents were skipped for the Codex target
-    if (result.agents?.skipped && targetResult.target === "codex") {
-      consoleLines.push(
-        `  ${pc.yellow("!")} ${pc.dim("Agents skipped")} ${pc.yellow("(agconf does not sync agents to Codex)")}`,
-      );
-      summaryLines.push("- Agents skipped (agconf does not sync agents to Codex)");
-    }
+    // Removed / skipped orphaned rules (Claude file-based only) and agents
+    // (Claude `.md` + Codex `.toml`). Rendered regardless of whether any
+    // rules/agents remain, so a fully-removed set is still reported.
+    const renderOrphans = (
+      orphans: { deleted: string[]; skipped: string[] },
+      fileFor: (item: string) => string,
+    ) => {
+      for (const item of [...orphans.deleted].sort()) {
+        const rel = fileFor(item);
+        const orphanPath = formatPath(path.join(targetDir, rel));
+        consoleLines.push(`    ${pc.red("-")} ${orphanPath} ${pc.dim("(removed)")}`);
+        summaryLines.push(`  - \`${rel}\` (removed)`);
+      }
+      for (const item of [...orphans.skipped].sort()) {
+        const rel = fileFor(item);
+        const orphanPath = formatPath(path.join(targetDir, rel));
+        consoleLines.push(
+          `    ${pc.yellow("!")} ${orphanPath} ${pc.dim("(orphaned but skipped)")}`,
+        );
+        summaryLines.push(`  - \`${rel}\` (orphaned but skipped)`);
+      }
+    };
 
-    // Removed / skipped orphaned rules and agents (Claude-managed files only).
-    // Rendered regardless of whether any rules/agents remain, so a fully-removed
-    // set is still reported.
     if (targetResult.target === "claude") {
-      const renderOrphans = (
-        orphans: { deleted: string[]; skipped: string[] },
-        subdir: "rules" | "agents",
-      ) => {
-        for (const item of [...orphans.deleted].sort()) {
-          const orphanPath = formatPath(path.join(targetDir, config.dir, subdir, item));
-          consoleLines.push(`    ${pc.red("-")} ${orphanPath} ${pc.dim("(removed)")}`);
-          summaryLines.push(`  - \`${config.dir}/${subdir}/${item}\` (removed)`);
-        }
-        for (const item of [...orphans.skipped].sort()) {
-          const orphanPath = formatPath(path.join(targetDir, config.dir, subdir, item));
-          consoleLines.push(
-            `    ${pc.yellow("!")} ${orphanPath} ${pc.dim("(orphaned but skipped)")}`,
-          );
-          summaryLines.push(`  - \`${config.dir}/${subdir}/${item}\` (orphaned but skipped)`);
-        }
-      };
-
-      renderOrphans(ruleOrphanResult, "rules");
-      renderOrphans(agentOrphanResult, "agents");
+      renderOrphans(ruleOrphanResult, (item) => `${config.dir}/rules/${item}`);
     }
+    renderOrphans(agentOrphanResult, (item) => `${config.dir}/agents/${agentFileName(item)}`);
   }
 
   // Legacy Codex skills relocated from `.codex/skills` to `.agents/skills`.
