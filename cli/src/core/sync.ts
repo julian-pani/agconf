@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import fg from "fast-glob";
+import type { DeliveryMode } from "../config/schema.js";
 import type { Lockfile } from "../schemas/lockfile.js";
 import { toMetadataPrefix } from "../utils/prefix.js";
 import {
@@ -45,6 +46,13 @@ export interface SyncOptions {
   targets: Target[];
   /** Pinned version to record in lockfile */
   pinnedVersion?: string;
+  /**
+   * Per-type delivery map for plugin-capable content. A type not set to "sync"
+   * is skipped by sync and dropped from the lockfile, so the next sync
+   * orphan-cleans any previously-synced copies (delivered via plugin instead).
+   * Defaults to all "sync".
+   */
+  delivery?: { skills?: DeliveryMode; agents?: DeliveryMode; mcps?: DeliveryMode };
 }
 
 // =============================================================================
@@ -500,6 +508,7 @@ async function detectUnmanagedCollisions(
   targets: Target[],
   skillNames: string[],
   metadataPrefix: string,
+  includeAgents: boolean,
 ): Promise<UnmanagedCollisions> {
   const conflicts: SyncConflict[] = [];
   const adopted: string[] = [];
@@ -570,8 +579,8 @@ async function detectUnmanagedCollisions(
     }
   }
 
-  // Agents — Claude target (.claude/agents/<name>.md).
-  if (resolvedSource.agentsPath && targets.includes("claude")) {
+  // Agents — Claude target (.claude/agents/<name>.md). Only when syncing agents.
+  if (resolvedSource.agentsPath && targets.includes("claude") && includeAgents) {
     const agents = await discoverAgents(resolvedSource.agentsPath);
     for (const agent of agents) {
       const localPath = path.join(targetDir, ".claude", "agents", agent.relativePath);
@@ -591,7 +600,7 @@ async function detectUnmanagedCollisions(
   // Agents — Codex target (.codex/agents/<name>.toml). Compared against the
   // projection `emitCodexAgentToml` (with managed comments stripped from the
   // local file), mirroring how Claude agents compare against canonical.
-  if (resolvedSource.agentsPath && targets.includes("codex")) {
+  if (resolvedSource.agentsPath && targets.includes("codex") && includeAgents) {
     const agents = await discoverAgents(resolvedSource.agentsPath);
     for (const agent of agents) {
       const localPath = path.join(
@@ -624,13 +633,23 @@ export async function sync(
   const markerPrefix = resolvedSource.markerPrefix;
   const metadataPrefix = toMetadataPrefix(markerPrefix);
 
+  // Per-type delivery: a type not set to "sync" is skipped and dropped from the
+  // lockfile so orphan cleanup removes any previously-synced copies (it is
+  // delivered via an installed plugin, or off, instead). Instructions and rules
+  // have no plugin slot and are always synced here (their scope is handled by
+  // sync --scope). See cli/docs/DISTRIBUTION_SCOPES.md.
+  const syncSkills = (options.delivery?.skills ?? "sync") === "sync";
+  const syncAgentsFiles = (options.delivery?.agents ?? "sync") === "sync";
+
   // Find all skill directories once (used by the overwrite guard and sync loop).
   const skillDirs = await fg("*/", {
     cwd: resolvedSource.skillsPath,
     onlyDirectories: true,
     deep: 1,
   });
-  const skillNames = skillDirs.map((d) => d.replace(/\/$/, ""));
+  // Effective set to write/track: empty when skills are not synced, so the
+  // guard/copy loop/lockfile touch nothing.
+  const skillNames = syncSkills ? skillDirs.map((d) => d.replace(/\/$/, "")) : [];
 
   // Pre-flight: never silently overwrite local content that differs from canonical
   // and isn't managed by agconf. Identical unmanaged files are adopted (reported in
@@ -642,6 +661,7 @@ export async function sync(
     options.targets,
     skillNames,
     metadataPrefix,
+    syncAgentsFiles,
   );
   if (collisions.conflicts.length > 0 && !options.override) {
     throw new UnmanagedOverwriteError(collisions.conflicts);
@@ -707,7 +727,7 @@ export async function sync(
   // `.agents/skills/` path. Only runs when Codex is a target and is a no-op once
   // the legacy directory is gone.
   let migratedCodexSkills: { moved: string[]; skipped: string[] } = { moved: [], skipped: [] };
-  if (options.targets.includes("codex")) {
+  if (syncSkills && options.targets.includes("codex")) {
     migratedCodexSkills = await migrateLegacyCodexSkills(targetDir, { metadataPrefix });
   }
 
@@ -736,7 +756,7 @@ export async function sync(
   // target: Claude as `.claude/agents/*.md`, Codex as `.codex/agents/*.toml`.
   let agentsResult: AgentsSyncResult | null = null;
 
-  if (resolvedSource.agentsPath) {
+  if (resolvedSource.agentsPath && syncAgentsFiles) {
     agentsResult = await syncAgents({
       sourceAgentsPath: resolvedSource.agentsPath,
       targetDir,

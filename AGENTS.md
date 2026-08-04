@@ -90,6 +90,8 @@ The `workflow` key in downstream config controls:
 - `commit_message`: Custom commit message
 - `reviewers`: Comma-separated GitHub usernames
 
+The `delivery` key (`DeliveryConfigSchema`) selects how each **plugin-capable** content type is delivered, so a repo can stop committing content that a plugin already provides. Each of `skills`, `agents`, `mcps` takes `sync` (default — write files into the repo), `plugin` (delivered via an installed Claude/Codex plugin — sync skips it), or `off` (not delivered by agconf). Threaded through `SyncOptions.delivery` in `cli/src/core/sync.ts`: a non-`sync` type is skipped by the overwrite guard and the write loop and dropped from the lockfile, so the existing orphan cleanup removes any previously-synced copies on the next sync (a `sync`→`plugin`/`off` transition). Instructions and rules have no plugin slot, so they are not part of this map; their scope (repo vs user) is governed by the sync `--scope` flag. See [Distribution Scopes](cli/docs/DISTRIBUTION_SCOPES.md).
+
 ### Rules Sync
 
 Rules are modular, topic-specific instruction files (e.g., `security/api-auth.md`) synced from a canonical repository. The `rules.ts` module handles discovery, parsing, and target-specific sync.

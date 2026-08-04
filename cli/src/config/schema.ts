@@ -199,6 +199,33 @@ export const WorkflowConfigSchema = z.object({
 });
 
 /**
+ * How a plugin-capable content type is delivered to a downstream repo.
+ * - "sync"   -> agconf writes the files into the repo (today's behavior)
+ * - "plugin" -> delivered via an installed Claude/Codex plugin; sync skips it
+ * - "off"    -> not delivered by agconf at all; sync skips it
+ *
+ * Only the plugin-capable types (skills, agents, mcps) use this. Instructions
+ * and rules have no plugin slot; their scope (repo vs user) is governed by the
+ * sync `--scope` flag, not this map. See cli/docs/DISTRIBUTION_SCOPES.md.
+ */
+export const DeliveryModeSchema = z.enum(["sync", "plugin", "off"]);
+
+/**
+ * Per-type delivery map. Types not set to "sync" are skipped by `agconf sync`
+ * (and orphan-cleaned on the next sync after a sync->plugin/off transition), so
+ * they can instead be delivered via an installed plugin without duplication.
+ */
+export const DeliveryConfigSchema = z.object({
+  /** Skills delivery (default "sync"). */
+  skills: DeliveryModeSchema.default("sync"),
+  /** Agents delivery (default "sync"). */
+  agents: DeliveryModeSchema.default("sync"),
+  /** MCP servers delivery (default "sync"). MCPs are never repo-synced today,
+   * so only "plugin"/"off" are meaningful; kept for a complete, explicit map. */
+  mcps: DeliveryModeSchema.default("sync"),
+});
+
+/**
  * Configuration schema for downstream repositories (.agconf/config.yaml).
  * This file lives in repos that consume content from canonical repos.
  * Unlike the canonical config (agconf.yaml), this contains user preferences
@@ -214,9 +241,16 @@ export const DownstreamConfigSchema = z.object({
   targets: z.array(z.string()).optional(),
   /** Workflow configuration (commit strategy, PR settings, etc.) */
   workflow: WorkflowConfigSchema.optional(),
+  /**
+   * Per-type delivery map for plugin-capable content (skills/agents/mcps).
+   * Omit for the default: everything is synced into the repo.
+   */
+  delivery: DeliveryConfigSchema.optional(),
 });
 
 export type WorkflowConfig = z.infer<typeof WorkflowConfigSchema>;
+export type DeliveryMode = z.infer<typeof DeliveryModeSchema>;
+export type DeliveryConfig = z.infer<typeof DeliveryConfigSchema>;
 export type DownstreamConfig = z.infer<typeof DownstreamConfigSchema>;
 
 // =============================================================================

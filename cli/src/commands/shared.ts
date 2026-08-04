@@ -433,6 +433,11 @@ export async function performSync(options: PerformSyncOptions): Promise<void> {
     if (resolvedVersion.version) {
       syncOptions.pinnedVersion = resolvedVersion.version;
     }
+    // Per-type delivery map (skills/agents/mcps): types not set to "sync" are
+    // skipped and orphan-cleaned so they can be delivered via a plugin instead.
+    if (downstreamConfig?.delivery) {
+      syncOptions.delivery = downstreamConfig.delivery;
+    }
     const result = await sync(targetDir, resolvedSource, syncOptions);
     syncSpinner.stop();
 

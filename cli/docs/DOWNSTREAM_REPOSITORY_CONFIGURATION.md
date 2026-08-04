@@ -37,6 +37,13 @@ workflow:
 
   # Comma-separated list of reviewers for PRs
   reviewers: "alice,bob"
+
+# Per-type delivery for plugin-capable content (skills/agents/mcps).
+# Omit entirely for the default: everything is synced into the repo.
+delivery:
+  skills: plugin   # sync (default) | plugin | off
+  agents: plugin
+  mcps: plugin
 ```
 
 ## Workflow Settings Reference
@@ -48,6 +55,32 @@ workflow:
 | `pr_title` | `string` | - | Custom title for sync PRs (PR strategy only) |
 | `commit_message` | `string` | - | Custom commit message for sync commits |
 | `reviewers` | `string` | - | Comma-separated GitHub usernames for PR reviewers |
+
+## Delivery Settings Reference
+
+The optional `delivery` map controls how each **plugin-capable** content type is
+delivered, so a repo can rely on an installed plugin instead of committing the
+content. It applies only to `skills`, `agents`, and `mcps` — instructions and
+rules have no plugin slot (their scope is set by the sync `--scope` flag).
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `delivery.skills` | `"sync"` \| `"plugin"` \| `"off"` | `"sync"` | `sync` writes skills into the repo; `plugin`/`off` skip them |
+| `delivery.agents` | `"sync"` \| `"plugin"` \| `"off"` | `"sync"` | Same, for sub-agents |
+| `delivery.mcps` | `"sync"` \| `"plugin"` \| `"off"` | `"sync"` | MCP servers are never repo-synced today, so only `plugin`/`off` are meaningful |
+
+- **`sync`** — agconf writes the files into the repo (today's behavior).
+- **`plugin`** — the type is delivered by an installed Claude/Codex plugin; sync
+  skips writing it, and **the next sync removes any previously-synced copies**
+  (orphan cleanup), so you don't get the same skill twice (once as a repo file
+  and once from the plugin).
+- **`off`** — agconf does not deliver the type at all.
+
+Switching a type from `sync` to `plugin`/`off` and re-running `agconf sync`
+cleans up the files it previously wrote (managed, unmodified files only —
+anything you edited by hand is preserved and reported). See
+[Distribution Scopes](DISTRIBUTION_SCOPES.md) for how this interacts with the
+`--scope` flag and cross-scope duplication detection.
 
 ## Commit Strategies
 
@@ -108,9 +141,11 @@ All three secrets are passed through, but you only need to configure **one** aut
 
 | Scenario | Behavior |
 |----------|----------|
-| No `.agconf/config.yaml` exists | Use defaults (`commit_strategy: pr`) |
+| No `.agconf/config.yaml` exists | Use defaults (`commit_strategy: pr`, all content synced) |
 | Config exists without `workflow` key | Use defaults |
 | Partial `workflow` config | Use specified values, defaults for missing |
+| Config exists without `delivery` key | All content types synced into the repo (today's behavior) |
+| Partial `delivery` map | Specified types use their value; unspecified types default to `sync` |
 
 ## Important Notes
 
