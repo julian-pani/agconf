@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  getSkillsDir,
   getTargetConfig,
   isValidTarget,
   parseTargets,
@@ -168,6 +169,7 @@ describe("getTargetConfig", () => {
     const config = getTargetConfig("claude");
     expect(config).toEqual({
       dir: ".claude",
+      skillsDir: ".claude/skills",
       instructionsFile: "CLAUDE.md",
     });
   });
@@ -176,6 +178,7 @@ describe("getTargetConfig", () => {
     const config = getTargetConfig("codex");
     expect(config).toEqual({
       dir: ".codex",
+      skillsDir: ".agents/skills",
       instructionsFile: null,
     });
   });
@@ -194,9 +197,12 @@ describe("getTargetConfig", () => {
     for (const target of SUPPORTED_TARGETS) {
       const config = getTargetConfig(target);
       expect(config).toHaveProperty("dir");
+      expect(config).toHaveProperty("skillsDir");
       expect(config).toHaveProperty("instructionsFile");
       expect(typeof config.dir).toBe("string");
       expect(config.dir.length).toBeGreaterThan(0);
+      expect(typeof config.skillsDir).toBe("string");
+      expect(config.skillsDir.length).toBeGreaterThan(0);
     }
   });
 
@@ -205,6 +211,27 @@ describe("getTargetConfig", () => {
       const config = getTargetConfig(target);
       expect(config.dir).toMatch(/^\./);
     }
+  });
+});
+
+// =============================================================================
+// getSkillsDir tests
+// =============================================================================
+
+describe("getSkillsDir", () => {
+  it("returns .claude/skills for Claude", () => {
+    expect(getSkillsDir("claude")).toBe(".claude/skills");
+  });
+
+  it("returns .agents/skills for Codex (NOT .codex/skills)", () => {
+    // Current Codex discovers project skills under `.agents/skills`, walking
+    // cwd → repo root; it does not scan `.codex/skills`.
+    expect(getSkillsDir("codex")).toBe(".agents/skills");
+    expect(getSkillsDir("codex")).not.toBe(".codex/skills");
+  });
+
+  it("falls back to a dot-target skills dir for unknown targets", () => {
+    expect(getSkillsDir("future")).toBe(".future/skills");
   });
 });
 

@@ -13,9 +13,10 @@ This document explains how agconf detects and prevents unauthorized modification
 agconf manages certain files in your repository:
 - **AGENTS.md** (global block) - Company-wide engineering standards (`<!-- agconf:global:start/end -->`)
 - **AGENTS.md** (rules section, Codex targets) - Concatenated rules (`<!-- agconf:rules:start/end -->`)
-- **Skill files** (`.claude/skills/*/SKILL.md`) - Synced skill definitions
+- **Skill files** (`.claude/skills/*/SKILL.md` for Claude, `.agents/skills/*/SKILL.md` for Codex) - Synced skill definitions
 - **Rule files** (`.claude/rules/**/*.md`) - Modular project instructions (Claude only)
-- **Agent files** (`.claude/agents/*.md`) - Claude Code sub-agents (Claude only)
+- **Agent files** (`.claude/agents/*.md`) - Claude Code sub-agents
+- **Codex subagent files** (`.codex/agents/*.toml`) - Codex subagents
 
 These files should not be manually edited because changes will be overwritten on the next sync. agconf provides multiple layers of protection:
 
@@ -38,6 +39,11 @@ Each managed file stores a content hash that allows agconf to detect modificatio
 - Hash is stored in YAML frontmatter as `agconf_content_hash`
 - Hash is computed from content excluding agconf metadata
 - Example: `agconf_content_hash: "sha256:abc123def456"`
+
+**For Codex subagent files** (`.codex/agents/*.toml`):
+- Hash is stored in a leading TOML comment as `# agconf_content_hash: ...` (comments are ignored by Codex's TOML parser)
+- Hash is computed from the TOML body excluding the leading agconf metadata comments
+- Example: `# agconf_content_hash: sha256:abc123def456`
 
 **For AGENTS.md** (global block):
 - Hash is stored in an HTML comment within the global block
@@ -196,6 +202,7 @@ on:
       - 'AGENTS.md'
       - '.claude/**'
       - '.codex/**'
+      - '.agents/**'
 
 jobs:
   check:

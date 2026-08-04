@@ -8,18 +8,25 @@ import {
   type Agent,
   type AgentValidationError,
   addAgentMetadata,
+  buildCodexAgentToml,
+  codexAgentFileName,
   discoverAgents,
+  emitCodexAgentToml,
   validateAgentFrontmatter,
 } from "./agents.js";
 import { readLockfile, writeLockfile } from "./lockfile.js";
 import {
   addManagedMetadata,
+  codexAgentHasManualChanges,
+  codexAgentIsManaged,
   computeAssetsHash,
   fileMatchesCanonical,
   hasManualChanges,
+  hasModifiedAssets,
   isManaged,
   type SkillValidationError,
   skillMatchesCanonical,
+  stripCodexAgentMetadata,
   validateSkillFrontmatter,
 } from "./managed-content.js";
 import { consolidateClaudeMd, mergeAgentsMd, writeAgentsMd } from "./merge.js";
@@ -31,7 +38,7 @@ import {
   updateAgentsMdWithRules,
 } from "./rules.js";
 import type { ResolvedSource } from "./source.js";
-import { getTargetConfig, type Target, type TargetConfig } from "./targets.js";
+import { getSkillsDir, getTargetConfig, type Target, type TargetConfig } from "./targets.js";
 
 export interface SyncOptions {
   override: boolean;
@@ -68,6 +75,7 @@ export interface RulesSyncResult {
 export interface AgentsSyncOptions {
   sourceAgentsPath: string;
   targetDir: string;
+  targets: Target[];
   metadataPrefix: string;
 }
 
@@ -203,11 +211,18 @@ function computeAgentsHash(agents: Agent[]): string {
 }
 
 /**
- * Sync agents from a canonical source to target directory.
- * Only Claude target supports agents (Codex does not have sub-agents).
+ * Sync agents from a canonical source to the configured targets.
+ *
+ * - **Claude**: `.claude/agents/<name>.md` with managed frontmatter metadata.
+ * - **Codex**: `.codex/agents/<name>.toml` (a Codex subagent) with managed
+ *   metadata embedded as leading TOML comments.
+ *
+ * `syncedFiles` are canonical identities (e.g. `code-reviewer.md`), shared
+ * across targets; `modifiedFiles` is the set of identities whose on-disk copy
+ * changed in any target.
  */
 export async function syncAgents(options: AgentsSyncOptions): Promise<AgentsSyncResult> {
-  const { sourceAgentsPath, targetDir, metadataPrefix } = options;
+  const { sourceAgentsPath, targetDir, targets, metadataPrefix } = options;
 
   // Discover all agents
   const agents = await discoverAgents(sourceAgentsPath);
@@ -233,37 +248,49 @@ export async function syncAgents(options: AgentsSyncOptions): Promise<AgentsSync
     }
   }
 
-  // Compute content hash for lockfile
+  // Compute content hash for lockfile (target-agnostic: canonical bodies)
   result.contentHash = computeAgentsHash(agents);
 
-  // Sync to Claude target (agents directory is .claude/agents/)
-  const claudeAgentsDir = path.join(targetDir, ".claude", "agents");
-
-  for (const agent of agents) {
-    const targetPath = path.join(claudeAgentsDir, agent.relativePath);
-
-    // Ensure directory exists
+  // Write a single agent file, skipping the write when the bytes are unchanged.
+  const modified = new Set<string>();
+  const writeAgentFile = async (targetPath: string, content: string, identity: string) => {
     await fs.mkdir(path.dirname(targetPath), { recursive: true });
-
-    // Add metadata and write file
-    const contentWithMetadata = addAgentMetadata(agent, metadataPrefix);
-
-    // Check if file exists and has same content
-    let existingContent: string | null = null;
+    let existing: string | null = null;
     try {
-      existingContent = await fs.readFile(targetPath, "utf-8");
+      existing = await fs.readFile(targetPath, "utf-8");
     } catch {
       // File doesn't exist
     }
-
-    if (existingContent !== contentWithMetadata) {
-      await fs.writeFile(targetPath, contentWithMetadata, "utf-8");
-      result.modifiedFiles.push(agent.relativePath);
+    if (existing !== content) {
+      await fs.writeFile(targetPath, content, "utf-8");
+      modified.add(identity);
     }
+  };
 
-    result.syncedFiles.push(agent.relativePath);
+  if (targets.includes("claude")) {
+    const claudeAgentsDir = path.join(targetDir, ".claude", "agents");
+    for (const agent of agents) {
+      await writeAgentFile(
+        path.join(claudeAgentsDir, agent.relativePath),
+        addAgentMetadata(agent, metadataPrefix),
+        agent.relativePath,
+      );
+    }
   }
 
+  if (targets.includes("codex")) {
+    const codexAgentsDir = path.join(targetDir, ".codex", "agents");
+    for (const agent of agents) {
+      await writeAgentFile(
+        path.join(codexAgentsDir, codexAgentFileName(agent.relativePath)),
+        buildCodexAgentToml(agent, metadataPrefix),
+        agent.relativePath,
+      );
+    }
+  }
+
+  result.syncedFiles = agents.map((a) => a.relativePath);
+  result.modifiedFiles = [...modified];
   return result;
 }
 
@@ -275,12 +302,18 @@ export function findOrphanedAgents(previousAgents: string[], currentAgents: stri
 }
 
 /**
- * Delete orphaned agent files from the Claude agents directory.
- * Only deletes agents that are managed (have managed metadata).
+ * Delete orphaned agent files across targets. Agents are stored per target as
+ * `.claude/agents/<name>.md` (Claude) and `.codex/agents/<name>.toml` (Codex);
+ * the lockfile tracks the canonical `.md` identity for both.
+ *
+ * Mirrors {@link deleteOrphanedSkills}: only deletes an agent that is managed
+ * AND either was in the previous lockfile or is unmodified, so manually-authored
+ * or locally-edited agent files are preserved.
  */
 export async function deleteOrphanedAgents(
   targetDir: string,
   orphanedAgents: string[],
+  targets: string[],
   previouslyTrackedAgents: string[],
   options: { metadataPrefix?: string } = {},
 ): Promise<{ deleted: string[]; skipped: string[] }> {
@@ -290,52 +323,81 @@ export async function deleteOrphanedAgents(
     ? { metadataPrefix: options.metadataPrefix }
     : undefined;
 
-  const agentsDir = path.join(targetDir, ".claude", "agents");
+  // Resolve the on-disk path + managed/modified predicates for an agent
+  // identity ("code-reviewer.md") in a given target. Returns null for targets
+  // that do not store agents as files.
+  const locate = (
+    target: string,
+    agentPath: string,
+  ): {
+    fullPath: string;
+    isManagedFn: (c: string) => boolean;
+    hasChangesFn: (c: string) => boolean;
+  } | null => {
+    if (target === "claude") {
+      return {
+        fullPath: path.join(targetDir, ".claude", "agents", agentPath),
+        isManagedFn: (c) => isManaged(c, metadataOptions),
+        hasChangesFn: (c) => hasManualChanges(c, metadataOptions),
+      };
+    }
+    if (target === "codex") {
+      return {
+        fullPath: path.join(targetDir, ".codex", "agents", codexAgentFileName(agentPath)),
+        isManagedFn: (c) => codexAgentIsManaged(c, metadataOptions),
+        hasChangesFn: (c) => codexAgentHasManualChanges(c, metadataOptions),
+      };
+    }
+    return null;
+  };
 
   for (const agentPath of orphanedAgents) {
-    const fullPath = path.join(agentsDir, agentPath);
+    let wasDeleted = false;
+    const wasInPreviousLockfile = previouslyTrackedAgents.includes(agentPath);
 
-    // Check if file exists
-    try {
-      await fs.access(fullPath);
-    } catch {
-      // File doesn't exist
-      continue;
-    }
+    for (const target of targets) {
+      const loc = locate(target, agentPath);
+      if (!loc) continue;
 
-    // Check if the agent is managed before deleting
-    try {
-      const content = await fs.readFile(fullPath, "utf-8");
-
-      if (!isManaged(content, metadataOptions)) {
-        // Not managed, skip deletion
-        skipped.push(agentPath);
+      try {
+        await fs.access(loc.fullPath);
+      } catch {
+        // Expected: agent file may not exist for this target.
         continue;
       }
 
-      // Additional safety check: only delete if either:
-      // 1. The agent was in the previous lockfile (confirming it was synced), OR
-      // 2. The content hash matches (agent hasn't been modified)
-      const wasInPreviousLockfile = previouslyTrackedAgents.includes(agentPath);
-      const isUnmodified = !hasManualChanges(content, metadataOptions);
+      let content: string;
+      try {
+        content = await fs.readFile(loc.fullPath, "utf-8");
+      } catch {
+        if (!skipped.includes(agentPath)) skipped.push(agentPath);
+        continue;
+      }
 
+      if (!loc.isManagedFn(content)) {
+        if (!skipped.includes(agentPath)) skipped.push(agentPath);
+        continue;
+      }
+
+      // Only delete if either the agent was in the previous lockfile
+      // (confirming it was synced) or it hasn't been modified locally.
+      const isUnmodified = !loc.hasChangesFn(content);
       if (!wasInPreviousLockfile && !isUnmodified) {
-        // Agent is managed but wasn't in lockfile and has been modified
-        skipped.push(agentPath);
+        if (!skipped.includes(agentPath)) skipped.push(agentPath);
         continue;
       }
-    } catch {
-      // Can't read file, skip deletion to be safe
-      skipped.push(agentPath);
-      continue;
+
+      await fs.unlink(loc.fullPath);
+      wasDeleted = true;
     }
 
-    // Delete the agent file
-    await fs.unlink(fullPath);
-    deleted.push(agentPath);
+    if (wasDeleted && !deleted.includes(agentPath)) deleted.push(agentPath);
   }
 
-  return { deleted, skipped };
+  // An identity deleted in one target must not also be reported as skipped
+  // (e.g. deleted from `.claude/agents` but unmanaged in `.codex/agents`);
+  // "removed" takes precedence so the summary can't show both for one agent.
+  return { deleted, skipped: skipped.filter((a) => !deleted.includes(a)) };
 }
 
 export interface TargetResult {
@@ -376,8 +438,6 @@ export interface SyncResult {
     modified: string[];
     contentHash: string;
     validationErrors: AgentValidationError[];
-    /** True if agents were skipped due to Codex-only target */
-    skipped?: boolean;
   };
   /**
    * Downstream paths of previously-unmanaged files that matched canonical and
@@ -385,6 +445,18 @@ export interface SyncResult {
    * common case.
    */
   adopted: string[];
+  /**
+   * Legacy `.codex/skills/` cleanup performed during this sync (skill names).
+   * Codex now reads project skills from `.agents/skills/`, so obsolete managed
+   * copies under `.codex/skills/` are removed. See {@link migrateLegacyCodexSkills}.
+   * Empty in the common case.
+   */
+  migratedCodexSkills: {
+    /** Skill names whose obsolete legacy `.codex/skills/` copy was removed. */
+    moved: string[];
+    /** Legacy skills left in place (unmanaged or locally modified). */
+    skipped: string[];
+  };
 }
 
 /** A local file that `sync` would overwrite but that differs from canonical and is not agconf-managed. */
@@ -442,14 +514,14 @@ async function detectUnmanagedCollisions(
     }
   };
 
-  // Skills — one managed dir per target (.claude/skills, .codex/skills).
+  // Skills — one managed dir per target (.claude/skills, .agents/skills for Codex).
   for (const target of targets) {
-    const targetDirName = getTargetConfig(target).dir;
+    const skillsDirName = getSkillsDir(target);
     for (const skillName of skillNames) {
-      const localSkillDir = path.join(targetDir, targetDirName, "skills", skillName);
+      const localSkillDir = path.join(targetDir, skillsDirName, skillName);
       const localSkillMd = path.join(localSkillDir, "SKILL.md");
       const canonicalSkillDir = path.join(resolvedSource.skillsPath, skillName);
-      const downstreamPath = `${targetDirName}/skills/${skillName}`;
+      const downstreamPath = `${skillsDirName}/${skillName}`;
 
       if (!(await exists(localSkillMd))) {
         // Abnormal: a skill dir without SKILL.md. We can't read its managed
@@ -498,7 +570,7 @@ async function detectUnmanagedCollisions(
     }
   }
 
-  // Agents — Claude target only.
+  // Agents — Claude target (.claude/agents/<name>.md).
   if (resolvedSource.agentsPath && targets.includes("claude")) {
     const agents = await discoverAgents(resolvedSource.agentsPath);
     for (const agent of agents) {
@@ -509,6 +581,30 @@ async function detectUnmanagedCollisions(
       const canonicalPath = path.join(resolvedSource.agentsPath, agent.relativePath);
       const downstreamPath = `.claude/agents/${agent.relativePath}`;
       if (await fileMatchesCanonical(localPath, canonicalPath, metaOpts)) {
+        adopted.push(downstreamPath);
+      } else {
+        conflicts.push({ type: "agent", path: downstreamPath });
+      }
+    }
+  }
+
+  // Agents — Codex target (.codex/agents/<name>.toml). Compared against the
+  // projection `emitCodexAgentToml` (with managed comments stripped from the
+  // local file), mirroring how Claude agents compare against canonical.
+  if (resolvedSource.agentsPath && targets.includes("codex")) {
+    const agents = await discoverAgents(resolvedSource.agentsPath);
+    for (const agent of agents) {
+      const localPath = path.join(
+        targetDir,
+        ".codex",
+        "agents",
+        codexAgentFileName(agent.relativePath),
+      );
+      if (!(await exists(localPath))) continue;
+      const content = await fs.readFile(localPath, "utf-8");
+      if (codexAgentIsManaged(content, metaOpts)) continue; // managed: canonical owns it
+      const downstreamPath = `.codex/agents/${codexAgentFileName(agent.relativePath)}`;
+      if (stripCodexAgentMetadata(content, metaOpts) === emitCodexAgentToml(agent)) {
         adopted.push(downstreamPath);
       } else {
         conflicts.push({ type: "agent", path: downstreamPath });
@@ -607,6 +703,14 @@ export async function sync(
     });
   }
 
+  // Migrate any skills left in the legacy `.codex/skills/` location to the new
+  // `.agents/skills/` path. Only runs when Codex is a target and is a no-op once
+  // the legacy directory is gone.
+  let migratedCodexSkills: { moved: string[]; skipped: string[] } = { moved: [], skipped: [] };
+  if (options.targets.includes("codex")) {
+    migratedCodexSkills = await migrateLegacyCodexSkills(targetDir, { metadataPrefix });
+  }
+
   // Sync rules if canonical has rules configured
   let rulesResult: RulesSyncResult | null = null;
   if (resolvedSource.rulesPath) {
@@ -628,27 +732,17 @@ export async function sync(
     }
   }
 
-  // Sync agents if canonical has agents configured
-  // Only Claude target supports agents (Codex does not have sub-agents)
+  // Sync agents if canonical has agents configured. Agents are written per
+  // target: Claude as `.claude/agents/*.md`, Codex as `.codex/agents/*.toml`.
   let agentsResult: AgentsSyncResult | null = null;
-  let agentsSkipped = false;
 
   if (resolvedSource.agentsPath) {
-    // Check if Claude target is included
-    const hasClaudeTarget = options.targets.includes("claude");
-
-    if (hasClaudeTarget) {
-      agentsResult = await syncAgents({
-        sourceAgentsPath: resolvedSource.agentsPath,
-        targetDir,
-        metadataPrefix: toMetadataPrefix(markerPrefix),
-      });
-    } else {
-      // Agents exist but only Codex target - skip with warning
-      // Note: In interactive mode, the caller should prompt the user
-      // For now, we just skip and set the flag
-      agentsSkipped = true;
-    }
+    agentsResult = await syncAgents({
+      sourceAgentsPath: resolvedSource.agentsPath,
+      targetDir,
+      targets: options.targets,
+      metadataPrefix: toMetadataPrefix(markerPrefix),
+    });
   }
 
   // Write lockfile
@@ -696,6 +790,7 @@ export async function sync(
       validationErrors,
     },
     adopted: collisions.adopted,
+    migratedCodexSkills,
   };
 
   if (rulesResult && rulesResult.rules.length > 0) {
@@ -715,14 +810,6 @@ export async function sync(
       contentHash: agentsResult.contentHash,
       validationErrors: agentsResult.validationErrors,
     };
-  } else if (agentsSkipped) {
-    result.agents = {
-      synced: [],
-      modified: [],
-      contentHash: "",
-      validationErrors: [],
-      skipped: true,
-    };
   }
 
   return result;
@@ -740,7 +827,7 @@ async function syncSkillsToTarget(
   config: TargetConfig,
   metadataPrefix: string,
 ): Promise<SkillSyncResult> {
-  const targetSkillsPath = path.join(targetDir, config.dir, "skills");
+  const targetSkillsPath = path.join(targetDir, config.skillsDir);
   let copied = 0;
   const modifiedSkills: string[] = [];
 
@@ -886,18 +973,26 @@ export interface SyncStatus {
 export async function getSyncStatus(targetDir: string): Promise<SyncStatus> {
   const result = await readLockfile(targetDir);
   const agentsMdPath = path.join(targetDir, "AGENTS.md");
-  const skillsPath = path.join(targetDir, ".claude", "skills");
+  // Skills can live under either target's location (.claude/skills for Claude,
+  // .agents/skills for Codex), so treat the repo as "has skills" if either exists.
+  const skillsPaths = [
+    path.join(targetDir, ".claude", "skills"),
+    path.join(targetDir, ".agents", "skills"),
+  ];
 
-  const [agentsMdExists, skillsExist] = await Promise.all([
+  const [agentsMdExists, ...skillsExistFlags] = await Promise.all([
     fs
       .access(agentsMdPath)
       .then(() => true)
       .catch(() => false),
-    fs
-      .access(skillsPath)
-      .then(() => true)
-      .catch(() => false),
+    ...skillsPaths.map((p) =>
+      fs
+        .access(p)
+        .then(() => true)
+        .catch(() => false),
+    ),
   ]);
+  const skillsExist = skillsExistFlags.some(Boolean);
 
   return {
     hasSynced: result !== null,
@@ -949,7 +1044,7 @@ export async function deleteOrphanedSkills(
     let wasDeleted = false;
 
     for (const target of targets) {
-      const skillDir = path.join(targetDir, `.${target}`, "skills", skillName);
+      const skillDir = path.join(targetDir, getSkillsDir(target), skillName);
 
       // Check if skill directory exists
       try {
@@ -1005,6 +1100,91 @@ export async function deleteOrphanedSkills(
   }
 
   return { deleted, skipped };
+}
+
+/**
+ * One-time migration: Codex skills used to be written to `.codex/skills/`, but
+ * current Codex only discovers project skills under `.agents/skills/` (see
+ * `TARGET_CONFIGS.codex.skillsDir`). Once skills have been synced to the new
+ * location, remove obsolete managed skill dirs left under the legacy
+ * `.codex/skills/` path so they are not silently stranded (Codex would never
+ * load them there). This covers both skills that were re-synced to
+ * `.agents/skills/` and skills dropped from canonical, since ordinary orphan
+ * cleanup only looks at the new location.
+ *
+ * Mirrors {@link deleteOrphanedSkills} safety: only removes a legacy skill dir
+ * that is agconf-managed AND unmodified (neither the SKILL.md body nor its
+ * sibling assets changed). Unmanaged or locally-edited dirs are left in place
+ * and reported as skipped. The `.codex/skills` directory itself is pruned when
+ * it becomes empty; `.codex/` is never touched (Codex still uses it for agents).
+ */
+export async function migrateLegacyCodexSkills(
+  targetDir: string,
+  options: { metadataPrefix?: string } = {},
+): Promise<{ moved: string[]; skipped: string[] }> {
+  const moved: string[] = [];
+  const skipped: string[] = [];
+  const metadataOptions = options.metadataPrefix
+    ? { metadataPrefix: options.metadataPrefix }
+    : undefined;
+
+  const legacyDir = path.join(targetDir, ".codex", "skills");
+  let entries: string[];
+  try {
+    await fs.access(legacyDir);
+    entries = await fg("*/", { cwd: legacyDir, onlyDirectories: true, deep: 1 });
+  } catch {
+    // No legacy directory — nothing to migrate.
+    return { moved, skipped };
+  }
+
+  for (const entry of entries) {
+    const skillName = entry.replace(/\/$/, "");
+    const skillDir = path.join(legacyDir, skillName);
+    const skillMdPath = path.join(skillDir, "SKILL.md");
+
+    let content: string;
+    try {
+      content = await fs.readFile(skillMdPath, "utf-8");
+    } catch {
+      // No SKILL.md — not a managed skill dir we own; leave it untouched.
+      skipped.push(skillName);
+      continue;
+    }
+
+    if (!isManaged(content, metadataOptions)) {
+      skipped.push(skillName);
+      continue;
+    }
+
+    const bodyModified = hasManualChanges(content, metadataOptions);
+    const assetsModified = await hasModifiedAssets(
+      content,
+      skillDir,
+      ["SKILL.md"],
+      metadataOptions,
+    );
+    if (bodyModified || assetsModified) {
+      // Locally edited — don't delete; the user should reconcile it.
+      skipped.push(skillName);
+      continue;
+    }
+
+    await fs.rm(skillDir, { recursive: true, force: true });
+    moved.push(skillName);
+  }
+
+  // Prune the now-empty legacy skills dir, but never `.codex` itself.
+  try {
+    const remaining = await fs.readdir(legacyDir);
+    if (remaining.length === 0) {
+      await fs.rmdir(legacyDir);
+    }
+  } catch {
+    // Directory already gone or not empty — nothing to prune.
+  }
+
+  return { moved, skipped };
 }
 
 /**

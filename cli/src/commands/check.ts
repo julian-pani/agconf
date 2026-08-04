@@ -11,7 +11,9 @@ import {
   getManagedMetadata,
   type OrphanedManagedFile,
   parseFrontmatter,
+  readCodexAgentMetadata,
   readManagedMetadata,
+  stripCodexAgentMetadata,
   stripManagedMetadata,
 } from "../core/managed-content.js";
 import {
@@ -48,12 +50,12 @@ const PROTECTED_BRANCHES = new Set(["master", "main"]);
 
 export interface ModifiedFileInfo {
   path: string;
-  type: "skill" | "agents" | "rule" | "rules-section" | "agent";
+  type: "skill" | "agents" | "rule" | "rules-section" | "agent" | "codex-agent";
   expectedHash: string;
   currentHash: string;
   /** Rule source path if type is rule */
   rulePath?: string;
-  /** Agent path if type is agent */
+  /** Agent path if type is agent or codex-agent */
   agentPath?: string;
   /** For skill: whether SKILL.md body itself was modified */
   contentChanged?: boolean;
@@ -407,6 +409,25 @@ async function checkDownstream(
         agentInfo.agentPath = file.agentPath;
       }
       modifiedFiles.push(agentInfo);
+    } else if (file.type === "codex-agent") {
+      // Codex agent TOML: hash the metadata-free body, mirroring how it was
+      // stored during sync (see buildCodexAgentToml).
+      const agentFilePath = path.join(targetDir, file.path);
+      const content = await fs.readFile(agentFilePath, "utf-8");
+      const metaOpts = markerPrefix ? { metadataPrefix: markerPrefix } : undefined;
+      const storedHash = readCodexAgentMetadata(content, metaOpts).contentHash ?? "unknown";
+      const currentHash = computeContentHash(stripCodexAgentMetadata(content, metaOpts));
+
+      const agentInfo: ModifiedFileInfo = {
+        path: file.path,
+        type: "codex-agent",
+        expectedHash: storedHash,
+        currentHash,
+      };
+      if (file.agentPath) {
+        agentInfo.agentPath = file.agentPath;
+      }
+      modifiedFiles.push(agentInfo);
     }
   }
 
@@ -481,6 +502,8 @@ async function checkDownstream(
         label = ` (rule: ${file.rulePath})`;
       } else if (file.type === "agent" && file.agentPath) {
         label = ` (agent: ${file.agentPath})`;
+      } else if (file.type === "codex-agent" && file.agentPath) {
+        label = ` (codex agent: ${file.agentPath})`;
       } else if (file.type === "skill") {
         // Distinguish "SKILL.md body changed" from "sibling assets changed"
         // so users know where to look (and that `propose` has more detail).

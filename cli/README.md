@@ -63,11 +63,11 @@ agconf init --source your-org/engineering-standards
 
 ## CLAUDE.md Handling
 
-During sync, agconf consolidates any existing `CLAUDE.md` files into `AGENTS.md`, then creates/keeps a root `CLAUDE.md` containing an `@AGENTS.md` reference and removes any legacy `.claude/CLAUDE.md`. This ensures a single source of truth while maintaining compatibility with both Claude Code and GitHub Copilot.
+During sync, agconf consolidates any existing `CLAUDE.md` files into `AGENTS.md`, then creates/keeps a root `CLAUDE.md` containing an `@AGENTS.md` reference and removes any legacy `.claude/CLAUDE.md`. This ensures a single source of truth while maintaining compatibility with both Claude Code and Codex (both read `AGENTS.md`).
 
 ## Rules
 
-Rules are modular, topic-specific project instructions synced from your canonical repository. For Claude Code, they're placed in `.claude/rules/` as separate files. For GitHub Copilot, they're concatenated into AGENTS.md under a "Project Rules" section.
+Rules are modular, topic-specific project instructions synced from your canonical repository. For Claude Code, they're placed in `.claude/rules/` as separate files. For Codex, they're concatenated into AGENTS.md under a "Project Rules" section.
 
 Rules support subdirectory nesting and can include `paths` frontmatter for conditional loading (Claude only).
 
@@ -77,11 +77,11 @@ For detailed information on rules setup, directory structure, and target-specifi
 
 ## Agents
 
-Agents are Claude Code sub-agents (markdown files with YAML frontmatter) synced from your canonical repository. They define specialized AI assistants that can be invoked for specific tasks.
+Agents are sub-agents (markdown files with YAML frontmatter) synced from your canonical repository. They define specialized AI assistants that can be invoked for specific tasks.
 
 **Target-specific behavior:**
-- **Claude Code**: Agents are copied to `.claude/agents/` as flat files with metadata for change tracking
-- **GitHub Copilot**: Not supported (Copilot does not have sub-agents)
+- **Claude Code**: Agents are copied to `.claude/agents/*.md` as flat files with metadata for change tracking
+- **Codex**: Agents are emitted as Codex subagents at `.codex/agents/*.toml` (`name`/`description`/`developer_instructions`), with managed metadata in leading TOML comments
 
 **Configuration**: Add `agents_dir: "agents"` to your canonical `agconf.yaml`
 

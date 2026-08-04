@@ -461,7 +461,13 @@ export async function performSync(options: PerformSyncOptions): Promise<void> {
 
     const orphanedAgents = findOrphanedAgents(previousAgents, result.agents?.synced ?? []);
     const agentOrphanResult = await resolveOrphans(orphanedAgents, "agent", yes, logger, () =>
-      deleteOrphanedAgents(targetDir, orphanedAgents, previousAgents, orphanPrefixOption),
+      deleteOrphanedAgents(
+        targetDir,
+        orphanedAgents,
+        allTargets,
+        previousAgents,
+        orphanPrefixOption,
+      ),
     );
 
     // Show validation errors if any

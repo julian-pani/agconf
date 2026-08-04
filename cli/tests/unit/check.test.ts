@@ -994,6 +994,170 @@ metadata:
     });
   });
 
+  describe("codex agents checking (.codex/agents/*.toml)", () => {
+    // Write a downstream lockfile listing the given canonical agent identities
+    // for the Codex target.
+    const writeCodexLockfile = async (agentFiles: string[]) => {
+      const lockfile = {
+        version: "1.0.0",
+        synced_at: new Date().toISOString(),
+        source: { type: "local", path: "/some/path", ref: "abc123" },
+        content: {
+          agents_md: { global_block_hash: "sha256:abc123def456", merged: true },
+          skills: [],
+          agents: { files: agentFiles, content_hash: "sha256:abc123" },
+          targets: ["codex"],
+        },
+        cli_version: "1.0.0",
+      };
+      await fs.writeFile(
+        path.join(tempDir, ".agconf", "lockfile.json"),
+        JSON.stringify(lockfile, null, 2),
+      );
+    };
+
+    // Emit a managed `.codex/agents/<name>.toml` exactly as sync would.
+    const writeCodexAgent = async (identity: string) => {
+      const { buildCodexAgentToml, parseAgent } = await import("../../src/core/agents.js");
+      const agent = parseAgent(
+        `---\nname: ${identity.replace(/\.md$/, "")}\ndescription: A codex agent\n---\n\n# Body\n`,
+        identity,
+      );
+      const dir = path.join(tempDir, ".codex", "agents");
+      await fs.mkdir(dir, { recursive: true });
+      const tomlPath = path.join(dir, identity.replace(/\.md$/, ".toml"));
+      await fs.writeFile(tomlPath, buildCodexAgentToml(agent, "agconf"));
+      return tomlPath;
+    };
+
+    it("passes check immediately after sync for a Codex agent", async () => {
+      await writeCodexLockfile(["code-reviewer.md"]);
+      await writeCodexAgent("code-reviewer.md");
+
+      await checkCommand({ cwd: tempDir });
+
+      expect(consoleLogSpy).toHaveBeenCalledWith(
+        expect.stringContaining("All managed files are unchanged"),
+      );
+      expect(mockExit).not.toHaveBeenCalled();
+    });
+
+    it("detects a manually-edited Codex agent TOML", async () => {
+      await writeCodexLockfile(["code-reviewer.md"]);
+      const tomlPath = await writeCodexAgent("code-reviewer.md");
+      const original = await fs.readFile(tomlPath, "utf-8");
+      await fs.writeFile(tomlPath, original.replace("# Body", "# Body (tampered)"));
+
+      await expect(checkCommand({ cwd: tempDir })).rejects.toThrow("process.exit called");
+
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("have been modified"));
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("codex agent:"));
+      expect(mockExit).toHaveBeenCalledWith(1);
+    });
+
+    it("ignores an unmanaged .toml file", async () => {
+      await writeCodexLockfile(["code-reviewer.md"]);
+      await writeCodexAgent("code-reviewer.md");
+      // A hand-authored TOML with no agconf metadata must not be flagged.
+      await fs.writeFile(
+        path.join(tempDir, ".codex", "agents", "notes.toml"),
+        'name = "notes"\ndescription = "hand-written"\n',
+      );
+
+      await checkCommand({ cwd: tempDir });
+
+      expect(consoleLogSpy).toHaveBeenCalledWith(
+        expect.stringContaining("All managed files are unchanged"),
+      );
+      expect(mockExit).not.toHaveBeenCalled();
+    });
+
+    it("flags an orphaned (ghost) Codex agent absent from the lockfile", async () => {
+      await writeCodexLockfile([]); // lockfile tracks no agents
+      await writeCodexAgent("code-reviewer.md"); // but a managed one remains on disk
+
+      await expect(checkCommand({ cwd: tempDir })).rejects.toThrow("process.exit called");
+
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("orphaned managed file"));
+      expect(mockExit).toHaveBeenCalledWith(1);
+    });
+
+    it("flags a Codex agent tracked in the lockfile but missing on disk", async () => {
+      await writeCodexLockfile(["present.md", "gone.md"]);
+      await writeCodexAgent("present.md"); // only one of the two exists
+
+      await expect(checkCommand({ cwd: tempDir })).rejects.toThrow("process.exit called");
+
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("missing on disk"));
+      expect(mockExit).toHaveBeenCalledWith(1);
+    });
+
+    // Write a managed AGENTS.md global block so `check` has at least one managed
+    // file and doesn't short-circuit on "no managed files found".
+    const writeManagedAgentsMd = async () => {
+      const { createHash } = await import("node:crypto");
+      const globalContent = "# Global Standards";
+      const hash = createHash("sha256").update(globalContent.trim()).digest("hex").slice(0, 12);
+      const md = `<!-- agconf:global:start -->
+<!-- DO NOT EDIT THIS SECTION - Managed by agconf -->
+<!-- Content hash: sha256:${hash} -->
+
+${globalContent}
+
+<!-- agconf:global:end -->
+`;
+      await fs.writeFile(path.join(tempDir, "AGENTS.md"), md);
+    };
+
+    it("does NOT report missing Codex agents before the repo is re-synced (no TOML yet)", async () => {
+      // A repo synced by an older CLI: the lockfile tracks agents, but no
+      // `.codex/agents/*.toml` exists yet (only a plain `agconf sync` creates them).
+      // `check` must not false-positive on upgrade.
+      await writeCodexLockfile(["code-reviewer.md"]);
+      await writeManagedAgentsMd();
+
+      await checkCommand({ cwd: tempDir });
+
+      expect(consoleLogSpy).toHaveBeenCalledWith(
+        expect.stringContaining("All managed files are unchanged"),
+      );
+      expect(mockExit).not.toHaveBeenCalled();
+    });
+
+    it("accepts a Codex skill still at the legacy .codex/skills location", async () => {
+      // Pre-migration codex-only repo: skill lives at the legacy `.codex/skills`
+      // path, not yet relocated to `.agents/skills`. `check` must not report it missing.
+      const lockfile = {
+        version: "1.0.0",
+        synced_at: new Date().toISOString(),
+        source: { type: "local", path: "/some/path", ref: "abc123" },
+        content: {
+          agents_md: { global_block_hash: "sha256:abc123def456", merged: true },
+          skills: ["legacy-skill"],
+          targets: ["codex"],
+        },
+        cli_version: "1.0.0",
+      };
+      await fs.writeFile(
+        path.join(tempDir, ".agconf", "lockfile.json"),
+        JSON.stringify(lockfile, null, 2),
+      );
+      await writeManagedAgentsMd();
+
+      const skillDir = path.join(tempDir, ".codex", "skills", "legacy-skill");
+      await fs.mkdir(skillDir, { recursive: true });
+      const skillContent = `---\nname: legacy-skill\ndescription: A legacy skill\n---\n\n# Legacy Skill\n`;
+      await fs.writeFile(path.join(skillDir, "SKILL.md"), addManagedMetadata(skillContent));
+
+      await checkCommand({ cwd: tempDir });
+
+      expect(consoleLogSpy).toHaveBeenCalledWith(
+        expect.stringContaining("All managed files are unchanged"),
+      );
+      expect(mockExit).not.toHaveBeenCalled();
+    });
+  });
+
   describe("rules checking", () => {
     beforeEach(async () => {
       // Create rules directory

@@ -1,8 +1,22 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { addAgentMetadata, parseAgent, validateAgentFrontmatter } from "../../src/core/agents.js";
-import { computeContentHash, hasManualChanges, isManaged } from "../../src/core/managed-content.js";
+import {
+  addAgentMetadata,
+  buildCodexAgentToml,
+  emitCodexAgentToml,
+  parseAgent,
+  validateAgentFrontmatter,
+} from "../../src/core/agents.js";
+import {
+  codexAgentHasManualChanges,
+  codexAgentIsManaged,
+  computeContentHash,
+  hasManualChanges,
+  isManaged,
+  readCodexAgentMetadata,
+  stripCodexAgentMetadata,
+} from "../../src/core/managed-content.js";
 import { deleteOrphanedAgents, findOrphanedAgents, syncAgents } from "../../src/core/sync.js";
 
 // =============================================================================
@@ -276,6 +290,110 @@ Content here.`;
 });
 
 // =============================================================================
+// Codex agent (TOML) emitter tests
+// =============================================================================
+
+describe("emitCodexAgentToml / buildCodexAgentToml", () => {
+  it("maps name/description/body to TOML fields (not model/tools)", () => {
+    const agent = parseAgent(SAMPLE_AGENT_WITH_TOOLS, "code-reviewer.md");
+    const toml = emitCodexAgentToml(agent);
+
+    expect(toml).toContain('name = "code-reviewer"');
+    expect(toml).toContain('description = "Reviews code for quality and security issues"');
+    expect(toml).toContain('developer_instructions = """');
+    expect(toml).toContain("# Code Reviewer Agent");
+    // Claude-specific fields must NOT be carried into Codex config.
+    expect(toml).not.toContain("claude-3-opus");
+    expect(toml).not.toContain("tools");
+  });
+
+  it("escapes quotes and backslashes in scalar fields", () => {
+    const raw = `---
+name: quoted
+description: 'A "tricky" description with a \\ backslash'
+---
+
+Body.
+`;
+    const agent = parseAgent(raw, "quoted.md");
+    const toml = emitCodexAgentToml(agent);
+
+    // The description line must remain a single valid TOML basic string.
+    expect(toml).toContain('description = "A \\"tricky\\" description with a \\\\ backslash"');
+  });
+
+  it("escapes a triple-quote sequence in the body", () => {
+    const raw = `---
+name: tricky-body
+description: has triple quotes
+---
+
+Here is a literal """ inside the body.
+`;
+    const agent = parseAgent(raw, "tricky-body.md");
+    const toml = emitCodexAgentToml(agent);
+
+    // The raw \`"""\` must be escaped so it cannot terminate the multi-line string.
+    expect(toml).not.toMatch(/inside[\s\S]*"""[\s\S]*inside/);
+    expect(toml).toContain('\\"\\"\\"');
+  });
+
+  it("escapes control characters so the emitted TOML stays valid", () => {
+    // Build control chars without literal control bytes in the source.
+    const esc = String.fromCharCode(0x1b);
+    const nul = String.fromCharCode(0x00);
+    const raw = `---\nname: ctrl\ndescription: control char test\n---\n\nBody with ESC ${esc} and NUL ${nul} chars.\n`;
+    const toml = emitCodexAgentToml(parseAgent(raw, "ctrl.md"));
+
+    // No raw forbidden control chars survive into the output...
+    const hasRawControl = [...toml].some((c) => {
+      const n = c.charCodeAt(0);
+      return n <= 0x08 || n === 0x0b || n === 0x0c || (n >= 0x0e && n <= 0x1f) || n === 0x7f;
+    });
+    expect(hasRawControl).toBe(false);
+    // ...they are emitted as \uXXXX escapes instead.
+    expect(toml).toContain("\\u001b");
+    expect(toml).toContain("\\u0000");
+  });
+
+  it("embeds managed metadata as leading TOML comments with a round-trippable hash", () => {
+    const agent = parseAgent(SAMPLE_AGENT_MINIMAL, "simple-agent.md");
+    const content = buildCodexAgentToml(agent, "agconf");
+
+    expect(content.startsWith("# agconf_managed: true\n")).toBe(true);
+    expect(content).toMatch(/# agconf_content_hash: sha256:[a-f0-9]{12}\n/);
+
+    // Managed + unmodified right after "sync".
+    expect(codexAgentIsManaged(content, { metadataPrefix: "agconf" })).toBe(true);
+    expect(codexAgentHasManualChanges(content, { metadataPrefix: "agconf" })).toBe(false);
+
+    // Stripping the metadata recovers exactly the emitted body, and the stored
+    // hash matches a fresh hash of that body (sync ↔ check consistency).
+    const body = emitCodexAgentToml(agent);
+    expect(stripCodexAgentMetadata(content, { metadataPrefix: "agconf" })).toBe(body);
+    const stored = readCodexAgentMetadata(content, { metadataPrefix: "agconf" }).contentHash;
+    expect(stored).toBe(computeContentHash(body));
+  });
+
+  it("detects manual edits to a managed Codex agent TOML", () => {
+    const agent = parseAgent(SAMPLE_AGENT_MINIMAL, "simple-agent.md");
+    const content = buildCodexAgentToml(agent, "agconf");
+    const edited = content.replace("simple-agent", "tampered-agent");
+
+    expect(codexAgentHasManualChanges(edited, { metadataPrefix: "agconf" })).toBe(true);
+  });
+
+  it("uses the configured metadata prefix for the comment keys", () => {
+    const agent = parseAgent(SAMPLE_AGENT_MINIMAL, "simple-agent.md");
+    const content = buildCodexAgentToml(agent, "fbagents");
+
+    expect(content).toContain("# fbagents_managed: true");
+    expect(content).not.toContain("# agconf_managed:");
+    expect(codexAgentIsManaged(content, { metadataPrefix: "fbagents" })).toBe(true);
+  });
+});
+
+// =============================================================================
 // syncAgents tests
 // =============================================================================
 
@@ -305,6 +423,7 @@ describe("syncAgents", () => {
     const result = await syncAgents({
       sourceAgentsPath: sourceAgentsDir,
       targetDir,
+      targets: ["claude"],
       metadataPrefix: "agconf",
     });
 
@@ -333,6 +452,7 @@ describe("syncAgents", () => {
     const result = await syncAgents({
       sourceAgentsPath: sourceAgentsDir,
       targetDir,
+      targets: ["claude"],
       metadataPrefix: "agconf",
     });
 
@@ -348,6 +468,7 @@ describe("syncAgents", () => {
     const result = await syncAgents({
       sourceAgentsPath: sourceAgentsDir,
       targetDir,
+      targets: ["claude"],
       metadataPrefix: "agconf",
     });
 
@@ -363,6 +484,7 @@ describe("syncAgents", () => {
     const result1 = await syncAgents({
       sourceAgentsPath: sourceAgentsDir,
       targetDir,
+      targets: ["claude"],
       metadataPrefix: "agconf",
     });
     expect(result1.modifiedFiles).toContain("agent.md");
@@ -371,9 +493,67 @@ describe("syncAgents", () => {
     const result2 = await syncAgents({
       sourceAgentsPath: sourceAgentsDir,
       targetDir,
+      targets: ["claude"],
       metadataPrefix: "agconf",
     });
     expect(result2.modifiedFiles).not.toContain("agent.md");
+  });
+
+  it("syncs agents to .codex/agents as TOML for the codex target", async () => {
+    await fs.writeFile(path.join(sourceAgentsDir, "code-reviewer.md"), SAMPLE_AGENT_MINIMAL);
+
+    const result = await syncAgents({
+      sourceAgentsPath: sourceAgentsDir,
+      targetDir,
+      targets: ["codex"],
+      metadataPrefix: "agconf",
+    });
+
+    expect(result.syncedFiles).toContain("code-reviewer.md");
+
+    // Written as .codex/agents/<name>.toml (not .md), and no Claude copy.
+    const codexAgents = await fs.readdir(path.join(targetDir, ".codex", "agents"));
+    expect(codexAgents).toContain("code-reviewer.toml");
+
+    const content = await fs.readFile(
+      path.join(targetDir, ".codex", "agents", "code-reviewer.toml"),
+      "utf-8",
+    );
+    expect(content).toContain("# agconf_managed: true");
+    expect(content).toContain("developer_instructions =");
+    expect(codexAgentIsManaged(content, { metadataPrefix: "agconf" })).toBe(true);
+    expect(codexAgentHasManualChanges(content, { metadataPrefix: "agconf" })).toBe(false);
+
+    const claudeExists = await fs
+      .access(path.join(targetDir, ".claude", "agents", "code-reviewer.md"))
+      .then(() => true)
+      .catch(() => false);
+    expect(claudeExists).toBe(false);
+  });
+
+  it("writes both Claude .md and Codex .toml when both targets are set", async () => {
+    await fs.writeFile(path.join(sourceAgentsDir, "agent.md"), SAMPLE_AGENT_MINIMAL);
+
+    const result = await syncAgents({
+      sourceAgentsPath: sourceAgentsDir,
+      targetDir,
+      targets: ["claude", "codex"],
+      metadataPrefix: "agconf",
+    });
+
+    // Modified is tracked by canonical identity, deduped across targets.
+    expect(result.modifiedFiles).toEqual(["agent.md"]);
+
+    const claudeExists = await fs
+      .access(path.join(targetDir, ".claude", "agents", "agent.md"))
+      .then(() => true)
+      .catch(() => false);
+    const codexExists = await fs
+      .access(path.join(targetDir, ".codex", "agents", "agent.toml"))
+      .then(() => true)
+      .catch(() => false);
+    expect(claudeExists).toBe(true);
+    expect(codexExists).toBe(true);
   });
 });
 
@@ -439,6 +619,7 @@ describe("deleteOrphanedAgents", () => {
     const result = await deleteOrphanedAgents(
       targetDir,
       ["orphan.md"],
+      ["claude"],
       ["orphan.md"], // was in previous lockfile
       { metadataPrefix: "agconf" },
     );
@@ -461,6 +642,7 @@ describe("deleteOrphanedAgents", () => {
     const result = await deleteOrphanedAgents(
       targetDir,
       ["manual.md"],
+      ["claude"],
       [], // not in previous lockfile
       { metadataPrefix: "agconf" },
     );
@@ -477,12 +659,60 @@ describe("deleteOrphanedAgents", () => {
   });
 
   it("handles non-existent files gracefully", async () => {
-    const result = await deleteOrphanedAgents(targetDir, ["non-existent.md"], [], {
+    const result = await deleteOrphanedAgents(targetDir, ["non-existent.md"], ["claude"], [], {
       metadataPrefix: "agconf",
     });
 
     expect(result.deleted).not.toContain("non-existent.md");
     expect(result.skipped).not.toContain("non-existent.md");
+  });
+
+  it("deletes managed orphaned Codex agent TOML files (.md identity → .toml file)", async () => {
+    const codexAgentsDir = path.join(targetDir, ".codex", "agents");
+    await fs.mkdir(codexAgentsDir, { recursive: true });
+    const agent = parseAgent(SAMPLE_AGENT_MINIMAL, "orphan.md");
+    await fs.writeFile(
+      path.join(codexAgentsDir, "orphan.toml"),
+      buildCodexAgentToml(agent, "agconf"),
+    );
+
+    const result = await deleteOrphanedAgents(
+      targetDir,
+      ["orphan.md"], // lockfile identity is the canonical .md name
+      ["codex"],
+      ["orphan.md"],
+      { metadataPrefix: "agconf" },
+    );
+
+    expect(result.deleted).toContain("orphan.md");
+    const exists = await fs
+      .access(path.join(codexAgentsDir, "orphan.toml"))
+      .then(() => true)
+      .catch(() => false);
+    expect(exists).toBe(false);
+  });
+
+  it("skips a manually-edited Codex agent TOML file", async () => {
+    const codexAgentsDir = path.join(targetDir, ".codex", "agents");
+    await fs.mkdir(codexAgentsDir, { recursive: true });
+    const agent = parseAgent(SAMPLE_AGENT_MINIMAL, "edited.md");
+    const edited = buildCodexAgentToml(agent, "agconf").replace("Does basic tasks.", "Edited.");
+    await fs.writeFile(path.join(codexAgentsDir, "edited.toml"), edited);
+
+    const result = await deleteOrphanedAgents(
+      targetDir,
+      ["edited.md"],
+      ["codex"],
+      [], // not in previous lockfile
+      { metadataPrefix: "agconf" },
+    );
+
+    expect(result.skipped).toContain("edited.md");
+    const exists = await fs
+      .access(path.join(codexAgentsDir, "edited.toml"))
+      .then(() => true)
+      .catch(() => false);
+    expect(exists).toBe(true);
   });
 });
 

@@ -7,8 +7,10 @@ import {
   deleteOrphanedSkills,
   findOrphanedRules,
   findOrphanedSkills,
+  migrateLegacyCodexSkills,
   syncRules,
 } from "../../src/core/sync.js";
+import { getSkillsDir } from "../../src/core/targets.js";
 
 describe("sync", () => {
   describe("findOrphanedSkills", () => {
@@ -67,14 +69,14 @@ describe("sync", () => {
       target: string,
       content: string,
     ): Promise<void> => {
-      const skillDir = path.join(tempDir, `.${target}`, "skills", skillName);
+      const skillDir = path.join(tempDir, getSkillsDir(target), skillName);
       await fs.mkdir(skillDir, { recursive: true });
       await fs.writeFile(path.join(skillDir, "SKILL.md"), content);
     };
 
     const skillExists = async (skillName: string, target: string): Promise<boolean> => {
       try {
-        await fs.access(path.join(tempDir, `.${target}`, "skills", skillName));
+        await fs.access(path.join(tempDir, getSkillsDir(target), skillName));
         return true;
       } catch {
         return false;
@@ -302,6 +304,80 @@ description: A test skill
         expect(result.skipped).toEqual(["orphan-skill"]);
         expect(await skillExists("orphan-skill", "claude")).toBe(true);
       });
+    });
+  });
+
+  describe("migrateLegacyCodexSkills", () => {
+    let tempDir: string;
+
+    beforeEach(async () => {
+      tempDir = await fs.mkdtemp(path.join(process.cwd(), ".test-"));
+    });
+
+    afterEach(async () => {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    });
+
+    const SAMPLE_SKILL = `---
+name: legacy-skill
+description: A legacy skill
+---
+
+# Legacy Skill
+`;
+
+    const legacyCodexSkill = async (skillName: string, content: string): Promise<string> => {
+      const dir = path.join(tempDir, ".codex", "skills", skillName);
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, "SKILL.md"), content);
+      return dir;
+    };
+
+    const exists = async (p: string): Promise<boolean> =>
+      fs
+        .access(p)
+        .then(() => true)
+        .catch(() => false);
+
+    it("removes a managed, unmodified legacy skill and prunes the empty dir", async () => {
+      await legacyCodexSkill("legacy-skill", addManagedMetadata(SAMPLE_SKILL));
+
+      const result = await migrateLegacyCodexSkills(tempDir);
+
+      expect(result.moved).toEqual(["legacy-skill"]);
+      expect(result.skipped).toEqual([]);
+      expect(await exists(path.join(tempDir, ".codex", "skills", "legacy-skill"))).toBe(false);
+      // The now-empty `.codex/skills` dir is pruned, but `.codex` itself remains
+      // untouched (Codex still uses it for agents).
+      expect(await exists(path.join(tempDir, ".codex", "skills"))).toBe(false);
+      expect(await exists(path.join(tempDir, ".codex"))).toBe(true);
+    });
+
+    it("keeps an unmanaged legacy skill and reports it skipped", async () => {
+      await legacyCodexSkill("user-skill", SAMPLE_SKILL); // no managed metadata
+
+      const result = await migrateLegacyCodexSkills(tempDir);
+
+      expect(result.moved).toEqual([]);
+      expect(result.skipped).toEqual(["user-skill"]);
+      expect(await exists(path.join(tempDir, ".codex", "skills", "user-skill"))).toBe(true);
+    });
+
+    it("keeps a managed-but-locally-modified legacy skill", async () => {
+      const managed = addManagedMetadata(SAMPLE_SKILL);
+      const modified = managed.replace("# Legacy Skill", "# Legacy Skill (edited)");
+      await legacyCodexSkill("edited-skill", modified);
+
+      const result = await migrateLegacyCodexSkills(tempDir);
+
+      expect(result.moved).toEqual([]);
+      expect(result.skipped).toEqual(["edited-skill"]);
+      expect(await exists(path.join(tempDir, ".codex", "skills", "edited-skill"))).toBe(true);
+    });
+
+    it("is a no-op when there is no legacy directory", async () => {
+      const result = await migrateLegacyCodexSkills(tempDir);
+      expect(result).toEqual({ moved: [], skipped: [] });
     });
   });
 

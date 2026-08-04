@@ -1,10 +1,11 @@
 import * as path from "node:path";
 import pc from "picocolors";
+import { codexAgentFileName } from "../core/agents.js";
 import type { HookInstallResult, PreCommitAction } from "../core/hooks.js";
 import type { ResolvedSource } from "../core/source.js";
 import { formatSourceString } from "../core/source.js";
 import type { SyncResult } from "../core/sync.js";
-import { getTargetConfig, type Target } from "../core/targets.js";
+import { getSkillsDir, getTargetConfig, type Target } from "../core/targets.js";
 import type { WorkflowSyncResult } from "../core/workflows.js";
 import { formatPath } from "../utils/logger.js";
 
@@ -151,10 +152,13 @@ export function renderSyncSummary(input: RenderSyncSummaryInput): RenderedSyncSu
   // Per-target results
   for (const targetResult of result.targets) {
     const config = getTargetConfig(targetResult.target);
+    // Skills live under a target-specific dir (.claude/skills for Claude,
+    // .agents/skills for Codex), which is NOT always `${config.dir}/skills`.
+    const skillsDir = getSkillsDir(targetResult.target);
 
     // Skills status for this target
-    const skillsPath = formatPath(path.join(targetDir, config.dir, "skills"));
-    const skillsRelPath = `${config.dir}/skills/`;
+    const skillsPath = formatPath(path.join(targetDir, skillsDir));
+    const skillsRelPath = `${skillsDir}/`;
 
     // Compute new vs actually modified skills
     const newSkills = result.skills.synced.filter((s) => !previousSkills.includes(s)).sort();
@@ -177,8 +181,8 @@ export function renderSyncSummary(input: RenderSyncSummaryInput): RenderedSyncSu
     );
 
     const formatSkillItem = (skill: string) => ({
-      display: `${formatPath(path.join(targetDir, config.dir, "skills", skill))}/`,
-      summary: `\`${config.dir}/skills/${skill}/\``,
+      display: `${formatPath(path.join(targetDir, skillsDir, skill))}/`,
+      summary: `\`${skillsDir}/${skill}/\``,
     });
 
     // Show new skills
@@ -189,8 +193,8 @@ export function renderSyncSummary(input: RenderSyncSummaryInput): RenderedSyncSu
 
     // Show removed skills
     for (const skill of removedSkills) {
-      const orphanPath = formatPath(path.join(targetDir, config.dir, "skills", skill));
-      const orphanRelPath = `${config.dir}/skills/${skill}/`;
+      const orphanPath = formatPath(path.join(targetDir, skillsDir, skill));
+      const orphanRelPath = `${skillsDir}/${skill}/`;
       consoleLines.push(`    ${pc.red("-")} ${orphanPath}/ ${pc.dim("(removed)")}`);
       summaryLines.push(`  - \`${orphanRelPath}\` (removed)`);
     }
@@ -198,8 +202,8 @@ export function renderSyncSummary(input: RenderSyncSummaryInput): RenderedSyncSu
     // Show skipped orphans
     if (orphanResult.skipped.length > 0) {
       for (const skill of orphanResult.skipped) {
-        const orphanPath = formatPath(path.join(targetDir, config.dir, "skills", skill));
-        const orphanRelPath = `${config.dir}/skills/${skill}/`;
+        const orphanPath = formatPath(path.join(targetDir, skillsDir, skill));
+        const orphanRelPath = `${skillsDir}/${skill}/`;
         consoleLines.push(
           `    ${pc.yellow("!")} ${orphanPath}/ ${pc.dim("(orphaned but skipped)")}`,
         );
@@ -267,8 +271,14 @@ export function renderSyncSummary(input: RenderSyncSummaryInput): RenderedSyncSu
       formatChangeList(updatedRules, "~", pc.yellow, "updated", "updated", formatCodexRuleItem);
     }
 
-    // Agents status for Claude target (agents are only synced to Claude)
-    if (result.agents && result.agents.synced.length > 0 && targetResult.target === "claude") {
+    // Agents status. Written per target: Claude as `.claude/agents/<name>.md`,
+    // Codex as `.codex/agents/<name>.toml`. `synced`/`modified` are canonical
+    // identities (e.g. `code-reviewer.md`) shared across targets.
+    // Codex stores agents as `<name>.toml`; Claude keeps the canonical `<name>.md`.
+    const agentFileName = (agent: string) =>
+      targetResult.target === "codex" ? codexAgentFileName(agent) : agent;
+
+    if (result.agents && result.agents.synced.length > 0) {
       const agentsPath = formatPath(path.join(targetDir, config.dir, "agents"));
       const agentsRelPath = `${config.dir}/agents/`;
       const agentsCount = result.agents.synced.length;
@@ -290,8 +300,8 @@ export function renderSyncSummary(input: RenderSyncSummaryInput): RenderedSyncSu
       );
 
       const formatAgentItem = (agent: string) => ({
-        display: formatPath(path.join(targetDir, config.dir, "agents", agent)),
-        summary: `\`${config.dir}/agents/${agent}\``,
+        display: formatPath(path.join(targetDir, config.dir, "agents", agentFileName(agent))),
+        summary: `\`${config.dir}/agents/${agentFileName(agent)}\``,
       });
 
       // Show new agents
@@ -301,39 +311,59 @@ export function renderSyncSummary(input: RenderSyncSummaryInput): RenderedSyncSu
       formatChangeList(updatedAgents, "~", pc.yellow, "updated", "updated", formatAgentItem);
     }
 
-    // Warning when agents were skipped due to Codex-only target
-    if (result.agents?.skipped && targetResult.target === "codex") {
-      consoleLines.push(
-        `  ${pc.yellow("!")} ${pc.dim("Agents skipped")} ${pc.yellow("(Codex does not support sub-agents)")}`,
-      );
-      summaryLines.push("- Agents skipped (Codex does not support sub-agents)");
-    }
+    // Removed / skipped orphaned rules (Claude file-based only) and agents
+    // (Claude `.md` + Codex `.toml`). Rendered regardless of whether any
+    // rules/agents remain, so a fully-removed set is still reported.
+    const renderOrphans = (
+      orphans: { deleted: string[]; skipped: string[] },
+      fileFor: (item: string) => string,
+    ) => {
+      for (const item of [...orphans.deleted].sort()) {
+        const rel = fileFor(item);
+        const orphanPath = formatPath(path.join(targetDir, rel));
+        consoleLines.push(`    ${pc.red("-")} ${orphanPath} ${pc.dim("(removed)")}`);
+        summaryLines.push(`  - \`${rel}\` (removed)`);
+      }
+      for (const item of [...orphans.skipped].sort()) {
+        const rel = fileFor(item);
+        const orphanPath = formatPath(path.join(targetDir, rel));
+        consoleLines.push(
+          `    ${pc.yellow("!")} ${orphanPath} ${pc.dim("(orphaned but skipped)")}`,
+        );
+        summaryLines.push(`  - \`${rel}\` (orphaned but skipped)`);
+      }
+    };
 
-    // Removed / skipped orphaned rules and agents (Claude-managed files only).
-    // Rendered regardless of whether any rules/agents remain, so a fully-removed
-    // set is still reported.
     if (targetResult.target === "claude") {
-      const renderOrphans = (
-        orphans: { deleted: string[]; skipped: string[] },
-        subdir: "rules" | "agents",
-      ) => {
-        for (const item of [...orphans.deleted].sort()) {
-          const orphanPath = formatPath(path.join(targetDir, config.dir, subdir, item));
-          consoleLines.push(`    ${pc.red("-")} ${orphanPath} ${pc.dim("(removed)")}`);
-          summaryLines.push(`  - \`${config.dir}/${subdir}/${item}\` (removed)`);
-        }
-        for (const item of [...orphans.skipped].sort()) {
-          const orphanPath = formatPath(path.join(targetDir, config.dir, subdir, item));
-          consoleLines.push(
-            `    ${pc.yellow("!")} ${orphanPath} ${pc.dim("(orphaned but skipped)")}`,
-          );
-          summaryLines.push(`  - \`${config.dir}/${subdir}/${item}\` (orphaned but skipped)`);
-        }
-      };
-
-      renderOrphans(ruleOrphanResult, "rules");
-      renderOrphans(agentOrphanResult, "agents");
+      renderOrphans(ruleOrphanResult, (item) => `${config.dir}/rules/${item}`);
     }
+    renderOrphans(agentOrphanResult, (item) => `${config.dir}/agents/${agentFileName(item)}`);
+  }
+
+  // Legacy `.codex/skills` cleanup. Codex now reads project skills from
+  // `.agents/skills`, so obsolete managed copies under `.codex/skills` are
+  // removed (whether the skill was re-synced to the new location or dropped
+  // from canonical); locally-modified/unmanaged copies are left in place.
+  const migrated = result.migratedCodexSkills ?? { moved: [], skipped: [] };
+  if (migrated.moved.length > 0) {
+    consoleLines.push(
+      `  ${pc.yellow("~")} ${pc.dim(
+        `Removed ${migrated.moved.length} legacy Codex skill(s) from .codex/skills (now read from .agents/skills)`,
+      )}`,
+    );
+    summaryLines.push(
+      `- Removed ${migrated.moved.length} legacy Codex skill(s) from \`.codex/skills/\` (Codex now reads \`.agents/skills/\`)`,
+    );
+    for (const skill of [...migrated.moved].sort()) {
+      const legacyPath = formatPath(path.join(targetDir, ".codex", "skills", skill));
+      consoleLines.push(`    ${pc.red("-")} ${legacyPath}/ ${pc.dim("(legacy removed)")}`);
+      summaryLines.push(`  - \`.codex/skills/${skill}/\` (legacy removed)`);
+    }
+  }
+  for (const skill of [...migrated.skipped].sort()) {
+    const legacyPath = formatPath(path.join(targetDir, ".codex", "skills", skill));
+    consoleLines.push(`    ${pc.yellow("!")} ${legacyPath}/ ${pc.dim("(legacy, left in place)")}`);
+    summaryLines.push(`  - \`.codex/skills/${skill}/\` (legacy, left in place)`);
   }
 
   // Workflow files status
