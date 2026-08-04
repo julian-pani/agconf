@@ -1,3 +1,9 @@
+## [0.18.0](https://github.com/julian-pani/agconf/compare/v0.17.0...v0.18.0) (2026-08-04)
+
+### Features
+
+* **codex:** align skills path + sync subagents to current Codex CLI ([#67](https://github.com/julian-pani/agconf/issues/67)) ([b0a3d0e](https://github.com/julian-pani/agconf/commit/b0a3d0e9316168b3a8222f5935b184e52f960682))
+
 ## [0.17.0](https://github.com/julian-pani/agconf/compare/v0.16.2...v0.17.0) (2026-08-03)
 
 ### Features
