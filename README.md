@@ -199,6 +199,8 @@ directly over git without `agconf sync`. Run inside a canonical repo.
 ```bash
 agconf compile                 # (re)write plugin + marketplace artifacts
 agconf compile --check         # verify committed artifacts match source (CI gate)
+agconf compile --bump          # bump version of plugins whose content changed, then compile
+agconf compile --bump=minor    # force a minor bump for changed plugins
 agconf compile --target claude # compile a single target
 agconf compile --out dist      # override the output directory
 ```
