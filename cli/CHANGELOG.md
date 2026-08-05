@@ -1,3 +1,9 @@
+## [0.19.0](https://github.com/julian-pani/agconf/compare/v0.18.0...v0.19.0) (2026-08-05)
+
+### Features
+
+* **sync:** add per-type delivery map (skills/agents/mcps) ([2cbc01a](https://github.com/julian-pani/agconf/commit/2cbc01ae7cb86178646167d09cc7495a8b0149b1))
+
 ## [0.18.0](https://github.com/julian-pani/agconf/compare/v0.17.0...v0.18.0) (2026-08-04)
 
 ### Features
