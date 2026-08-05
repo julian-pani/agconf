@@ -468,13 +468,28 @@ A GitHub App provides better security and granular permissions. The app is insta
    - **Homepage URL**: Your organization URL or repo URL
    - **Webhook**: Uncheck "Active" (not needed for this use case)
 
-4. Set **Repository permissions**:
-   - **Contents**: Read-only (to read canonical repo)
+4. Set **Repository permissions**. The **same app** both reads the canonical repo
+   and pushes synced changes to downstream repos, so it needs write access — a
+   read-only app cannot push, and specifically **cannot modify workflow files**:
+   - **Contents**: Read and write (read canonical; commit/push to downstream)
+   - **Workflows**: Read and write (**required** — a sync often updates
+     `.github/workflows/*-check.yml`; without this the push is rejected with
+     *"refusing to allow a GitHub App to create or update workflow … without
+     `workflows` permission"*)
+   - **Pull requests**: Read and write (for the default `pr` commit strategy)
    - **Metadata**: Read-only (required, auto-selected)
+
+   > After changing an existing app's permissions, each **installation** must
+   > approve the new permission request (org owners get a "review request"
+   > prompt). Until it is approved, tokens keep the old scope and workflow pushes
+   > keep failing.
 
 5. Under **"Where can this GitHub App be installed?"**:
    - Select **"Only on this account"** for organization-only use
    - Or **"Any account"** if repos span multiple orgs
+   - The generated workflow scopes each token to just the canonical repo plus the
+     downstream repo being synced, so both must live under the **same owner /
+     installation** as the app.
 
 6. Click **"Create GitHub App"**
 
@@ -492,7 +507,9 @@ The **App ID** is found at the top of the app settings page.
 
 1. Go to your app's page and click **"Install App"** in the sidebar
 2. Install it on your organization (or select specific repositories)
-3. Grant access to the canonical repository
+3. Grant access to **both** the canonical repository (to read) **and every
+   downstream repository** you want to sync (to push). "All repositories" is the
+   simplest; with "Only select repositories" you must add each downstream repo.
 
 #### Step 5: Add Secrets to Downstream Repositories
 
@@ -527,10 +544,15 @@ A PAT is simpler to set up but is tied to a user account. Use fine-grained PATs 
 3. Configure:
    - **Token name**: `agconf-sync`
    - **Expiration**: Choose an appropriate duration (90 days recommended)
-   - **Repository access**: Select your canonical repository
+   - **Repository access**: Select **both** your canonical repository and every
+     downstream repository you sync (the token reads canonical and pushes
+     downstream)
 
 4. Set **Repository permissions**:
-   - **Contents**: Read-only
+   - **Contents**: Read and write (read canonical; commit/push to downstream)
+   - **Workflows**: Read and write (**required** to push `.github/workflows/*`
+     changes — otherwise the push is rejected)
+   - **Pull requests**: Read and write (for the default `pr` commit strategy)
 
 5. Click **"Generate token"** and copy the token
 
@@ -647,6 +669,31 @@ jobs:
 ### "workflow was not found" in downstream CI
 
 Your canonical repository is private and hasn't been configured to share workflows. See [Configure Repository Access](#3-configure-repository-access-for-private-repos).
+
+### "refusing to allow a GitHub App to create or update workflow … without `workflows` permission"
+
+The sync commits fine but the **push** fails only when the changes include a file
+under `.github/workflows/` (e.g. `<prefix>-check.yml`). This means the push is
+authenticated by a credential that lacks the **Workflows: write** permission on
+the downstream repo. Check, in order:
+
+1. **The app/PAT actually has Workflows: write on the downstream repo.** The
+   built-in `GITHUB_TOKEN` can never modify workflow files — there is no
+   `workflows` scope for it — so the sync must push with your App or PAT. See the
+   permissions in [GitHub App](#option-1-github-app-recommended) /
+   [PAT](#option-2-personal-access-token-pat) above.
+2. **The app installation approved the updated permissions.** Adding a permission
+   to the app definition does *not* propagate to existing installations — an org
+   owner must accept the pending "review request" at
+   `https://github.com/organizations/<ORG>/settings/installations`. Until then,
+   minted tokens keep the old scope.
+3. **The app/PAT can reach the downstream repo.** The generated token is scoped to
+   the canonical repo plus the downstream repo being synced; the app must be
+   installed on (or the PAT granted access to) that downstream repo, under the
+   same owner.
+4. **You're on the latest reusable workflow.** Older generated `sync-reusable.yml`
+   pushed with `GITHUB_TOKEN`. Re-run `agconf canonical init` (or apply the fix)
+   so `actions/checkout` uses `token: ${{ steps.app-token.outputs.token || secrets.token }}`.
 
 ### Skills not appearing in downstream repos
 

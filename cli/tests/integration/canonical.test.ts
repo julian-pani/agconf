@@ -11,6 +11,15 @@ import { resolvePluginTargets, verifyPluginsFresh } from "../../src/core/plugins
 import { resolveLocalSource } from "../../src/core/source.js";
 import { getGitOrganization, getGitProjectName, isGitRoot } from "../../src/utils/git.js";
 
+// Literal expressions emitted verbatim into generated workflows. These are
+// GitHub Actions / shell `${...}` strings, not JS template literals.
+// biome-ignore lint/suspicious/noTemplateCurlyInString: GitHub Actions expression
+const REPO_NAME_EXPR = "${{ steps.auth-check.outputs.repo_name }}";
+// biome-ignore lint/suspicious/noTemplateCurlyInString: GitHub Actions expression
+const CHECKOUT_TOKEN_EXPR = "${{ steps.app-token.outputs.token || secrets.token }}";
+// biome-ignore lint/suspicious/noTemplateCurlyInString: POSIX parameter expansion
+const REPO_NAME_SHELL = 'repo_name=${GITHUB_REPOSITORY#*/}" >> $GITHUB_OUTPUT';
+
 describe("canonical init", () => {
   let tempDir: string;
 
@@ -465,7 +474,7 @@ describe("canonical init - workflow content validation", () => {
     expect(stepNames).toContain("Check for changes");
   });
 
-  it("should scope GitHub App token to canonical repository when org is provided", async () => {
+  it("should scope GitHub App token to canonical + downstream repo when org is provided", async () => {
     await canonicalInitCommand({
       name: "my-standards",
       org: "acme-corp",
@@ -486,10 +495,14 @@ describe("canonical init - workflow content validation", () => {
 
     expect(appTokenStep).toBeDefined();
     expect(appTokenStep.with.owner).toBe("acme-corp");
-    expect(appTokenStep.with.repositories).toBe("my-standards");
+    // Least privilege: scoped to exactly the canonical repo (read) and the
+    // downstream repo being synced (push) — never owner-wide.
+    const repositories: string = appTokenStep.with.repositories;
+    expect(repositories).toContain("my-standards");
+    expect(repositories).toContain(REPO_NAME_EXPR);
   });
 
-  it("should always include owner and repositories in GitHub App token step", async () => {
+  it("should resolve the downstream repo name and scope the token to two repos", async () => {
     await canonicalInitCommand({
       name: "my-standards",
       dir: tempDir,
@@ -503,16 +516,53 @@ describe("canonical init - workflow content validation", () => {
     const parsed = parseYaml(syncWorkflow);
 
     const steps = parsed.jobs.sync.steps;
+
+    // auth-check must export the bare downstream repo name for robust scoping.
+    const authCheckStep = steps.find((s: { id?: string }) => s.id === "auth-check");
+    expect(authCheckStep).toBeDefined();
+    expect(authCheckStep.run).toContain(REPO_NAME_SHELL);
+
     const appTokenStep = steps.find(
       (s: { name: string }) => s.name === "Generate GitHub App token",
     );
-
     expect(appTokenStep).toBeDefined();
+    // owner is an owner, not owner/repo — it must never contain a slash
     expect(appTokenStep.with.owner).toBeDefined();
-    expect(appTokenStep.with.repositories).toBe("my-standards");
-    // owner and repositories should never contain slashes
     expect(appTokenStep.with.owner).not.toContain("/");
-    expect(appTokenStep.with.repositories).not.toContain("/");
+    // Exactly two repos: the dynamic downstream repo and the canonical repo.
+    const repos: string[] = String(appTokenStep.with.repositories)
+      .split("\n")
+      .map((r) => r.trim())
+      .filter(Boolean);
+    expect(repos).toEqual([REPO_NAME_EXPR, "my-standards"]);
+  });
+
+  it("should check out with the App token so workflow-file pushes are allowed", async () => {
+    await canonicalInitCommand({
+      name: "my-standards",
+      dir: tempDir,
+      markerPrefix: "agconf",
+      includeExamples: false,
+      yes: true,
+    });
+
+    const syncWorkflowPath = path.join(tempDir, ".github", "workflows", "sync-reusable.yml");
+    const syncWorkflow = await fs.readFile(syncWorkflowPath, "utf-8");
+    const parsed = parseYaml(syncWorkflow);
+
+    const steps = parsed.jobs.sync.steps;
+    const checkoutStep = steps.find((s: { name: string }) => s.name === "Checkout");
+
+    expect(checkoutStep).toBeDefined();
+    // The push (including .github/workflows/*) must run as the App/PAT, not the
+    // default GITHUB_TOKEN, which GitHub refuses for workflow files.
+    expect(checkoutStep.with.token).toBe(CHECKOUT_TOKEN_EXPR);
+
+    // The App token must be generated before checkout so its output is available.
+    const stepNames = steps.map((s: { name: string }) => s.name);
+    expect(stepNames.indexOf("Generate GitHub App token")).toBeLessThan(
+      stepNames.indexOf("Checkout"),
+    );
   });
 
   it("should include workflow inputs and outputs", async () => {
