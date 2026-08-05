@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { stringify as stringifyYaml } from "yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { compileCommand } from "../../src/commands/compile.js";
 
 interface SetupOptions {
@@ -175,6 +175,121 @@ describe("compile command", () => {
         "process.exit called",
       );
       expect(mockExit).toHaveBeenCalledWith(1);
+    });
+  });
+
+  describe("--bump", () => {
+    const stateFile = () => path.join(tempDir, ".agconf", "plugins-state.json");
+    const agconfVersion = async (): Promise<string | undefined> => {
+      const cfg = parseYaml(await fs.readFile(path.join(tempDir, "agconf.yaml"), "utf-8")) as {
+        plugins?: { version?: string; definitions?: Array<{ name: string; version?: string }> };
+      };
+      return cfg.plugins?.version;
+    };
+    const claudeManifestVersion = async (plugin: string): Promise<string> => {
+      const raw = await fs.readFile(
+        path.join(tempDir, "plugins", "claude", plugin, ".claude-plugin", "plugin.json"),
+        "utf-8",
+      );
+      return (JSON.parse(raw) as { version: string }).version;
+    };
+
+    it("initializes a fingerprint baseline without bumping on first run", async () => {
+      await setupCanonical(tempDir);
+      await compileCommand({ cwd: tempDir, bump: true });
+
+      expect(await exists(stateFile())).toBe(true);
+      expect(await agconfVersion()).toBe("1.0.0"); // no bump
+      expect(await exists(path.join(tempDir, ".claude-plugin", "marketplace.json"))).toBe(true);
+      expect(mockExit).not.toHaveBeenCalled();
+    });
+
+    it("bumps patch for a plugin whose content changed", async () => {
+      await setupCanonical(tempDir);
+      await compileCommand({ cwd: tempDir, bump: true }); // baseline
+
+      // Change skill content.
+      await fs.writeFile(
+        path.join(tempDir, "skills", "alpha", "SKILL.md"),
+        "---\nname: alpha\ndescription: The alpha skill\n---\n\n# alpha (edited)\n",
+      );
+
+      await compileCommand({ cwd: tempDir, bump: true });
+
+      expect(await agconfVersion()).toBe("1.0.1");
+      expect(await claudeManifestVersion("acme-tools")).toBe("1.0.1");
+      expect(mockExit).not.toHaveBeenCalled();
+
+      // AC: committed artifacts are fresh at the bumped version -> --check green.
+      await compileCommand({ cwd: tempDir, check: true });
+      expect(mockExit).not.toHaveBeenCalled();
+    });
+
+    it("does not bump when content is unchanged", async () => {
+      await setupCanonical(tempDir);
+      await compileCommand({ cwd: tempDir, bump: true }); // baseline
+      await compileCommand({ cwd: tempDir, bump: true }); // no edits
+
+      expect(await agconfVersion()).toBe("1.0.0");
+      expect(mockExit).not.toHaveBeenCalled();
+    });
+
+    it("forces a minor bump with --bump=minor", async () => {
+      await setupCanonical(tempDir);
+      await compileCommand({ cwd: tempDir, bump: true }); // baseline
+      await fs.writeFile(
+        path.join(tempDir, "skills", "alpha", "SKILL.md"),
+        "---\nname: alpha\ndescription: The alpha skill\n---\n\n# alpha (edited)\n",
+      );
+
+      await compileCommand({ cwd: tempDir, bump: "minor" });
+
+      expect(await agconfVersion()).toBe("1.1.0");
+    });
+
+    it("bumps only the plugin whose content changed (per-plugin definitions)", async () => {
+      await fs.mkdir(path.join(tempDir, "skills", "beta"), { recursive: true });
+      await fs.writeFile(
+        path.join(tempDir, "skills", "beta", "SKILL.md"),
+        "---\nname: beta\ndescription: The beta skill\n---\n\n# beta\n",
+      );
+      await setupCanonical(tempDir, {
+        plugins: {
+          version: "1.0.0",
+          marketplace: { name: "acme-tools", owner: { name: "Acme Corp" } },
+          definitions: [
+            { name: "alpha-plugin", skills: ["alpha"] },
+            { name: "beta-plugin", skills: ["beta"] },
+          ],
+        },
+      });
+      await compileCommand({ cwd: tempDir, bump: true }); // baseline
+
+      // Edit only alpha's skill.
+      await fs.writeFile(
+        path.join(tempDir, "skills", "alpha", "SKILL.md"),
+        "---\nname: alpha\ndescription: The alpha skill\n---\n\n# alpha (edited)\n",
+      );
+      await compileCommand({ cwd: tempDir, bump: true });
+
+      const cfg = parseYaml(await fs.readFile(path.join(tempDir, "agconf.yaml"), "utf-8")) as {
+        plugins: { version: string; definitions: Array<{ name: string; version?: string }> };
+      };
+      const alpha = cfg.plugins.definitions.find((d) => d.name === "alpha-plugin");
+      const beta = cfg.plugins.definitions.find((d) => d.name === "beta-plugin");
+      expect(alpha?.version).toBe("1.0.1"); // bumped
+      expect(beta?.version).toBeUndefined(); // untouched (still uses global 1.0.0)
+      expect(await claudeManifestVersion("alpha-plugin")).toBe("1.0.1");
+      expect(await claudeManifestVersion("beta-plugin")).toBe("1.0.0");
+    });
+
+    it("errors on an invalid --bump level", async () => {
+      await setupCanonical(tempDir);
+      await expect(compileCommand({ cwd: tempDir, bump: "bogus" })).rejects.toThrow(
+        "process.exit called",
+      );
+      expect(mockExit).toHaveBeenCalledWith(1);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining("Invalid --bump"));
     });
   });
 });

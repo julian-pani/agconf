@@ -25,6 +25,7 @@
  * instead, only {@link marketplaceSourcePath} needs to change.
  */
 
+import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import fg from "fast-glob";
@@ -640,6 +641,109 @@ export async function compilePlugins(
   assertSafeOutputDir(config, source, targetDir);
   await cleanManagedRoots(targetDir, config.output_dir);
   return compilePluginsToDir(targetDir, source, config, targets);
+}
+
+// =============================================================================
+// Auto-bump (version bumping on content change)
+// =============================================================================
+
+export type BumpLevel = "patch" | "minor" | "major";
+
+/** Increment a strict `x.y.z` semver by the given level. Only ever increases. */
+export function bumpSemver(version: string, level: BumpLevel): string {
+  const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(version.trim());
+  if (!m) throw new Error(`Cannot bump non-semver plugin version "${version}"`);
+  let major = Number(m[1]);
+  let minor = Number(m[2]);
+  let patch = Number(m[3]);
+  if (level === "major") {
+    major += 1;
+    minor = 0;
+    patch = 0;
+  } else if (level === "minor") {
+    minor += 1;
+    patch = 0;
+  } else {
+    patch += 1;
+  }
+  return `${major}.${minor}.${patch}`;
+}
+
+/** Hash a compiled plugin subtree (sorted path + bytes) into a short digest. */
+async function hashPluginTree(root: string): Promise<string> {
+  const files = (await fg("**/*", { cwd: root, onlyFiles: true, dot: true })).sort();
+  const hash = createHash("sha256");
+  for (const rel of files) {
+    hash.update(rel);
+    hash.update("\0");
+    hash.update(await fs.readFile(path.join(root, rel)));
+    hash.update("\0");
+  }
+  return `sha256:${hash.digest("hex").slice(0, 12)}`;
+}
+
+/**
+ * Compute a version-INDEPENDENT content fingerprint per plugin, keyed by
+ * `"<target>/<pluginName>"`. Compiles to a temp dir with a placeholder version
+ * (so the stamped version never affects the fingerprint) and hashes each
+ * plugin's subtree. Auto-bump uses this to detect which plugins' content changed.
+ */
+export async function fingerprintPlugins(
+  source: ResolvedSource,
+  config: PluginsConfig,
+  targets: PluginTarget[],
+): Promise<Record<string, string>> {
+  const normalized: PluginsConfig = { ...config, version: "0.0.0" };
+  if (config.definitions) {
+    normalized.definitions = config.definitions.map(({ version: _version, ...rest }) => rest);
+  }
+  const tempRoot = await createTempDir("agconf-bump-");
+  try {
+    const result = await compilePluginsToDir(tempRoot, source, normalized, targets);
+    const fingerprints: Record<string, string> = {};
+    for (const plugin of result.plugins) {
+      fingerprints[`${plugin.target}/${plugin.name}`] = await hashPluginTree(
+        path.join(tempRoot, plugin.dir),
+      );
+    }
+    return fingerprints;
+  } finally {
+    await removeTempDir(tempRoot);
+  }
+}
+
+/**
+ * Committed bookkeeping (canonical repo) recording each plugin's last-bumped
+ * content fingerprint. Lives OUTSIDE `output_dir` so it is not a compiled
+ * artifact — `compile` / `compile --check` never read or verify it, and its
+ * presence does not affect the pure-projection guarantee of published plugins.
+ */
+export const PLUGIN_STATE_FILE = path.join(".agconf", "plugins-state.json");
+
+export interface PluginState {
+  /** Schema version of this bookkeeping file. */
+  version: number;
+  /** Version-independent content fingerprints keyed by "<target>/<pluginName>". */
+  fingerprints: Record<string, string>;
+}
+
+export async function readPluginState(targetDir: string): Promise<PluginState | null> {
+  try {
+    const raw = await fs.readFile(path.join(targetDir, PLUGIN_STATE_FILE), "utf-8");
+    const parsed = JSON.parse(raw) as Partial<PluginState>;
+    if (!parsed || typeof parsed !== "object" || typeof parsed.fingerprints !== "object") {
+      return null;
+    }
+    return { version: parsed.version ?? 1, fingerprints: parsed.fingerprints ?? {} };
+  } catch {
+    return null;
+  }
+}
+
+export async function writePluginState(targetDir: string, state: PluginState): Promise<void> {
+  const file = path.join(targetDir, PLUGIN_STATE_FILE);
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, stableJson(state), "utf-8");
 }
 
 // =============================================================================

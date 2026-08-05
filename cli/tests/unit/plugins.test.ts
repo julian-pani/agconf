@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
 import { PluginsConfigSchema } from "../../src/config/schema.js";
 import {
+  bumpSemver,
   compilePlugins,
   compilePluginsToDir,
   resolvePluginTargets,
@@ -698,5 +699,23 @@ describe("compile — optional metadata fields in output", () => {
     expect(codexMkt.interface).toEqual({ displayName: "Acme Tools" });
     const xEntry = (codexMkt.plugins as Array<Record<string, unknown>>)[0];
     expect(xEntry?.category).toBe("productivity");
+  });
+
+  describe("bumpSemver", () => {
+    it("increments patch/minor/major and resets lower components", () => {
+      expect(bumpSemver("1.2.3", "patch")).toBe("1.2.4");
+      expect(bumpSemver("1.2.3", "minor")).toBe("1.3.0");
+      expect(bumpSemver("1.2.3", "major")).toBe("2.0.0");
+    });
+
+    it("only ever increases (INV-7) and tolerates surrounding whitespace", () => {
+      expect(bumpSemver(" 0.0.0 ", "patch")).toBe("0.0.1");
+      expect(bumpSemver("9.9.9", "major")).toBe("10.0.0");
+    });
+
+    it("throws for a non-semver version", () => {
+      expect(() => bumpSemver("1.0", "patch")).toThrow();
+      expect(() => bumpSemver("v1.0.0", "patch")).toThrow();
+    });
   });
 });

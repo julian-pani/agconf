@@ -149,6 +149,39 @@ into every manifest and marketplace entry, so `--check` stays deterministic
 between releases. Bump `plugins.version` (or per-plugin `version`) at release
 time, recompile, and commit.
 
+### Auto-bumping on content change (`--bump`)
+
+Manually remembering to bump is easy to forget, so `agconf compile --bump`
+bumps for you, **per plugin, only when that plugin's content changed**:
+
+```bash
+agconf compile --bump          # auto (= patch) for changed plugins, then compile
+agconf compile --bump=minor    # force a minor bump for changed plugins
+agconf compile --bump=major    # force a major bump for changed plugins
+```
+
+How it detects change: it compiles each plugin with a placeholder version and
+hashes the result (a **version-independent** content fingerprint), then compares
+against the fingerprints recorded at the last bump in a small committed sidecar,
+`.agconf/plugins-state.json`. The sidecar lives **outside** `output_dir`, so it
+is never a compiled artifact — `compile` / `compile --check` don't read or verify
+it, and published plugins stay pure projections (no injected metadata).
+
+- The **first** `--bump` in a repo records a baseline and does **not** bump.
+- Afterwards, each plugin whose fingerprint differs is bumped (the version is
+  per-definition, shared across targets), the new version is written back into
+  `agconf.yaml` (preserving your formatting/comments), and the artifacts are
+  recompiled. Unchanged plugins keep their version.
+- Versions only ever **increase**.
+
+Recommended: run `agconf compile --bump` as your compile step (instead of plain
+`agconf compile`) so a content change always carries a version bump, and commit
+`agconf.yaml`, the artifacts, and `.agconf/plugins-state.json` together. In CI,
+run it on merges to your default branch and commit the result as a
+`chore(release)` commit. Note this drives **Claude**'s version-based background
+update; **Codex** consumers pull the latest content on `codex plugin marketplace
+upgrade` regardless of the version, so the bump there is semantic only.
+
 ## Keeping artifacts in sync
 
 Compiled artifacts are committed, so they can drift if you change source and

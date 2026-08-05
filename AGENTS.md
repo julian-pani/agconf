@@ -142,6 +142,7 @@ lives in `cli/src/core/plugins.ts`; the full guide is `cli/docs/PLUGINS.md`.
 - `compilePlugins(targetDir, source, config, targets)` - real compile (cleans managed roots, then writes)
 - `compilePluginsToDir(outRoot, ...)` - pure projection into any root (used by real compile and the freshness check)
 - `verifyPluginsFresh(targetDir, ...)` - recompile to a temp dir + tree-diff against committed artifacts; reports `drifted`/`missing`/`extra`
+- `fingerprintPlugins(source, config, targets)` + `bumpSemver(version, level)` - **auto-bump** (`agconf compile --bump[=auto|patch|minor|major]`): compute a version-independent content fingerprint per plugin (compile with a placeholder version + hash the subtree), compare against the last-bump fingerprints in the committed sidecar `.agconf/plugins-state.json` (`readPluginState`/`writePluginState`, `PLUGIN_STATE_FILE`), and bump only changed plugins' versions in `agconf.yaml`. The sidecar lives OUTSIDE `output_dir`, so `compile`/`--check`/`verifyPluginsFresh` never read or verify it (published plugins stay a pure projection). Orchestrated by `runBump` in `cli/src/commands/compile.ts`.
 
 **Target-specific behavior:**
 - **Per-target output subtrees** (`<output_dir>/<target>/<plugin>`) so divergences never collide.

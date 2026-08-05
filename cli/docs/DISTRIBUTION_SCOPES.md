@@ -405,7 +405,7 @@ Canonical content types and their reachable homes:
   `~/.claude/settings.json` that preserves any existing settings/hooks.
 - Exits 0 by default (advisory), even when duplication is present.
 
-**F6 — Auto-bump** *(planned — next PR)*
+**F6 — Auto-bump** ✅ *implemented*
 - `agconf compile --bump` (=`auto`≡patch; or `patch`/`minor`/`major`) bumps each
   plugin whose **version-independent content fingerprint** changed vs the
   fingerprints recorded at the last bump — a committed sidecar

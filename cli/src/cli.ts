@@ -136,11 +136,21 @@ export function createCli(): Command {
       "Compile installable plugins + marketplace from canonical content (canonical repos)",
     )
     .option("--check", "Verify committed artifacts match source; exit 1 if stale (CI gate)")
+    .option(
+      "--bump [level]",
+      "Bump version of plugins whose content changed, then compile (auto|patch|minor|major)",
+    )
     .option("-t, --target <targets...>", "Targets to compile (claude, codex)")
     .option("-o, --out <dir>", "Output directory (overrides plugins.output_dir)")
     .option("-q, --quiet", "Minimal output, just exit code")
     .action(
-      async (options: { check?: boolean; target?: string[]; out?: string; quiet?: boolean }) => {
+      async (options: {
+        check?: boolean;
+        bump?: string | boolean;
+        target?: string[];
+        out?: string;
+        quiet?: boolean;
+      }) => {
         await compileCommand(options);
       },
     );
