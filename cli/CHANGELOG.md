@@ -1,3 +1,9 @@
+## [0.20.0](https://github.com/julian-pani/agconf/compare/v0.19.0...v0.20.0) (2026-08-05)
+
+### Features
+
+* **compile:** auto-bump plugin versions on content change ([04b5291](https://github.com/julian-pani/agconf/commit/04b529121a4f4ba15b77cf05b02fc5e3f7eb9e1f))
+
 ## [0.19.0](https://github.com/julian-pani/agconf/compare/v0.18.0...v0.19.0) (2026-08-05)
 
 ### Features
