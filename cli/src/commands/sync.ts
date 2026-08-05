@@ -13,11 +13,19 @@ import {
   resolveVersion,
   type SharedSyncOptions,
 } from "./shared.js";
+import { syncUserScopeCommand } from "./user-scope.js";
 
 export interface SyncOptions extends SharedSyncOptions {}
 
 export async function syncCommand(options: SyncOptions): Promise<void> {
   const logger = createLogger();
+
+  // User scope: project the company block into ~/.claude, ~/.codex via the
+  // ~/.agconf store, instead of writing into a repo. Delegates to its own path.
+  if (options.scope === "user") {
+    await syncUserScopeCommand(options);
+    return;
+  }
 
   console.log();
   prompts.intro(pc.bold("agconf sync"));

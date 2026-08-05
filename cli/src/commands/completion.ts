@@ -30,11 +30,12 @@ const COMMANDS = {
       "--pinned",
       "--summary-file",
       "--expand-changes",
+      "--scope",
     ],
   },
   check: {
     description: "Check if managed files have been modified",
-    options: ["-q", "--quiet", "--debug", "--hook"],
+    options: ["-q", "--quiet", "--debug", "--hook", "--scope"],
   },
   compile: {
     description: "Compile installable plugins + marketplace from canonical content",

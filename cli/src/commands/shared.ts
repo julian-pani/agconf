@@ -44,6 +44,10 @@ export interface SharedSyncOptions {
   expandChanges?: boolean;
   /** Working directory to resolve the target git root from (defaults to process.cwd()). For testing. */
   cwd?: string;
+  /** Distribution scope: "repo" (default) writes into the repo; "user" projects into ~/.claude, ~/.codex via the ~/.agconf store. */
+  scope?: string;
+  /** Home directory override for `--scope user` (defaults to os.homedir()). For testing. */
+  home?: string;
 }
 
 export interface CommandContext {

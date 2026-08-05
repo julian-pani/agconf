@@ -370,12 +370,14 @@ Canonical content types and their reachable homes:
 
 ## 14. Acceptance criteria
 
-**F1 — Scopes**
+**F1 — Scopes** ✅ *implemented*
 - `agconf sync --scope user` writes the company global block inside markers into
   `~/.claude/CLAUDE.md` and/or `~/.codex/AGENTS.md`, preserving surrounding content,
   and writes `~/.agconf/lockfile.json`.
 - `--scope repo` (default) is a byte-for-byte regression match to prior behavior.
 - `agconf check --scope user` verifies user-scope managed integrity and exits 1 on drift.
+- Wired on `sync` and `check`; `init --scope user` is deferred — first-time
+  projection is already covered by `sync --scope user`.
 
 **F2 — Delivery map** ✅ *implemented*
 - Config accepts `delivery.{skills,agents,mcps}` ∈ `{sync,plugin,off}` (the
@@ -386,15 +388,18 @@ Canonical content types and their reachable homes:
   managed skills (and no others); a user-edited skill is preserved and reported.
 - `check` does not report "missing" for a type whose delivery is not `sync`.
 
-**F3 — USER.md**
-- First user-scope sync scaffolds `USER.md` if absent; a subsequent sync never
-  modifies it (verified by mtime/content).
-- Claude block contains `@USER.md`; Codex block inlines USER.md content.
+**F3 — USER.md** ✅ *implemented*
+- First user-scope sync scaffolds `~/.agconf/USER.md` if absent; a subsequent sync
+  never modifies it.
+- Claude gets a native `@~/.agconf/USER.md` import beneath the block; Codex gets a
+  plain read-note (full inlining deferred — it would fold the personal file's
+  contents into the hashed block and make `check` flag benign USER.md edits).
 
-**F4 — Backups + git store**
-- `~/.agconf/` is initialized as a git repo; each user-scope sync produces a commit.
+**F4 — Backups + git store** ✅ *implemented*
+- `~/.agconf/` is initialized as a git repo; each user-scope sync produces a commit
+  (best-effort — a missing/misconfigured git is non-fatal).
 - Overwriting a drifted/unmanaged user-scope file first creates a copy under
-  `~/.agconf/backups/<timestamp>/`; backups rotate to the last N.
+  `~/.agconf/backups/<timestamp>/`; backups rotate to the last 10.
 
 **F5 — Dedup + freshness hook**
 - `agconf session-check` prints/injects a warning when agconf-managed content of a

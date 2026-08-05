@@ -30,11 +30,16 @@ import { resolvePluginTargets, verifyPluginsFresh } from "../core/plugins.js";
 import { resolveLocalSource } from "../core/source.js";
 import { getCurrentBranch } from "../utils/git.js";
 import { toMetadataPrefix } from "../utils/prefix.js";
+import { checkUserScopeCommand } from "./user-scope.js";
 
 export interface CheckOptions {
   quiet?: boolean;
   debug?: boolean;
   cwd?: string;
+  /** Check scope: "repo" (default) or "user" (verifies ~/.claude, ~/.codex against the ~/.agconf store). */
+  scope?: string;
+  /** Home directory override for `--scope user` (defaults to os.homedir()). For testing. */
+  home?: string;
   /**
    * Pre-commit mode. Runs the normal integrity check, then applies a
    * branch-aware verdict: block (exit 1) on `master`/`main`, warn-and-allow
@@ -78,6 +83,13 @@ export interface ModifiedFileInfo {
  * are found, 0 otherwise.
  */
 export async function checkCommand(options: CheckOptions = {}): Promise<void> {
+  // User scope: verify ~/.claude, ~/.codex against the ~/.agconf store lockfile.
+  if (options.scope === "user") {
+    const problems = await checkUserScopeCommand({ home: options.home, quiet: options.quiet });
+    if (problems) process.exit(1);
+    return;
+  }
+
   const targetDir = options.cwd ?? process.cwd();
 
   // Best-effort: a malformed/incompatible agconf.yaml co-located with a lockfile

@@ -101,6 +101,10 @@ export function createCli(): Command {
     .option("-t, --target <targets...>", "Target platforms (claude, codex)")
     .option("--summary-file <path>", "Write sync summary to file (markdown, for CI)")
     .option("--expand-changes", "Show all items in output (default: first 5)")
+    .option(
+      "--scope <scope>",
+      "Distribution scope: 'repo' (default) or 'user' (project into ~/.claude, ~/.codex via the ~/.agconf store)",
+    )
     .action(
       async (options: {
         source?: string;
@@ -112,6 +116,7 @@ export function createCli(): Command {
         target?: string[];
         summaryFile?: string;
         expandChanges?: boolean;
+        scope?: string;
       }) => {
         await syncCommand(options);
       },
@@ -126,9 +131,12 @@ export function createCli(): Command {
       "--hook",
       "Pre-commit mode: branch-aware exit (block on master/main, warn on feature branches)",
     )
-    .action(async (options: { quiet?: boolean; debug?: boolean; hook?: boolean }) => {
-      await checkCommand(options);
-    });
+    .option("--scope <scope>", "Check scope: 'repo' (default) or 'user' (~/.claude, ~/.codex)")
+    .action(
+      async (options: { quiet?: boolean; debug?: boolean; hook?: boolean; scope?: string }) => {
+        await checkCommand(options);
+      },
+    );
 
   program
     .command("compile")
