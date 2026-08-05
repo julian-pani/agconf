@@ -221,5 +221,39 @@ describe("downstream config", () => {
       expect(result).toBeDefined();
       expect(result?.workflow).toBeUndefined();
     });
+
+    it("loads delivery map from config file", async () => {
+      const agconfDir = path.join(tempDir, ".agconf");
+      await fs.mkdir(agconfDir, { recursive: true });
+      await fs.writeFile(
+        path.join(agconfDir, "config.yaml"),
+        stringifyYaml({ delivery: { skills: "plugin", agents: "off" } }),
+      );
+
+      const result = await loadDownstreamConfig(tempDir);
+      expect(result?.delivery?.skills).toBe("plugin");
+      expect(result?.delivery?.agents).toBe("off");
+      // Unspecified type defaults to "sync".
+      expect(result?.delivery?.mcps).toBe("sync");
+    });
+  });
+
+  describe("DeliveryConfigSchema", () => {
+    it("defaults every type to 'sync' for an empty map", () => {
+      const parsed = DownstreamConfigSchema.parse({ delivery: {} });
+      expect(parsed.delivery).toEqual({ skills: "sync", agents: "sync", mcps: "sync" });
+    });
+
+    it("keeps delivery undefined when omitted (back-compat)", () => {
+      const parsed = DownstreamConfigSchema.parse({});
+      expect(parsed.delivery).toBeUndefined();
+    });
+
+    it("accepts sync/plugin/off and rejects unknown modes", () => {
+      expect(
+        DownstreamConfigSchema.parse({ delivery: { skills: "plugin", mcps: "off" } }).delivery,
+      ).toEqual({ skills: "plugin", agents: "sync", mcps: "off" });
+      expect(() => DownstreamConfigSchema.parse({ delivery: { skills: "bogus" } })).toThrow();
+    });
   });
 });

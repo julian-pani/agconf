@@ -132,6 +132,60 @@ description: A test skill
     });
   });
 
+  describe("when skills are delivered by plugin (delivery: plugin)", () => {
+    beforeEach(async () => {
+      // No skills on disk and none tracked — they ship via an installed plugin.
+      await fs.rm(path.join(tempDir, ".claude", "skills"), { recursive: true, force: true });
+
+      const globalContent = "# Global Standards\n\nSome content";
+      const { createHash } = await import("node:crypto");
+      const hash = createHash("sha256").update(globalContent.trim()).digest("hex");
+      const contentHash = `sha256:${hash.slice(0, 12)}`;
+
+      const lockfile = {
+        version: "1.0.0",
+        synced_at: new Date().toISOString(),
+        source: { type: "local", path: "/some/path", ref: "abc123" },
+        content: {
+          agents_md: { global_block_hash: contentHash, merged: true },
+          skills: [],
+          targets: ["claude"],
+        },
+        cli_version: "1.0.0",
+      };
+      await fs.writeFile(
+        path.join(tempDir, ".agconf", "lockfile.json"),
+        JSON.stringify(lockfile, null, 2),
+      );
+
+      const agentsMd = `<!-- agconf:global:start -->
+<!-- DO NOT EDIT THIS SECTION - Managed by agconf -->
+<!-- Content hash: ${contentHash} -->
+
+${globalContent}
+
+<!-- agconf:global:end -->
+
+<!-- agconf:repo:start -->
+<!-- Repository-specific instructions below -->
+
+# Repo content
+
+<!-- agconf:repo:end -->
+`;
+      await fs.writeFile(path.join(tempDir, "AGENTS.md"), agentsMd);
+    });
+
+    it("passes with no 'missing' or 'ghost' skills when none are synced", async () => {
+      await checkCommand({ cwd: tempDir });
+
+      expect(consoleLogSpy).toHaveBeenCalledWith(
+        expect.stringContaining("All managed files are unchanged"),
+      );
+      expect(mockExit).not.toHaveBeenCalled();
+    });
+  });
+
   describe("when synced with modified skill file", () => {
     beforeEach(async () => {
       // Create a lockfile
