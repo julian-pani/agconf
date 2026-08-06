@@ -234,10 +234,15 @@ function generateSyncWorkflow(repoFullName: string, prefix: string): string {
 #   uses: ${repoFullName}/.github/workflows/sync-reusable.yml@v1.0.0
 #
 # AUTHENTICATION (one of the following):
-#   Option 1 - PAT: Pass a \`token\` secret with read access to the canonical repository.
+#   Option 1 - PAT: Pass a \`token\` secret (fine-grained recommended).
 #   Option 2 - GitHub App: Pass \`app_id\` and \`app_private_key\` secrets.
 #
-# The default GITHUB_TOKEN is used for operations on the downstream repo.
+# This credential is used both to READ the canonical repo during sync and to PUSH
+# the synced changes to the downstream repo. Because a sync can add/update files
+# under .github/workflows/, the credential MUST have 'workflows: write' on the
+# downstream repo (the built-in GITHUB_TOKEN cannot modify workflow files and is
+# NOT used for the push). Required on the downstream repo: Contents: write,
+# Workflows: write, and Pull requests: write (for the 'pr' strategy).
 
 name: Sync Reusable
 
@@ -317,6 +322,10 @@ jobs:
           else
             echo "use_app=false" >> \$GITHUB_OUTPUT
           fi
+          # Bare name (owner stripped) of the downstream repo being synced. Used to
+          # scope the App token to exactly this repo + the canonical repo. Derived
+          # from \$GITHUB_REPOSITORY so it is correct on every trigger (incl. schedule).
+          echo "repo_name=\${GITHUB_REPOSITORY#*/}" >> \$GITHUB_OUTPUT
 
       - name: Generate GitHub App token
         id: app-token
@@ -325,13 +334,24 @@ jobs:
         with:
           app-id: \${{ secrets.app_id }}
           private-key: \${{ secrets.app_private_key }}
+          # Scope to exactly the two repos this token needs: the downstream repo
+          # being synced (to push, including .github/workflows/* — which the default
+          # GITHUB_TOKEN is forbidden from updating) and the canonical repo (to read
+          # during sync). Both must live under this owner's installation.
           owner: ${repoOwner}
-          repositories: ${repoName}
+          repositories: |
+            \${{ steps.auth-check.outputs.repo_name }}
+            ${repoName}
 
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # Persist the App token (or PAT) as the git credential so the later
+          # 'git push' authenticates as the GitHub App, which has 'workflows: write'.
+          # Without this, checkout stores the default GITHUB_TOKEN, and GitHub
+          # rejects any push that creates/updates .github/workflows/* files.
+          token: \${{ steps.app-token.outputs.token || secrets.token }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
