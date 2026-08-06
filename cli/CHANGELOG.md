@@ -1,3 +1,9 @@
+## [0.20.1](https://github.com/julian-pani/agconf/compare/v0.20.0...v0.20.1) (2026-08-06)
+
+### Bug Fixes
+
+* **canonical:** push synced workflow files via the app token ([f291295](https://github.com/julian-pani/agconf/commit/f291295885d66ce88b85c2540f57fd723a1ff585))
+
 ## [0.20.0](https://github.com/julian-pani/agconf/compare/v0.19.0...v0.20.0) (2026-08-05)
 
 ### Features
