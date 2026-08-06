@@ -128,6 +128,9 @@ export async function syncUserScopeCommand(options: UserScopeSyncOptions): Promi
         ? pc.dim("Committed to the ~/.agconf git store (run `git -C ~/.agconf log` to see diffs).")
         : pc.dim("Store written (git commit skipped)."),
     );
+    console.log(
+      pc.dim("Tip: `agconf session-check --install-hook` warns about cross-scope duplication."),
+    );
     console.log();
   } finally {
     if (tempDir) await removeTempDir(tempDir);

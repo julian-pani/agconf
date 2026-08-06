@@ -7,6 +7,7 @@ import { handleCompletion, installCompletion, uninstallCompletion } from "./comm
 import { configGetCommand, configSetCommand, configShowCommand } from "./commands/config.js";
 import { initCommand } from "./commands/init.js";
 import { proposeCommand } from "./commands/propose.js";
+import { sessionCheckCommand } from "./commands/session-check.js";
 import { syncCommand } from "./commands/sync.js";
 import { upgradeCliCommand } from "./commands/upgrade-cli.js";
 import { checkCliVersionMismatch, getCliVersion } from "./core/lockfile.js";
@@ -137,6 +138,20 @@ export function createCli(): Command {
         await checkCommand(options);
       },
     );
+
+  program
+    .command("session-check")
+    .description(
+      "Advisory cross-scope duplication + user-scope integrity check (for a SessionStart hook)",
+    )
+    .option(
+      "--install-hook",
+      "Install this as a Claude Code SessionStart hook in ~/.claude/settings.json",
+    )
+    .option("-q, --quiet", "Minimal output")
+    .action(async (options: { installHook?: boolean; quiet?: boolean }) => {
+      await sessionCheckCommand(options);
+    });
 
   program
     .command("compile")

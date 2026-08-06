@@ -37,6 +37,10 @@ const COMMANDS = {
     description: "Check if managed files have been modified",
     options: ["-q", "--quiet", "--debug", "--hook", "--scope"],
   },
+  "session-check": {
+    description: "Cross-scope duplication + integrity check (SessionStart hook)",
+    options: ["--install-hook", "-q", "--quiet"],
+  },
   compile: {
     description: "Compile installable plugins + marketplace from canonical content",
     options: ["--check", "--bump", "-t", "--target", "-o", "--out", "-q", "--quiet"],
