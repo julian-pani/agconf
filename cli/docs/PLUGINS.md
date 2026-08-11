@@ -100,6 +100,7 @@ plugins:
     name: acme-tools             # users install as <plugin>@acme-tools
     owner: { name: Acme Corp, email: dev@acme.com }   # Claude marketplace owner
     display_name: Acme Tools     # Codex interface.displayName (optional)
+    repository: https://github.com/acme/standards   # stamped into each plugin manifest (provenance)
   output_dir: plugins            # where compiled plugins are written
   # targets: [claude, codex]     # defaults to the top-level `targets`
   # Omit `definitions` for a single "everything" plugin named after the marketplace.
@@ -201,6 +202,54 @@ Recommended workflow:
 2. Run `agconf compile`.
 3. Commit source **and** the regenerated artifacts together.
 4. CI runs `agconf check` and fails the PR if you forgot step 2.
+
+## Enrolling a repo in a marketplace (experimental, Claude-only)
+
+Instead of `sync`-ing skills/agents into a downstream repo's `.claude/`, that
+repo can **enroll** in a compiled marketplace: commit an
+`extraKnownMarketplaces` + `enabledPlugins` block to `.claude/settings.json`, and
+Claude Code prompts collaborators to install the declared plugins when they trust
+the repo. This is the push/plugin analogue of sync, scoped per repo and pinned by
+the marketplace `ref`.
+
+> **Experimental & Claude-only.** Codex has no project-scoped plugin enablement,
+> so Codex consumers keep using `sync`. And this is *not* silent auto-install:
+> Claude prompts on trust (external-source plugins won't load until the user
+> installs); org-wide auto-enroll needs managed settings.
+
+Declare it in the downstream `.agconf/config.yaml`:
+
+```yaml
+experimental:
+  enrollment:
+    marketplace: acme-tools               # matches the canonical marketplace name
+    source:
+      repository: acme/standards          # github owner/repo hosting the marketplace
+      ref: v2.3.0                         # pin the marketplace version (tag/branch); omit to track default
+    plugins: [base, frontend]             # enabled as base@acme-tools, frontend@acme-tools
+```
+
+Then:
+
+```bash
+agconf enroll                 # writes/merges .claude/settings.json (preserves other keys)
+agconf enroll --local ../standards   # also warn on overlap across the enrolled set
+agconf check                  # verifies .claude/settings.json still matches the config
+```
+
+- **Per-repo version pin**: the `ref` in `extraKnownMarketplaces` pins which
+  marketplace revision this repo uses — the plugin analogue of the sync lockfile.
+  Different repos can pin different tags.
+- **Overlap warnings**: with `--local <compiled-canonical>`, enroll warns when the
+  enrolled set has duplicate skills/agents (context cost) or — more loudly —
+  duplicate MCP server names (collision risk). Useful if you publish granular,
+  overlapping plugins.
+- **`check` integration**: when `experimental.enrollment` is set, `agconf check`
+  verifies `.claude/settings.json` registers the marketplace with the pinned
+  source and enables every declared plugin; it exits 1 on drift.
+- **Provenance**: set `plugins.marketplace.repository` (canonical `agconf.yaml`)
+  to stamp a `repository` field into every compiled plugin manifest, so an agent
+  or `agconf` can trace an installed plugin back to its source.
 
 ## Notes & limitations
 

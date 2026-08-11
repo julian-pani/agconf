@@ -23,6 +23,7 @@ Full documentation available on GitHub: https://github.com/julian-pani/agconf
 | `sync` | Sync content from canonical repo (fetches latest by default) | `agconf sync` or `agconf sync --pinned` |
 | `check` | Verify managed files are unchanged (in a canonical repo, verifies compiled plugin freshness) | `agconf check` |
 | `compile` | Compile installable Claude Code / Codex plugins + marketplace from canonical content | `agconf compile` or `agconf compile --check` |
+| `enroll` | **[experimental, Claude]** Enroll a repo in a compiled marketplace via `.claude/settings.json` | `agconf enroll` |
 | `propose` | Propose local changes to managed content back to the canonical repo (opens a PR) | `agconf propose` |
 | `propose --new [path]` | Propose new (unmanaged) skills/rules/agents upstream; optional path filters discovery | `agconf propose --new .claude/skills/my-skill` |
 | `upgrade-cli` | Upgrade the CLI to latest version (auto-detects package manager) | `agconf upgrade-cli` |

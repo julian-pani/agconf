@@ -51,9 +51,10 @@ pnpm install:global       # Build + install globally
 - `rules.ts` - Sync modular rule files from canonical to downstream repos
 - `mcp.ts` - MCP server content type (discover/parse/validate one JSON file per server). Used only by plugin compilation, not by `sync`.
 - `plugins.ts` - **Plugin compilation** (canonical-side, push-based). Compiles canonical skills/agents/mcps into installable Claude Code (`.claude-plugin/`) and Codex (`.codex-plugin/`) plugins plus per-target marketplace indexes, committed into the canonical repo. Output is a pure projection (no managed metadata injected). Freshness is enforced by `verifyPluginsFresh` (recompile to temp + tree diff), not per-file hashes. See [Plugin Compilation](#plugin-compilation).
+- `enrollment.ts` - **EXPERIMENTAL, Claude-only** plugin enrollment (downstream-side). Instead of syncing files, a repo enrolls in a compiled marketplace by committing `extraKnownMarketplaces` + `enabledPlugins` to `.claude/settings.json`. Pure plan/merge/verify + thin settings I/O + best-effort overlap warnings. Driven by `experimental.enrollment` in downstream `.agconf/config.yaml`; written by `agconf enroll`, verified by `agconf check`.
 
 ### Commands (`cli/src/commands/`)
-Commands: init, sync, check (with `--hook` for pre-commit: branch-aware exit — block on master/main, warn on feature branches), compile, propose, upgrade-cli (with `--package-manager` option), canonical (init), config, completion
+Commands: init, sync, check (with `--hook` for pre-commit: branch-aware exit — block on master/main, warn on feature branches), compile, enroll (experimental), propose, upgrade-cli (with `--package-manager` option), canonical (init), config, completion
 
 > **Reminder**: When modifying command options in `cli/src/cli.ts`, you MUST also update `cli/src/commands/completion.ts`. See [CLI Command Changes](#cli-command-changes).
 
@@ -225,7 +226,7 @@ Beyond per-file hash verification, `check` also reconciles the managed files on 
 - **Ghosts**: a *managed* skill/rule/agent left on disk that the lockfile no longer lists (e.g. deleted from canonical but never cleaned up). Unmanaged user files are never flagged.
 - **Missing**: a lockfile-tracked skill/rule/agent with no file on disk (deleted manually after sync). Missing detection is presence-based (independent of managed metadata) and gated per target: rules on Claude, agents as `.claude/agents/*.md` (Claude) and `.codex/agents/*.toml` (Codex).
 
-**`check` is context-aware.** The above is the *downstream* path (lockfile present). In a *canonical* repo (an `agconf.yaml` with a `plugins` block), `check` instead — or additionally — runs `verifyPluginsFresh` (in `plugins.ts`) and fails (exit 1) if the committed plugin/marketplace artifacts have drifted from the canonical source. When modifying plugin compilation you MUST keep this canonical-side check (and `compile --check`, which shares `verifyPluginsFresh`) correct and tested in `check.test.ts` / `compile-command.test.ts`.
+**`check` is context-aware.** The above is the *downstream* path (lockfile present). In a *canonical* repo (an `agconf.yaml` with a `plugins` block), `check` instead — or additionally — runs `verifyPluginsFresh` (in `plugins.ts`) and fails (exit 1) if the committed plugin/marketplace artifacts have drifted from the canonical source. When modifying plugin compilation you MUST keep this canonical-side check (and `compile --check`, which shares `verifyPluginsFresh`) correct and tested in `check.test.ts` / `compile-command.test.ts`. A third context (EXPERIMENTAL): when the downstream `.agconf/config.yaml` declares `experimental.enrollment`, `check` also runs `verifyEnrollment` (in `enrollment.ts`) against `.claude/settings.json` and fails on drift; keep that path tested too.
 
 ### Content Hash Consistency
 **Critical:** All content hashes MUST use the same format: `sha256:` prefix + 12 hex characters.

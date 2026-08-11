@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stringify as stringifyYaml } from "yaml";
 import { checkCommand } from "../../src/commands/check.js";
 import { compileCommand } from "../../src/commands/compile.js";
+import { enrollCommand } from "../../src/commands/enroll.js";
 import { addManagedMetadata } from "../../src/core/managed-content.js";
 
 describe("check command", () => {
@@ -2052,6 +2053,90 @@ describe("check command (context combinations)", () => {
     // The config-load error must be swallowed; check still runs the downstream
     // path (which exits 1 here for "no managed files"), NOT throw a YAML error.
     await expect(checkCommand({ cwd: dir })).rejects.toThrow("process.exit called");
+    expect(mockExit).toHaveBeenCalledWith(1);
+  });
+});
+
+// =============================================================================
+// Experimental plugin enrollment (context-aware check, no lockfile/plugins)
+// =============================================================================
+
+describe("check command (plugin enrollment)", () => {
+  let dir: string;
+  let mockExit: ReturnType<typeof vi.spyOn>;
+  let consoleLogSpy: ReturnType<typeof vi.spyOn>;
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+
+  async function writeEnrollmentConfig(): Promise<void> {
+    await fs.mkdir(path.join(dir, ".agconf"), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, ".agconf", "config.yaml"),
+      stringifyYaml({
+        experimental: {
+          enrollment: {
+            marketplace: "acme-tools",
+            source: { repository: "acme/standards", ref: "v2.3.0" },
+            plugins: ["base"],
+          },
+        },
+      }),
+    );
+  }
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), "agconf-check-enroll-"));
+    mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit called");
+    }) as () => never);
+    consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(async () => {
+    mockExit.mockRestore();
+    consoleLogSpy.mockRestore();
+    consoleErrorSpy.mockRestore();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it("passes when .claude/settings.json matches the enrollment config", async () => {
+    await writeEnrollmentConfig();
+    await enrollCommand({ cwd: dir, quiet: true });
+
+    await checkCommand({ cwd: dir });
+    expect(mockExit).not.toHaveBeenCalled();
+    expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("enrollment is up to date"));
+  });
+
+  it("does not report 'Not synced' for an enrollment-only repo", async () => {
+    await writeEnrollmentConfig();
+    await enrollCommand({ cwd: dir, quiet: true });
+    await checkCommand({ cwd: dir });
+    expect(consoleLogSpy).not.toHaveBeenCalledWith(expect.stringContaining("Not synced"));
+  });
+
+  it("fails (exit 1) when settings.json was never written", async () => {
+    await writeEnrollmentConfig();
+    await expect(checkCommand({ cwd: dir })).rejects.toThrow("process.exit called");
+    expect(mockExit).toHaveBeenCalledWith(1);
+  });
+
+  it("fails (exit 1) when the enrolled marketplace ref drifts", async () => {
+    await writeEnrollmentConfig();
+    await enrollCommand({ cwd: dir, quiet: true });
+    // Tamper the committed settings: change the pinned ref.
+    const settingsPath = path.join(dir, ".claude", "settings.json");
+    const settings = JSON.parse(await fs.readFile(settingsPath, "utf-8"));
+    settings.extraKnownMarketplaces["acme-tools"].source.ref = "v1.0.0";
+    await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2));
+
+    await expect(checkCommand({ cwd: dir })).rejects.toThrow("process.exit called");
+    expect(mockExit).toHaveBeenCalledWith(1);
+  });
+
+  it("exits 1 silently in quiet mode when enrollment drifts", async () => {
+    await writeEnrollmentConfig();
+    await expect(checkCommand({ cwd: dir, quiet: true })).rejects.toThrow("process.exit called");
     expect(mockExit).toHaveBeenCalledWith(1);
   });
 });

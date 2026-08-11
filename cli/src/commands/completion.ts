@@ -40,6 +40,10 @@ const COMMANDS = {
     description: "Compile installable plugins + marketplace from canonical content",
     options: ["--check", "--bump", "-t", "--target", "-o", "--out", "-q", "--quiet"],
   },
+  enroll: {
+    description: "[experimental] Enroll this repo in a plugin marketplace (Claude)",
+    options: ["--local", "-q", "--quiet"],
+  },
   propose: {
     description: "Propose local changes back to canonical",
     options: [
