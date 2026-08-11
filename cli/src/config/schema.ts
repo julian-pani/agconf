@@ -254,6 +254,32 @@ export type DeliveryConfig = z.infer<typeof DeliveryConfigSchema>;
 export type DownstreamConfig = z.infer<typeof DownstreamConfigSchema>;
 
 // =============================================================================
+// User-scope Configuration Schema (~/.agconf/config.yaml)
+// =============================================================================
+// Preferences for the per-user store (`sync --scope user`). Like the downstream
+// config, this is human-authored INTENT (not machine state) — absent means
+// defaults apply. See cli/docs/DISTRIBUTION_SCOPES.md (F5b).
+
+/**
+ * Auto-sync behavior for the user store. On by default because the store is
+ * git-tracked and pre-overwrite backups are taken — the safety net makes silent
+ * updates safe. Set `enabled: false` to opt out entirely.
+ */
+export const AutosyncConfigSchema = z.object({
+  /** Whether `agconf autosync` (session-start + cron) does anything. Default true. */
+  enabled: z.boolean().default(true),
+  /** Cron cadence and session-start throttle window, in minutes. Default 10. */
+  interval_minutes: z.number().int().positive().default(10),
+});
+
+export const UserScopeConfigSchema = z.object({
+  autosync: AutosyncConfigSchema.default({}),
+});
+
+export type AutosyncConfig = z.infer<typeof AutosyncConfigSchema>;
+export type UserScopeConfig = z.infer<typeof UserScopeConfigSchema>;
+
+// =============================================================================
 // Resolved Configuration (Runtime)
 // =============================================================================
 // After loading and merging configs, we work with a resolved configuration

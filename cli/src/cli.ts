@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import pc from "picocolors";
+import { autosyncCommand } from "./commands/autosync.js";
 import { canonicalInitCommand } from "./commands/canonical.js";
 import { checkCommand } from "./commands/check.js";
 import { compileCommand } from "./commands/compile.js";
@@ -152,6 +153,26 @@ export function createCli(): Command {
     .action(async (options: { installHook?: boolean; quiet?: boolean }) => {
       await sessionCheckCommand(options);
     });
+
+  program
+    .command("autosync")
+    .description("Refresh the per-user store when behind canonical (session-start + cron runner)")
+    .option("--install", "Install the SessionStart hook + cron entry so this runs automatically")
+    .option("--uninstall", "Remove the agconf-autosync cron entry")
+    .option("--force", "Bypass the throttle window (used by the cron entry)")
+    .option("--trigger <trigger>", "Label for the log line: startup | cron | manual")
+    .option("-q, --quiet", "Minimal output")
+    .action(
+      async (options: {
+        install?: boolean;
+        uninstall?: boolean;
+        force?: boolean;
+        trigger?: string;
+        quiet?: boolean;
+      }) => {
+        await autosyncCommand(options);
+      },
+    );
 
   program
     .command("compile")

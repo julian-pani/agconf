@@ -41,6 +41,10 @@ const COMMANDS = {
     description: "Cross-scope duplication + integrity check (SessionStart hook)",
     options: ["--install-hook", "-q", "--quiet"],
   },
+  autosync: {
+    description: "Auto-refresh the per-user store (session-start + cron runner)",
+    options: ["--install", "--uninstall", "--force", "--trigger", "-q", "--quiet"],
+  },
   compile: {
     description: "Compile installable plugins + marketplace from canonical content",
     options: ["--check", "--bump", "-t", "--target", "-o", "--out", "-q", "--quiet"],

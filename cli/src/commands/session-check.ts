@@ -1,5 +1,6 @@
 import * as os from "node:os";
 import pc from "picocolors";
+import { maybeStartBackgroundAutosync, type SpawnFn } from "../core/autosync.js";
 import {
   type DuplicationFinding,
   detectCrossScopeDuplication,
@@ -17,6 +18,8 @@ export interface SessionCheckOptions {
   quiet?: boolean | undefined;
   /** Install the SessionStart hook into ~/.claude/settings.json instead of checking. */
   installHook?: boolean | undefined;
+  /** Test seam: inject the spawn used to launch the background auto-sync. */
+  autosyncSpawn?: SpawnFn | undefined;
 }
 
 function describeFinding(f: DuplicationFinding): string {
@@ -70,6 +73,13 @@ export async function sessionCheckCommand(options: SessionCheckOptions = {}): Pr
     if (!cross.userSynced) {
       return;
     }
+
+    // User scope is set up — kick off a throttled background refresh (auto-sync),
+    // detached so the hook returns instantly. No-op when autosync is disabled.
+    await maybeStartBackgroundAutosync(
+      homeDir,
+      options.autosyncSpawn ? { spawn: options.autosyncSpawn } : {},
+    );
 
     const integrity = await checkUserScope({ homeDir });
     const hasIntegrityIssue = !integrity.ok && integrity.hasLockfile;

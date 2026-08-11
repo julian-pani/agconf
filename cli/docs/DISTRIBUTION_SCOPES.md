@@ -420,9 +420,26 @@ Canonical content types and their reachable homes:
 - `agconf session-check --install-hook` installs an idempotent Claude Code
   SessionStart hook in `~/.claude/settings.json`, preserving existing settings/hooks.
 - **Deferred:** plugin-scope detection (needs reading harness plugin state, which is
-  version-specific) and network "behind-canonical" freshness (a session hook should
-  stay fast/offline). Both noted as follow-ups; repo↔user — the main double-load
-  hazard — is covered.
+  version-specific). repo↔user — the main double-load hazard — is covered. (The
+  "behind-canonical" freshness gap is now closed by F5b below.)
+
+**F5b — User-scope auto-sync** ✅ *implemented*
+- Keeps the per-user store current automatically (`agconf autosync`), **on by
+  default** — safe because the store is git-tracked and pre-overwrite backups are
+  taken. Disable with `autosync.enabled: false` in `~/.agconf/config.yaml`.
+- Two triggers, one runner: the SessionStart hook launches it **detached**
+  (`maybeStartBackgroundAutosync`) so the session never blocks; a `crontab` entry
+  (idempotent by the `# agconf-autosync` marker) runs it every `interval_minutes`
+  (default 10). `agconf autosync --install` wires up both; `--uninstall` removes the cron.
+- Cheap when current: resolves the latest version first and **skips the clone/write**
+  when the store is at/ahead (`runUserScopeSync({skipIfUpToDate})`). Session-start
+  runs are throttled via `~/.agconf/autosync-state.json` (`last_attempt`); cron uses
+  `--force`. Every run appends to `~/.agconf/logs/autosync.log` (rotated). Always
+  best-effort/exit-0.
+- **In-session caveat (documented):** memory files load at launch, so a startup
+  auto-sync lands for the *next* session; the cron keeps the gap ≤ interval.
+- Config-vs-state kept clean: intent in `config.yaml`, throttle in `autosync-state.json`,
+  sync record in the lockfile.
 
 **F6 — Auto-bump** ✅ *implemented*
 - `agconf compile --bump` (=`auto`≡patch; or `patch`/`minor`/`major`) bumps each

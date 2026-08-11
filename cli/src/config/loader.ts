@@ -6,6 +6,8 @@ import {
   CanonicalRepoConfigSchema,
   type DownstreamConfig,
   DownstreamConfigSchema,
+  type UserScopeConfig,
+  UserScopeConfigSchema,
 } from "./schema.js";
 
 // Config file names
@@ -52,6 +54,26 @@ export async function loadDownstreamConfig(
       return undefined;
     }
     throw new Error(`Failed to load .agconf/${DOWNSTREAM_CONFIG}: ${error}`);
+  }
+}
+
+/**
+ * Load user-scope config (~/.agconf/config.yaml). Returns defaults (autosync
+ * enabled, 10-minute interval) when the file is absent — the config is optional
+ * INTENT, so no file means "use defaults". Malformed YAML still throws.
+ */
+export async function loadUserScopeConfig(homeDir: string): Promise<UserScopeConfig> {
+  const configPath = path.join(homeDir, ".agconf", DOWNSTREAM_CONFIG);
+
+  try {
+    const content = await fs.readFile(configPath, "utf-8");
+    const parsed = parseYaml(content);
+    return UserScopeConfigSchema.parse(parsed ?? {});
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return UserScopeConfigSchema.parse({});
+    }
+    throw new Error(`Failed to load ~/.agconf/${DOWNSTREAM_CONFIG}: ${error}`);
   }
 }
 

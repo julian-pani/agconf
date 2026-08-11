@@ -62,11 +62,15 @@ describe("session-check command", () => {
       markerPrefix: "agconf",
     });
 
-    await sessionCheckCommand({ cwd: repo, home });
+    // Inject a no-op spawn so the background auto-sync doesn't launch a real process.
+    const autosyncSpawn = vi.fn();
+    await sessionCheckCommand({ cwd: repo, home, autosyncSpawn });
 
     const output = consoleLogSpy.mock.calls.map((c) => String(c[0])).join("\n");
     expect(output).toContain("more than one scope");
     expect(output).toContain("instructions");
     expect(mockExit).not.toHaveBeenCalled(); // advisory: always exit 0
+    // User scope is synced, so a background auto-sync is triggered.
+    expect(autosyncSpawn).toHaveBeenCalledTimes(1);
   });
 });
