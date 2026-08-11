@@ -1,15 +1,19 @@
 /**
- * User-scope sync: project the canonical **global instructions block** into a
- * developer's per-user harness files instead of committing it into every repo.
+ * User-scope sync: project the canonical company content into a developer's
+ * per-user harness locations instead of committing it into every repo.
  *
- * - Claude: `~/.claude/CLAUDE.md`
- * - Codex:  `~/.codex/AGENTS.md`
+ * - **instructions** (global block): `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`
+ * - **skills**: `~/.claude/skills/`, `~/.agents/skills/` (Codex)
+ * - **subagents**: `~/.claude/agents/*.md`, `~/.codex/agents/*.toml`
+ * - **rules**: `~/.claude/rules/*.md` (Claude); a rules section inside
+ *   `~/.codex/AGENTS.md` (Codex)
  *
- * agconf owns only its marker block (`<!-- {prefix}:global:start/end -->`) in
- * those files; everything else (the developer's personal instructions) is
- * preserved. The company block is pure canonical content — identical to the
- * repo-scope global block — so freshness verification reuses the same marker
- * hashing (`hasGlobalBlockChanges`).
+ * These per-user paths are exactly `<homeDir>/<the repo-scope relative path>`,
+ * so skills/agents/rules reuse the repo-scope sync functions with
+ * `targetDir = homeDir` — no separate placement logic. agconf owns only its
+ * marker block / managed files; the developer's own content is preserved. The
+ * company block is pure canonical (same hashing as repo scope), so freshness
+ * verification reuses `hasGlobalBlockChanges` and the managed-file checks.
  *
  * A git-tracked store at `~/.agconf/` holds the user lockfile, a `global.md`
  * mirror (for readable `git diff`s across updates), a never-overwritten
@@ -25,16 +29,37 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { promisify } from "node:util";
+import fg from "fast-glob";
+import { toMetadataPrefix } from "../utils/prefix.js";
 import { readLockfile, writeLockfile } from "./lockfile.js";
+import {
+  checkAgentFiles,
+  checkCodexAgentFiles,
+  checkRuleFiles,
+  checkSkillFiles,
+} from "./managed-content.js";
 import {
   buildGlobalBlock,
   computeGlobalBlockHash,
   getMarkers,
   hasGlobalBlockChanges,
+  hasRulesSectionChanges,
   isAgentsMdManaged,
+  parseRulesSection,
 } from "./markers.js";
 import type { ResolvedSource } from "./source.js";
-import type { Target } from "./targets.js";
+import {
+  deleteOrphanedAgents,
+  deleteOrphanedRules,
+  deleteOrphanedSkills,
+  findOrphanedAgents,
+  findOrphanedRules,
+  findOrphanedSkills,
+  syncAgents,
+  syncRules,
+  syncSkillsToTarget,
+} from "./sync.js";
+import { getTargetConfig, type Target } from "./targets.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -107,6 +132,16 @@ async function pathExists(p: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+/** Top-level skill directory names in the canonical skills dir. */
+async function discoverSkillNames(skillsPath: string): Promise<string[]> {
+  try {
+    const dirs = await fg("*/", { cwd: skillsPath, onlyDirectories: true, deep: 1 });
+    return dirs.map((d) => d.replace(/\/$/, "")).sort();
+  } catch {
+    return [];
   }
 }
 
@@ -229,6 +264,14 @@ export interface UserSyncResult {
   userMdCreated: boolean;
   committed: boolean;
   globalBlockHash: string;
+  /** Skill names projected to user scope. */
+  skills: string[];
+  /** Rule relative paths projected. */
+  rules: string[];
+  /** Agent relative paths projected. */
+  agents: string[];
+  /** Content removed as orphans (deleted from canonical since the last sync). */
+  removed: { skills: string[]; rules: string[]; agents: string[] };
 }
 
 export interface UserSyncOptions {
@@ -254,6 +297,9 @@ export async function syncUserScope(
   const stamp = (options.now ?? new Date().toISOString()).replace(/[:.]/g, "-");
 
   const canonical = (await fs.readFile(source.agentsMdPath, "utf-8")).trim();
+  const metadataPrefix = toMetadataPrefix(markerPrefix);
+  // Previous user lockfile — its content lists drive orphan cleanup after sync.
+  const previous = (await readLockfile(homeDir))?.lockfile;
 
   await fs.mkdir(paths.storeDir, { recursive: true });
   await fs.writeFile(paths.globalMdPath, `${canonical}\n`, "utf-8");
@@ -285,16 +331,101 @@ export async function syncUserScope(
 
   await rotateBackups(paths.backupsDir);
 
+  // Skills → user dirs. The per-target skill sync writes to
+  // `<homeDir>/<config.skillsDir>` — i.e. ~/.claude/skills and ~/.agents/skills.
+  const skills = await discoverSkillNames(source.skillsPath);
+  for (const target of options.targets) {
+    await syncSkillsToTarget(
+      homeDir,
+      source.skillsPath,
+      skills,
+      getTargetConfig(target),
+      markerPrefix,
+    );
+  }
+
+  // Subagents → ~/.claude/agents/*.md and ~/.codex/agents/*.toml.
+  let agents: string[] = [];
+  let agentsHash = "";
+  if (source.agentsPath) {
+    const result = await syncAgents({
+      sourceAgentsPath: source.agentsPath,
+      targetDir: homeDir,
+      targets: options.targets,
+      metadataPrefix,
+    });
+    agents = result.agents.map((a) => a.relativePath);
+    agentsHash = result.contentHash;
+  }
+
+  // Rules → Claude ~/.claude/rules/*.md; Codex a rules section inside
+  // ~/.codex/AGENTS.md (which already holds the projected global block).
+  let rules: string[] = [];
+  let rulesHash = "";
+  if (source.rulesPath) {
+    const codexFile = getUserInstructionFile(homeDir, "codex");
+    const codexContent = options.targets.includes("codex")
+      ? ((await readIfExists(codexFile)) ?? "")
+      : "";
+    const result = await syncRules({
+      sourceRulesPath: source.rulesPath,
+      targetDir: homeDir,
+      targets: options.targets,
+      markerPrefix,
+      metadataPrefix,
+      agentsMdContent: codexContent,
+    });
+    rules = result.rules.map((r) => r.relativePath);
+    rulesHash = result.contentHash;
+    if (result.updatedAgentsMd && options.targets.includes("codex")) {
+      await fs.writeFile(codexFile, result.updatedAgentsMd, "utf-8");
+    }
+  }
+
   // User lockfile lands at ~/.agconf/lockfile.json (writeLockfile keys off <dir>/.agconf).
   const lockfileOptions: Parameters<typeof writeLockfile>[1] = {
     source: source.source,
     globalBlockContent: canonical,
-    skills: [],
+    skills,
     targets: options.targets,
     markerPrefix,
   };
   if (options.pinnedVersion) lockfileOptions.pinnedVersion = options.pinnedVersion;
+  if (rules.length > 0) {
+    lockfileOptions.rules = { files: rules, content_hash: rulesHash };
+  }
+  if (agents.length > 0) {
+    lockfileOptions.agents = { files: agents, content_hash: agentsHash };
+  }
   await writeLockfile(homeDir, lockfileOptions);
+
+  // Orphan cleanup: content dropped from canonical is removed from user scope
+  // (auto — the store is git-tracked and backed up, so no prompt is needed).
+  const prevSkills = previous?.content.skills ?? [];
+  const prevRules = previous?.content.rules?.files ?? [];
+  const prevAgents = previous?.content.agents?.files ?? [];
+  const orphanOpt = { metadataPrefix };
+  const removedSkills = await deleteOrphanedSkills(
+    homeDir,
+    findOrphanedSkills(prevSkills, skills),
+    options.targets,
+    prevSkills,
+    orphanOpt,
+  );
+  const removedRules = await deleteOrphanedRules(
+    homeDir,
+    findOrphanedRules(prevRules, rules),
+    options.targets,
+    prevRules,
+    orphanOpt,
+  );
+  const removedAgents = await deleteOrphanedAgents(
+    homeDir,
+    findOrphanedAgents(prevAgents, agents),
+    options.targets,
+    prevAgents,
+    orphanOpt,
+  );
 
   const committed = await commitStore(paths.storeDir, `agconf: user-scope sync ${stamp}`);
 
@@ -304,6 +435,14 @@ export async function syncUserScope(
     userMdCreated,
     committed,
     globalBlockHash: computeGlobalBlockHash(canonical),
+    skills,
+    rules,
+    agents,
+    removed: {
+      skills: removedSkills.deleted,
+      rules: removedRules.deleted,
+      agents: removedAgents.deleted,
+    },
   };
 }
 
@@ -346,6 +485,38 @@ export async function checkUserScope(options: { homeDir?: string }): Promise<Use
       hasGlobalBlockChanges(content, { prefix: markerPrefix })
     ) {
       modified.push({ target, path: filePath });
+    }
+  }
+
+  // Skills / rules / agents drift — reuse the repo-scope managed-file checks at
+  // homeDir (the per-user paths line up: ~/.claude/skills, ~/.agents/skills, etc.).
+  const metaOpt = { metadataPrefix: toMetadataPrefix(markerPrefix) };
+  const inferTarget = (p: string): Target =>
+    p.includes(".codex") || p.includes(".agents") ? "codex" : "claude";
+
+  for (const s of await checkSkillFiles(homeDir, targets, metaOpt)) {
+    if (s.isManaged && s.hasChanges) modified.push({ target: inferTarget(s.path), path: s.path });
+  }
+  for (const r of await checkRuleFiles(homeDir, targets, metaOpt)) {
+    if (r.isManaged && r.hasChanges) modified.push({ target: "claude", path: r.path });
+  }
+  if (targets.includes("claude")) {
+    for (const a of await checkAgentFiles(homeDir, metaOpt)) {
+      if (a.isManaged && a.hasChanges) modified.push({ target: "claude", path: a.path });
+    }
+  }
+  if (targets.includes("codex")) {
+    for (const a of await checkCodexAgentFiles(homeDir, metaOpt)) {
+      if (a.isManaged && a.hasChanges) modified.push({ target: "codex", path: a.path });
+    }
+    // Codex rules live in a section inside ~/.codex/AGENTS.md.
+    const codexContent = await readIfExists(getUserInstructionFile(homeDir, "codex"));
+    if (
+      codexContent &&
+      parseRulesSection(codexContent, { prefix: markerPrefix }).hasMarkers &&
+      hasRulesSectionChanges(codexContent, { prefix: markerPrefix })
+    ) {
+      modified.push({ target: "codex", path: getUserInstructionFile(homeDir, "codex") });
     }
   }
 

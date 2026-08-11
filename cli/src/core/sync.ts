@@ -840,7 +840,7 @@ interface SkillSyncResult {
   modifiedSkills: string[];
 }
 
-async function syncSkillsToTarget(
+export async function syncSkillsToTarget(
   targetDir: string,
   sourceSkillsPath: string,
   skillNames: string[],

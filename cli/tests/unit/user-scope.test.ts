@@ -169,4 +169,109 @@ describe("user-scope", () => {
       expect(result.ok).toBe(true);
     });
   });
+
+  describe("content types (skills / agents / rules)", () => {
+    let home: string;
+    let canonical: string;
+
+    const exists = (p: string) =>
+      fs
+        .access(p)
+        .then(() => true)
+        .catch(() => false);
+
+    beforeEach(async () => {
+      home = await fs.mkdtemp(path.join(os.tmpdir(), "agconf-usc-content-home-"));
+      canonical = await fs.mkdtemp(path.join(os.tmpdir(), "agconf-usc-content-canon-"));
+      await fs.mkdir(path.join(canonical, "instructions"), { recursive: true });
+      await fs.mkdir(path.join(canonical, "skills", "my-skill"), { recursive: true });
+      await fs.mkdir(path.join(canonical, "agents"), { recursive: true });
+      await fs.mkdir(path.join(canonical, "rules", "security"), { recursive: true });
+      await fs.writeFile(
+        path.join(canonical, "instructions", "AGENTS.md"),
+        "# Standards\n\nDo things.",
+      );
+      await fs.writeFile(
+        path.join(canonical, "skills", "my-skill", "SKILL.md"),
+        "---\nname: my-skill\ndescription: A skill\n---\n\n# My Skill\n",
+      );
+      await fs.writeFile(
+        path.join(canonical, "agents", "reviewer.md"),
+        "---\nname: reviewer\ndescription: Reviews code\n---\n\nReview.\n",
+      );
+      await fs.writeFile(
+        path.join(canonical, "rules", "security", "auth.md"),
+        "---\ntitle: Auth\n---\n\n# Auth\n\nUse auth.\n",
+      );
+      await fs.writeFile(
+        path.join(canonical, "agconf.yaml"),
+        [
+          'version: "1.0.0"',
+          "meta:",
+          "  name: test",
+          "content:",
+          "  agents_dir: agents",
+          "  rules_dir: rules",
+          "targets: [claude, codex]",
+          "",
+        ].join("\n"),
+      );
+    });
+
+    afterEach(async () => {
+      await fs.rm(home, { recursive: true, force: true });
+      await fs.rm(canonical, { recursive: true, force: true });
+    });
+
+    it("projects skills, agents, and rules into the per-user locations", async () => {
+      const source = await resolveLocalSource({ path: canonical });
+      const result = await syncUserScope(source, { targets: ["claude", "codex"], homeDir: home });
+
+      // Skills → both harness skill dirs (~/.claude/skills, ~/.agents/skills).
+      expect(await exists(path.join(home, ".claude", "skills", "my-skill", "SKILL.md"))).toBe(true);
+      expect(await exists(path.join(home, ".agents", "skills", "my-skill", "SKILL.md"))).toBe(true);
+      // Subagents → Claude .md + Codex .toml.
+      expect(await exists(path.join(home, ".claude", "agents", "reviewer.md"))).toBe(true);
+      expect(await exists(path.join(home, ".codex", "agents", "reviewer.toml"))).toBe(true);
+      // Rules → Claude files + a Codex rules section in ~/.codex/AGENTS.md.
+      expect(await exists(path.join(home, ".claude", "rules", "security", "auth.md"))).toBe(true);
+      expect(await fs.readFile(path.join(home, ".codex", "AGENTS.md"), "utf-8")).toContain("Auth");
+
+      expect(result.skills).toEqual(["my-skill"]);
+      expect(result.rules).toContain("security/auth.md");
+      expect(result.agents).toContain("reviewer.md");
+    });
+
+    it("check --scope user passes after sync and flags a tampered skill", async () => {
+      const source = await resolveLocalSource({ path: canonical });
+      await syncUserScope(source, { targets: ["claude"], homeDir: home });
+      expect((await checkUserScope({ homeDir: home })).ok).toBe(true);
+
+      await fs.appendFile(
+        path.join(home, ".claude", "skills", "my-skill", "SKILL.md"),
+        "\ntampered\n",
+      );
+      const check = await checkUserScope({ homeDir: home });
+      expect(check.ok).toBe(false);
+      expect(check.modified.some((m) => m.path.includes("my-skill"))).toBe(true);
+    });
+
+    it("removes a skill dropped from canonical (orphan cleanup)", async () => {
+      let source = await resolveLocalSource({ path: canonical });
+      await syncUserScope(source, { targets: ["claude", "codex"], homeDir: home });
+      expect(await exists(path.join(home, ".claude", "skills", "my-skill", "SKILL.md"))).toBe(true);
+
+      await fs.rm(path.join(canonical, "skills", "my-skill"), { recursive: true, force: true });
+      source = await resolveLocalSource({ path: canonical });
+      const result = await syncUserScope(source, { targets: ["claude", "codex"], homeDir: home });
+
+      expect(result.removed.skills).toContain("my-skill");
+      expect(await exists(path.join(home, ".claude", "skills", "my-skill", "SKILL.md"))).toBe(
+        false,
+      );
+      expect(await exists(path.join(home, ".agents", "skills", "my-skill", "SKILL.md"))).toBe(
+        false,
+      );
+    });
+  });
 });

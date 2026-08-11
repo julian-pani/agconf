@@ -371,11 +371,19 @@ Canonical content types and their reachable homes:
 ## 14. Acceptance criteria
 
 **F1 — Scopes** ✅ *implemented*
-- `agconf sync --scope user` writes the company global block inside markers into
-  `~/.claude/CLAUDE.md` and/or `~/.codex/AGENTS.md`, preserving surrounding content,
-  and writes `~/.agconf/lockfile.json`.
+- `agconf sync --scope user` projects the company content into per-user harness
+  locations, preserving surrounding content, and writes `~/.agconf/lockfile.json`:
+  - **instructions** — the global block into `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`;
+  - **skills** — `~/.claude/skills`, `~/.agents/skills`;
+  - **subagents** — `~/.claude/agents/*.md`, `~/.codex/agents/*.toml`;
+  - **rules** — `~/.claude/rules/` files, and a rules section in `~/.codex/AGENTS.md`.
+  - Each per-user path is `<homeDir>/<repo-relative path>`, so skills/agents/rules
+    reuse the repo-scope sync functions with `targetDir = homeDir`. Content dropped
+    from canonical is orphan-cleaned at user scope (auto — the store is backed up).
+    MCPs are **not** projected to user scope (plugin-only).
 - `--scope repo` (default) is a byte-for-byte regression match to prior behavior.
-- `agconf check --scope user` verifies user-scope managed integrity and exits 1 on drift.
+- `agconf check --scope user` verifies user-scope managed integrity (block + skills
+  + rules + agents) and exits 1 on drift.
 - Wired on `sync` and `check`; `init --scope user` is deferred — first-time
   projection is already covered by `sync --scope user`.
 

@@ -185,7 +185,7 @@ agconf sync --scope user --source your-org/standards
 agconf sync --scope user
 ```
 
-This writes only the company **global instructions block** into `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` (preserving your own content), tracked in a git store at `~/.agconf/` (run `git -C ~/.agconf log` to see diffs). Your personal instructions go in the never-overwritten `~/.agconf/USER.md` (Claude imports it automatically; on Codex it's referenced by a note). Any pre-existing file that would be overwritten is backed up under `~/.agconf/backups/` first. Skills/agents/mcps are delivered separately via plugins (see the delivery map), so user scope carries instructions only.
+This projects the company standards into your per-user harness locations, preserving your own content: the **global instructions block** into `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`, plus **skills** (`~/.claude/skills`, `~/.agents/skills`), **subagents** (`~/.claude/agents`, `~/.codex/agents`), and **rules** (`~/.claude/rules`; a rules section in `~/.codex/AGENTS.md`). It's all tracked in a git store at `~/.agconf/` (run `git -C ~/.agconf log` to see diffs). Your personal instructions go in the never-overwritten `~/.agconf/USER.md` (Claude imports it automatically; on Codex it's referenced by a note). Any pre-existing file that would be overwritten is backed up under `~/.agconf/backups/` first. (MCP servers are delivered via plugins, not user scope.)
 
 ### `agconf check`
 
