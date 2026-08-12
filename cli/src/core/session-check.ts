@@ -115,13 +115,32 @@ interface SessionStartEntry {
 export async function installSessionStartHook(homeDir: string): Promise<HookInstallResult> {
   const settingsPath = path.join(homeDir, ".claude", "settings.json");
 
+  // Start fresh ONLY when the file is genuinely absent. If it exists but is
+  // unreadable or not a JSON object, refuse rather than overwrite the user's
+  // real settings — a malformed settings.json is theirs to fix, not ours to wipe.
   let settings: Record<string, unknown> = {};
+  let raw: string | null = null;
   try {
-    const raw = await fs.readFile(settingsPath, "utf-8");
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object") settings = parsed as Record<string, unknown>;
-  } catch {
-    // No settings file yet (or unparseable) — start fresh, but only overwrite on write.
+    raw = await fs.readFile(settingsPath, "utf-8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    // ENOENT: no settings file yet — safe to create one.
+  }
+  if (raw !== null) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error(
+        `Refusing to modify ${settingsPath}: it exists but is not valid JSON. Fix or remove it, then re-run.`,
+      );
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error(
+        `Refusing to modify ${settingsPath}: expected a JSON object at the top level.`,
+      );
+    }
+    settings = parsed as Record<string, unknown>;
   }
 
   const hooks = (

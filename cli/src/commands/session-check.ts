@@ -41,8 +41,10 @@ function describeFinding(f: DuplicationFinding): string {
 export async function sessionCheckCommand(options: SessionCheckOptions = {}): Promise<void> {
   const homeDir = options.home ?? os.homedir();
 
-  try {
-    if (options.installHook) {
+  // Explicit admin action — surface failures instead of swallowing them (unlike
+  // the advisory check path below, which must never break a session).
+  if (options.installHook) {
+    try {
       const result = await installSessionStartHook(homeDir);
       if (!options.quiet) {
         console.log(
@@ -51,9 +53,14 @@ export async function sessionCheckCommand(options: SessionCheckOptions = {}): Pr
             : `${pc.green("✓")} Installed agconf session-check SessionStart hook (${result.settingsPath})`,
         );
       }
-      return;
+    } catch (err) {
+      console.error(pc.red(`✗ ${err instanceof Error ? err.message : String(err)}`));
+      process.exitCode = 1;
     }
+    return;
+  }
 
+  try {
     const repoDir = await getGitRoot(options.cwd ?? process.cwd());
     const cross = await detectCrossScopeDuplication({ repoDir, homeDir });
 

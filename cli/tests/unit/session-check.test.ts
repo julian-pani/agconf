@@ -134,5 +134,16 @@ describe("session-check core", () => {
       expect(settings.hooks.PreToolUse).toHaveLength(1); // preserved
       expect(settings.hooks.SessionStart[0].hooks[0].command).toContain("session-check");
     });
+
+    it("refuses to overwrite an existing but malformed settings.json", async () => {
+      const settingsPath = path.join(home, ".claude", "settings.json");
+      await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+      const malformed = '{ "model": "opus", bad json here';
+      await fs.writeFile(settingsPath, malformed);
+
+      await expect(installSessionStartHook(home)).rejects.toThrow(/not valid JSON/);
+      // The user's file is left exactly as it was — never clobbered.
+      expect(await fs.readFile(settingsPath, "utf-8")).toBe(malformed);
+    });
   });
 });
