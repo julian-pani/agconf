@@ -405,9 +405,14 @@ Canonical content types and their reachable homes:
 
 **F4 — Backups + git store** ✅ *implemented*
 - `~/.agconf/` is initialized as a git repo; each user-scope sync produces a commit
-  (best-effort — a missing/misconfigured git is non-fatal).
+  (best-effort — a missing/misconfigured git is non-fatal). A store `.gitignore`
+  keeps machine-local artifacts (`backups/`, `logs/`, `autosync-state.json`) out of
+  that history, so the committed diff is just the company block + lockfile.
 - Overwriting a drifted/unmanaged user-scope file first creates a copy under
-  `~/.agconf/backups/<timestamp>/`; backups rotate to the last 10.
+  `~/.agconf/backups/<timestamp>/`; backups rotate to the last 10. This covers both
+  the instruction files and the projected content (a divergent unmanaged skill,
+  rule, or agent is detected by the repo-scope overwrite guard and backed up before
+  the projection replaces it).
 
 **F5 — Dedup + freshness hook** ✅ *implemented*
 - `agconf session-check` prints/injects a warning when agconf-managed content of a
@@ -430,7 +435,10 @@ Canonical content types and their reachable homes:
 - Two triggers, one runner: the SessionStart hook launches it **detached**
   (`maybeStartBackgroundAutosync`) so the session never blocks; a `crontab` entry
   (idempotent by the `# agconf-autosync` marker) runs it every `interval_minutes`
-  (default 10). `agconf autosync --install` wires up both; `--uninstall` removes the cron.
+  (default 10). `agconf autosync --install` wires up both (a crontab failure is a
+  non-fatal warning — session-start autosync still works); `--uninstall` removes the
+  cron and points at the real off-switch (`autosync.enabled: false`), leaving the
+  SessionStart hook (shared with the duplication check) in place.
 - Cheap when current: resolves the latest version first and **skips the clone/write**
   when the store is at/ahead (`runUserScopeSync({skipIfUpToDate})`). Session-start
   runs are throttled via `~/.agconf/autosync-state.json` (`last_attempt`); cron uses
