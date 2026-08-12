@@ -156,9 +156,15 @@ const defaultCrontabIO: CrontabIO = {
     try {
       const { stdout } = await execFileAsync("crontab", ["-l"]);
       return stdout;
-    } catch {
-      // No crontab yet (crontab -l exits non-zero) or crontab missing.
-      return "";
+    } catch (err) {
+      const e = err as { stderr?: unknown; code?: unknown };
+      const stderr = typeof e.stderr === "string" ? e.stderr : "";
+      // A genuinely empty crontab ("no crontab for <user>") or a missing crontab
+      // binary (ENOENT) → "" is safe. But any OTHER failure must NOT be treated
+      // as empty: doing so would make the next write() wipe the user's real
+      // entries. Surface it so the caller can report instead of clobbering.
+      if (/no crontab/i.test(stderr) || e.code === "ENOENT") return "";
+      throw err;
     }
   },
   write(content: string) {
@@ -200,8 +206,16 @@ export async function uninstallCron(
 export type SpawnFn = (command: string, args: string[]) => void;
 
 const defaultSpawn: SpawnFn = (command, args) => {
-  const child = spawn(command, args, { detached: true, stdio: "ignore" });
-  child.unref();
+  try {
+    const child = spawn(command, args, { detached: true, stdio: "ignore" });
+    // An ENOENT (or other) spawn failure surfaces as an async 'error' event; with
+    // no listener Node rethrows it as an uncaught exception that would crash the
+    // hosting process. Swallow it — the background launch is strictly best-effort.
+    child.on("error", () => {});
+    child.unref();
+  } catch {
+    // spawn threw synchronously (bad args, etc.) — ignore, best-effort.
+  }
 };
 
 /**

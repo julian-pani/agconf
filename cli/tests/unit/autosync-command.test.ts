@@ -111,4 +111,52 @@ describe("autosync command", () => {
     expect(written).toContain("# agconf-autosync");
     expect(written).toContain("*/10 * * * *");
   });
+
+  it("--install cron line passes --force so scheduled runs bypass the throttle", async () => {
+    let written = "";
+    const io = {
+      read: async () => "",
+      write: async (c: string) => {
+        written = c;
+      },
+    };
+
+    // No explicit `invocation` — exercise the real default cron invocation.
+    await autosyncCommand({ home, install: true, crontabIo: io });
+
+    expect(written).toContain("--trigger cron --force");
+  });
+
+  it("--install still installs the hook when the crontab is unavailable", async () => {
+    const io = {
+      read: async () => {
+        throw new Error("crontab: command not found");
+      },
+      write: async () => {},
+    };
+
+    await autosyncCommand({ home, install: true, crontabIo: io });
+
+    // Hook was installed despite the cron failure, and the failure was surfaced
+    // (not swallowed into a crontab wipe).
+    const settings = JSON.parse(
+      await fs.readFile(path.join(home, ".claude", "settings.json"), "utf-8"),
+    );
+    expect(settings.hooks.SessionStart[0].hooks[0].command).toContain("session-check");
+    const logged = consoleLogSpy.mock.calls.flat().join(" ");
+    expect(logged).toContain("cron not installed");
+  });
+
+  it("--uninstall reports gracefully when the crontab read fails", async () => {
+    const io = {
+      read: async () => {
+        throw new Error("crontab read failed");
+      },
+      write: async () => {},
+    };
+
+    await expect(
+      autosyncCommand({ home, uninstall: true, crontabIo: io }),
+    ).resolves.toBeUndefined();
+  });
 });
