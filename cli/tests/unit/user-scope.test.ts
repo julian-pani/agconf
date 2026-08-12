@@ -35,6 +35,17 @@ describe("user-scope", () => {
       expect(out).toContain(markers.globalStart);
     });
 
+    it("preserves the user's own blank lines in prepended content", () => {
+      // A fenced code block that intentionally contains 3 consecutive newlines.
+      const userContent = "# Notes\n\nfirst\n\n\nsecond\n";
+      const out = projectGlobalBlock(userContent, "CANON", {
+        markerPrefix: "agconf",
+        personalLine: "@~/.agconf/USER.md",
+      });
+      // The user's double-blank-line gap survives verbatim (not collapsed).
+      expect(out).toContain("first\n\n\nsecond");
+    });
+
     it("replaces the managed block in place on re-projection (no personal-line dup)", () => {
       const first = projectGlobalBlock("existing user text", "CANON", {
         markerPrefix: "agconf",
@@ -109,6 +120,16 @@ describe("user-scope", () => {
       expect(await exists(path.join(paths.storeDir, "lockfile.json"))).toBe(true);
       expect(result.userMdCreated).toBe(true);
       expect(result.committed).toBe(true); // store git-committed
+    });
+
+    it("writes a store .gitignore excluding machine-local artifacts", async () => {
+      const source = await resolveLocalSource({ path: canonical });
+      await syncUserScope(source, { targets: ["claude"], homeDir: home });
+
+      const gitignore = await read(path.join(getUserPaths(home).storeDir, ".gitignore"));
+      expect(gitignore).toContain("backups/");
+      expect(gitignore).toContain("logs/");
+      expect(gitignore).toContain("autosync-state.json");
     });
 
     it("never overwrites USER.md after it exists", async () => {
@@ -254,6 +275,68 @@ describe("user-scope", () => {
       const check = await checkUserScope({ homeDir: home });
       expect(check.ok).toBe(false);
       expect(check.modified.some((m) => m.path.includes("my-skill"))).toBe(true);
+    });
+
+    it("backs up a divergent unmanaged skill before projecting over it", async () => {
+      // Developer already has their own my-skill (unmanaged, different content).
+      await fs.mkdir(path.join(home, ".claude", "skills", "my-skill"), { recursive: true });
+      await fs.writeFile(
+        path.join(home, ".claude", "skills", "my-skill", "SKILL.md"),
+        "---\nname: my-skill\ndescription: MINE\n---\n\n# My own version\n",
+      );
+
+      const source = await resolveLocalSource({ path: canonical });
+      const result = await syncUserScope(source, {
+        targets: ["claude"],
+        homeDir: home,
+        now: "2026-08-05T00:00:00.000Z",
+      });
+
+      // A backup was taken and holds the developer's original content.
+      const backedUp = result.contentBackups.find((p) => p.includes("my-skill"));
+      expect(backedUp).toBeTruthy();
+      const backupSkill = await fs.readFile(path.join(backedUp as string, "SKILL.md"), "utf-8");
+      expect(backupSkill).toContain("My own version");
+
+      // The projected skill is now the managed canonical version.
+      const projected = await fs.readFile(
+        path.join(home, ".claude", "skills", "my-skill", "SKILL.md"),
+        "utf-8",
+      );
+      expect(projected).toContain("# My Skill");
+    });
+
+    it("check flags a skill deleted from disk as missing (absolute path)", async () => {
+      const source = await resolveLocalSource({ path: canonical });
+      await syncUserScope(source, { targets: ["claude"], homeDir: home });
+
+      await fs.rm(path.join(home, ".claude", "skills", "my-skill"), {
+        recursive: true,
+        force: true,
+      });
+
+      const check = await checkUserScope({ homeDir: home });
+      expect(check.ok).toBe(false);
+      const miss = check.missing.find((m) => m.path.includes("my-skill"));
+      expect(miss).toBeTruthy();
+      expect(path.isAbsolute(miss?.path as string)).toBe(true);
+    });
+
+    it("check flags a managed skill dropped from the lockfile as a ghost", async () => {
+      const source = await resolveLocalSource({ path: canonical });
+      await syncUserScope(source, { targets: ["claude"], homeDir: home });
+
+      // Drop my-skill from the lockfile's tracked set while it stays on disk.
+      const lockPath = path.join(getUserPaths(home).storeDir, "lockfile.json");
+      const lock = JSON.parse(await fs.readFile(lockPath, "utf-8"));
+      lock.content.skills = [];
+      await fs.writeFile(lockPath, JSON.stringify(lock, null, 2), "utf-8");
+
+      const check = await checkUserScope({ homeDir: home });
+      expect(check.ok).toBe(false);
+      const ghost = check.ghosts.find((g) => g.path.includes("my-skill"));
+      expect(ghost).toBeTruthy();
+      expect(path.isAbsolute(ghost?.path as string)).toBe(true);
     });
 
     it("removes a skill dropped from canonical (orphan cleanup)", async () => {

@@ -83,6 +83,14 @@ export async function syncUserScopeCommand(options: UserScopeSyncOptions): Promi
     if (result.userMdCreated) {
       console.log(pc.dim(`  scaffolded ${getUserPaths(homeDir).userMdPath} (your personal layer)`));
     }
+    if (result.contentBackups.length > 0) {
+      console.log();
+      console.log(
+        pc.dim(
+          `  backed up ${result.contentBackups.length} conflicting file(s) to ${getUserPaths(homeDir).backupsDir} before overwriting`,
+        ),
+      );
+    }
     console.log();
     console.log(
       result.committed
@@ -129,10 +137,11 @@ export async function checkUserScopeCommand(options: UserScopeCheckOptions): Pro
 
   if (!options.quiet) {
     console.log();
-    console.log(`${pc.red("✗")} User-scope managed files have changed:`);
+    console.log(`${pc.red("✗")} User-scope managed files are out of sync:`);
     for (const m of result.modified) console.log(`  ${pc.yellow("modified")} ${m.path}`);
     for (const m of result.missing) console.log(`  ${pc.yellow("missing ")} ${m.path}`);
-    console.log(pc.dim("Run `agconf sync --scope user` to restore the company block."));
+    for (const g of result.ghosts) console.log(`  ${pc.yellow("orphaned")} ${g.path}`);
+    console.log(pc.dim("Run `agconf sync --scope user` to restore company standards."));
     console.log();
   }
   return true;

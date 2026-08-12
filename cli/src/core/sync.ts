@@ -488,7 +488,7 @@ export class UnmanagedOverwriteError extends Error {
   }
 }
 
-interface UnmanagedCollisions {
+export interface UnmanagedCollisions {
   /** Divergent unmanaged files — block the sync unless overridden */
   conflicts: SyncConflict[];
   /** Identical unmanaged files — safe to overwrite (adopt as managed) */
@@ -502,7 +502,7 @@ interface UnmanagedCollisions {
  * (differs — would lose local content). Managed files are left to the normal
  * write path (canonical is their source of truth; `check` reports drift).
  */
-async function detectUnmanagedCollisions(
+export async function detectUnmanagedCollisions(
   targetDir: string,
   resolvedSource: ResolvedSource,
   targets: Target[],
