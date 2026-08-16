@@ -488,7 +488,7 @@ export class UnmanagedOverwriteError extends Error {
   }
 }
 
-interface UnmanagedCollisions {
+export interface UnmanagedCollisions {
   /** Divergent unmanaged files — block the sync unless overridden */
   conflicts: SyncConflict[];
   /** Identical unmanaged files — safe to overwrite (adopt as managed) */
@@ -502,7 +502,7 @@ interface UnmanagedCollisions {
  * (differs — would lose local content). Managed files are left to the normal
  * write path (canonical is their source of truth; `check` reports drift).
  */
-async function detectUnmanagedCollisions(
+export async function detectUnmanagedCollisions(
   targetDir: string,
   resolvedSource: ResolvedSource,
   targets: Target[],
@@ -840,7 +840,7 @@ interface SkillSyncResult {
   modifiedSkills: string[];
 }
 
-async function syncSkillsToTarget(
+export async function syncSkillsToTarget(
   targetDir: string,
   sourceSkillsPath: string,
   skillNames: string[],
@@ -1022,6 +1022,28 @@ export async function getSyncStatus(targetDir: string): Promise<SyncStatus> {
     schemaWarning: result?.schemaCompatibility.warning ?? null,
     schemaError: result?.schemaCompatibility.error ?? null,
   };
+}
+
+/**
+ * Like {@link getSyncStatus} but a corrupt/torn lockfile degrades to "not synced"
+ * instead of throwing. Used by the unattended user-scope / auto-sync callers so a
+ * damaged `~/.agconf/lockfile.json` self-heals on the next sync rather than
+ * bricking the feature. Repo-scope callers keep the strict {@link getSyncStatus}
+ * (fail-fast) so a corrupt repo lockfile still surfaces loudly.
+ */
+export async function getSyncStatusSafe(targetDir: string): Promise<SyncStatus> {
+  try {
+    return await getSyncStatus(targetDir);
+  } catch {
+    return {
+      hasSynced: false,
+      lockfile: null,
+      agentsMdExists: false,
+      skillsExist: false,
+      schemaWarning: null,
+      schemaError: null,
+    };
+  }
 }
 
 /**

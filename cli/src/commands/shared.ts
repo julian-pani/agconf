@@ -44,6 +44,10 @@ export interface SharedSyncOptions {
   expandChanges?: boolean;
   /** Working directory to resolve the target git root from (defaults to process.cwd()). For testing. */
   cwd?: string;
+  /** Distribution scope: "repo" (default) writes into the repo; "user" projects into ~/.claude, ~/.codex via the ~/.agconf store. */
+  scope?: string;
+  /** Home directory override for `--scope user` (defaults to os.homedir()). For testing. */
+  home?: string;
 }
 
 export interface CommandContext {
@@ -56,6 +60,17 @@ export interface ResolvedVersion {
   version: string | undefined; // The semantic version if ref is a release tag (e.g., "1.2.0")
   isRelease: boolean; // Whether this is a release version
   releaseInfo: ReleaseInfo | null; // Full release info if fetched
+}
+
+/**
+ * Reject an unknown `--scope` (exit 1) so a typo like `--scope usr` never falls
+ * through to a repo sync/check. Shared by `sync` and `check`.
+ */
+export function validateScope(scope: string | undefined): void {
+  if (scope !== undefined && scope !== "repo" && scope !== "user") {
+    createLogger().error(`Invalid --scope "${scope}". Use "repo" (default) or "user".`);
+    process.exit(1);
+  }
 }
 
 export async function parseAndValidateTargets(

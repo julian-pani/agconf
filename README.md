@@ -172,6 +172,21 @@ agconf sync --override
 
 By default `sync` will **not** silently overwrite a local skill/rule/agent it does not manage. If a local **unmanaged** file is identical to canonical it is **adopted** (gains tracking metadata); if it **differs**, sync stops with an error and writes nothing. Use `agconf propose` to send the change upstream, or `--override` to discard it. CI sync jobs typically pass `--override` (the working tree is committed, so overwrites are git-recoverable).
 
+#### User scope (`--scope user`)
+
+Instead of committing the company standards into every repo, project them **once per machine** into your per-user harness files:
+
+```bash
+# First time: point at the canonical source
+agconf sync --scope user --source your-org/standards
+# or a local canonical:  agconf sync --scope user --local /path/to/canonical
+
+# Later: re-sync (source is remembered in ~/.agconf/lockfile.json)
+agconf sync --scope user
+```
+
+This projects the company standards into your per-user harness locations, preserving your own content: the **global instructions block** into `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`, plus **skills** (`~/.claude/skills`, `~/.agents/skills`), **subagents** (`~/.claude/agents`, `~/.codex/agents`), and **rules** (`~/.claude/rules`; a rules section in `~/.codex/AGENTS.md`). It's all tracked in a git store at `~/.agconf/` (run `git -C ~/.agconf log` to see diffs). Your personal instructions go in the never-overwritten `~/.agconf/USER.md` (Claude imports it automatically; on Codex it's referenced by a note). Any pre-existing file that would be overwritten is backed up under `~/.agconf/backups/` first. (MCP servers are delivered via plugins, not user scope.)
+
 ### `agconf check`
 
 Check if managed files have been modified.
@@ -180,6 +195,7 @@ Check if managed files have been modified.
 agconf check                   # Show detailed check results
 agconf check --quiet           # Exit code only (for scripts/CI)
 agconf check --debug           # Show hash computation details
+agconf check --scope user      # Verify the per-user ~/.claude, ~/.codex projection
 ```
 
 Exit codes:
