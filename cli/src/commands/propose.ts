@@ -5,6 +5,7 @@ import {
   type ApplyResult,
   applyProposedChanges,
   type DetectNewContentResult,
+  DivergentCopiesError,
   DivergentInstructionsError,
   detectNewContent,
   detectProposedChanges,
@@ -128,6 +129,12 @@ async function buildManagedProposeResult(
       prompts.outro("Propose cancelled");
       process.exit(1);
     }
+    if (error instanceof DivergentCopiesError) {
+      spinner.stop("Target copies disagree");
+      reportDivergentCopies(error);
+      prompts.outro("Propose cancelled");
+      process.exit(1);
+    }
     spinner.stop("Failed to detect changes");
     prompts.log.error(String(error));
     prompts.outro("Propose cancelled");
@@ -182,6 +189,34 @@ function reportDivergentInstructions(error: DivergentInstructionsError): void {
   console.log();
   prompts.log.info(
     "To resolve: make the copies match, or select one with --files (e.g. --files '\\.claude/CLAUDE\\.md').",
+  );
+}
+
+/**
+ * Explain a divergent-copies abort: one canonical file has several downstream
+ * copies (a skill synced to claude + codex) and they were edited differently, so
+ * there is no single edit to propose.
+ */
+function reportDivergentCopies(error: DivergentCopiesError): void {
+  prompts.log.error(
+    "These files have more than one downstream copy, and the copies were edited differently:",
+  );
+  console.log();
+  for (const item of error.divergent) {
+    console.log(`  ${pc.dim(`→ ${item.canonicalPath}`)}`);
+    for (const downstreamPath of item.downstreamPaths) {
+      console.log(`    ${downstreamPath}`);
+    }
+  }
+  console.log();
+  prompts.log.info(
+    "To resolve: make the copies match, or select one with --files (e.g. --files '^\\.claude/').",
+  );
+  // --override takes the local copy over canonical's. Here every candidate is
+  // local, so there is nothing for it to choose between — say so rather than
+  // letting the user retry with a flag that cannot help.
+  prompts.log.warn(
+    "--override does not apply: both copies are yours, so it has no winner to pick.",
   );
 }
 

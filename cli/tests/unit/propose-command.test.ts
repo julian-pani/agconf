@@ -348,6 +348,81 @@ ORIGINAL body.
     expect(text).toContain("--override");
   });
 
+  /**
+   * The same skill synced to claude + codex, with each target's copy edited
+   * differently. Both map to one canonical path, so there is no single edit to
+   * propose.
+   */
+  async function setupDivergentTargetCopies(): Promise<void> {
+    await fs.mkdir(path.join(canonicalDir, "skills", "my-skill"), { recursive: true });
+    await fs.writeFile(
+      path.join(canonicalDir, "skills", "my-skill", "SKILL.md"),
+      SKILL_BODY,
+      "utf-8",
+    );
+    initCanonicalGitRepo();
+
+    for (const [skillsDir, marker] of [
+      [".claude/skills", "CLAUDE"],
+      [".agents/skills", "CODEX"],
+    ] as const) {
+      const dir = path.join(downstreamDir, ...skillsDir.split("/"), "my-skill");
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(
+        path.join(dir, "SKILL.md"),
+        addManagedMetadata(SKILL_BODY).replace("ORIGINAL body.", `${marker} body.`),
+        "utf-8",
+      );
+    }
+
+    const lockfile = {
+      version: "1.0.0",
+      synced_at: new Date().toISOString(),
+      source: { type: "local" as const, path: canonicalDir },
+      content: {
+        agents_md: { global_block_hash: "sha256:abc", merged: true },
+        skills: ["my-skill"],
+        targets: ["claude", "codex"],
+      },
+    };
+    await fs.mkdir(path.join(downstreamDir, ".agconf"), { recursive: true });
+    await fs.writeFile(
+      path.join(downstreamDir, ".agconf", "lockfile.json"),
+      JSON.stringify(lockfile, null, 2),
+      "utf-8",
+    );
+  }
+
+  it("exits and names both copies when a skill's target copies disagree", async () => {
+    await setupDivergentTargetCopies();
+    const applySpy = vi.spyOn(proposeCore, "applyProposedChanges");
+
+    await expect(proposeCommand({ cwd: downstreamDir, yes: true, title: "x" })).rejects.toThrow(
+      "process.exit called",
+    );
+
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(applySpy).not.toHaveBeenCalled();
+    const text = output();
+    expect(text).toContain(".claude/skills/my-skill/SKILL.md");
+    expect(text).toContain(".agents/skills/my-skill/SKILL.md");
+    expect(text).toContain("skills/my-skill/SKILL.md");
+    expect(text).toContain("--files");
+  });
+
+  it("still refuses divergent target copies under --override", async () => {
+    await setupDivergentTargetCopies();
+    const applySpy = vi.spyOn(proposeCore, "applyProposedChanges");
+
+    await expect(
+      proposeCommand({ cwd: downstreamDir, yes: true, title: "x", override: true }),
+    ).rejects.toThrow("process.exit called");
+
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(applySpy).not.toHaveBeenCalled();
+    expect(output()).toContain("--override does not apply");
+  });
+
   it("forwards --override so a conflicting proposal goes through anyway", async () => {
     await setupConflictingCanonical();
     const applySpy = vi.spyOn(proposeCore, "applyProposedChanges").mockResolvedValue({

@@ -7,6 +7,7 @@ import { addManagedMetadata } from "../../src/core/managed-content.js";
 import { buildAgentsMd } from "../../src/core/markers.js";
 import {
   applyProposedChanges,
+  DivergentCopiesError,
   DivergentInstructionsError,
   detectNewContent,
   detectProposedChanges,
@@ -304,6 +305,158 @@ Body.
       expect(assetChanges.map((c) => c.canonicalPath)).toEqual([
         "skills/multi-target/references/template.py",
       ]);
+    });
+
+    describe("a skill synced to two targets", () => {
+      // Both target copies map to ONE canonical path, so the two downstream
+      // copies have to be collapsed into a single proposal before anything is
+      // written — otherwise the second copy overwrites the first in the clone.
+      const SKILL_BODY = `---
+name: multi-target
+description: Synced to both targets.
+---
+
+Body line one.
+Body line two.
+`;
+      const ASSET = "print('original')\n";
+      const TARGET_SKILL_DIRS = [".claude/skills", ".agents/skills"];
+
+      /**
+       * Canonical skill + asset, committed, with the downstream repo holding an
+       * untouched managed copy under BOTH target dirs. Each test then edits one
+       * or both copies.
+       */
+      async function setupSyncedToBothTargets(): Promise<void> {
+        const canonicalSkill = path.join(canonicalDir, "skills", "multi-target");
+        await fs.mkdir(path.join(canonicalSkill, "references"), { recursive: true });
+        await fs.writeFile(path.join(canonicalSkill, "SKILL.md"), SKILL_BODY, "utf-8");
+        await fs.writeFile(path.join(canonicalSkill, "references", "template.py"), ASSET, "utf-8");
+        initCanonicalGitRepo();
+
+        for (const skillsDir of TARGET_SKILL_DIRS) {
+          const dir = path.join(downstreamDir, ...skillsDir.split("/"), "multi-target");
+          await fs.mkdir(path.join(dir, "references"), { recursive: true });
+          await fs.writeFile(path.join(dir, "SKILL.md"), addManagedMetadata(SKILL_BODY), "utf-8");
+          await fs.writeFile(path.join(dir, "references", "template.py"), ASSET, "utf-8");
+        }
+
+        const lockfile = {
+          version: "1.0.0",
+          synced_at: new Date().toISOString(),
+          source: { type: "local" as const, path: canonicalDir },
+          content: {
+            agents_md: { global_block_hash: "sha256:abc", merged: true },
+            skills: ["multi-target"],
+            targets: ["claude", "codex"],
+          },
+        };
+        await fs.mkdir(path.join(downstreamDir, ".agconf"), { recursive: true });
+        await fs.writeFile(
+          path.join(downstreamDir, ".agconf", "lockfile.json"),
+          JSON.stringify(lockfile, null, 2),
+          "utf-8",
+        );
+      }
+
+      /** Overwrite one target's copy of a file inside the multi-target skill. */
+      async function editCopy(skillsDir: string, relPath: string, content: string): Promise<void> {
+        const full = path.join(
+          downstreamDir,
+          ...skillsDir.split("/"),
+          "multi-target",
+          ...relPath.split("/"),
+        );
+        await fs.writeFile(full, content, "utf-8");
+      }
+
+      const editedSkill = (marker: string): string =>
+        addManagedMetadata(SKILL_BODY).replace("Body line one.", `Body line one ${marker}.`);
+
+      it("collapses a SKILL.md edited identically in both targets into one change", async () => {
+        await setupSyncedToBothTargets();
+        for (const skillsDir of TARGET_SKILL_DIRS) {
+          await editCopy(skillsDir, "SKILL.md", editedSkill("LOCAL"));
+        }
+
+        const result = await detectProposedChanges({ cwd: downstreamDir });
+
+        expect(result.changes.map((c) => c.canonicalPath)).toEqual([
+          "skills/multi-target/SKILL.md",
+        ]);
+        expect(String(result.changes[0]?.content)).toContain("Body line one LOCAL.");
+      });
+
+      it("aborts when SKILL.md was edited differently in each target's copy", async () => {
+        await setupSyncedToBothTargets();
+        await editCopy(".claude/skills", "SKILL.md", editedSkill("CLAUDE"));
+        await editCopy(".agents/skills", "SKILL.md", editedSkill("CODEX"));
+
+        await expect(detectProposedChanges({ cwd: downstreamDir })).rejects.toThrow(
+          DivergentCopiesError,
+        );
+      });
+
+      it("names both downstream copies and the canonical path on the error", async () => {
+        await setupSyncedToBothTargets();
+        await editCopy(".claude/skills", "SKILL.md", editedSkill("CLAUDE"));
+        await editCopy(".agents/skills", "SKILL.md", editedSkill("CODEX"));
+
+        const error = await detectProposedChanges({ cwd: downstreamDir }).catch((e) => e);
+
+        expect(error).toBeInstanceOf(DivergentCopiesError);
+        expect(error.divergent).toHaveLength(1);
+        expect(error.divergent[0].canonicalPath).toBe("skills/multi-target/SKILL.md");
+        expect(error.divergent[0].downstreamPaths).toEqual([
+          ".claude/skills/multi-target/SKILL.md",
+          ".agents/skills/multi-target/SKILL.md",
+        ]);
+      });
+
+      it("aborts even with --override, which has no winner to pick", async () => {
+        await setupSyncedToBothTargets();
+        await editCopy(".claude/skills", "SKILL.md", editedSkill("CLAUDE"));
+        await editCopy(".agents/skills", "SKILL.md", editedSkill("CODEX"));
+
+        await expect(detectProposedChanges({ cwd: downstreamDir, override: true })).rejects.toThrow(
+          DivergentCopiesError,
+        );
+      });
+
+      it("proposes an asset edited only in the second target's copy", async () => {
+        await setupSyncedToBothTargets();
+        await editCopy(".agents/skills", "references/template.py", "print('CODEX')\n");
+
+        const result = await detectProposedChanges({ cwd: downstreamDir });
+
+        expect(result.changes.map((c) => c.canonicalPath)).toEqual([
+          "skills/multi-target/references/template.py",
+        ]);
+        expect(String(result.changes[0]?.content)).toBe("print('CODEX')\n");
+      });
+
+      it("aborts when an asset was edited differently in each target's copy", async () => {
+        await setupSyncedToBothTargets();
+        await editCopy(".claude/skills", "references/template.py", "print('CLAUDE')\n");
+        await editCopy(".agents/skills", "references/template.py", "print('CODEX')\n");
+
+        await expect(detectProposedChanges({ cwd: downstreamDir })).rejects.toThrow(
+          DivergentCopiesError,
+        );
+      });
+
+      it("proposes an asset that only exists in the second target's copy", async () => {
+        await setupSyncedToBothTargets();
+        await fs.writeFile(
+          path.join(downstreamDir, ".agents", "skills", "multi-target", "new.sh"),
+          "echo new\n",
+          "utf-8",
+        );
+
+        const result = await detectProposedChanges({ cwd: downstreamDir });
+
+        expect(result.changes.map((c) => c.canonicalPath)).toEqual(["skills/multi-target/new.sh"]);
+      });
     });
 
     it("does NOT propose references/ files that match canonical exactly", async () => {
