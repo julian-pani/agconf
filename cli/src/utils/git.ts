@@ -4,6 +4,19 @@ import * as path from "node:path";
 import { type SimpleGit, simpleGit } from "simple-git";
 
 /**
+ * Redact userinfo credentials (`user:password@`, e.g. an embedded
+ * `x-access-token:<GITHUB_TOKEN>@`) from any URLs in a string.
+ *
+ * `git clone https://x-access-token:<token>@github.com/...` stores that URL as
+ * the `origin` remote, so simple-git's `GitError.message` (which echoes git's
+ * stderr) can leak the token whenever a clone/fetch/push fails. Run every git
+ * error message through this before surfacing it to a log, file, or PR body.
+ */
+export function redactGitCredentials(text: string): string {
+  return text.replace(/\/\/[^/@\s]*@/g, "//***@");
+}
+
+/**
  * Check if a directory exists.
  */
 async function directoryExistsForGit(dir: string): Promise<boolean> {

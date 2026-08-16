@@ -9,6 +9,7 @@ import {
   getGitProjectName,
   getGitRoot,
   isGitRoot,
+  redactGitCredentials,
 } from "../../src/utils/git.js";
 
 describe("git utilities", () => {
@@ -159,6 +160,62 @@ describe("git utilities", () => {
       const result = await getGitHooksDir(worktreeDir);
       expect(result).not.toBeNull();
       expect(await fs.realpath(result as string)).toBe(path.join(realTempDir, ".git", "hooks"));
+    });
+  });
+
+  describe("redactGitCredentials", () => {
+    it("redacts an embedded x-access-token from a clone URL", () => {
+      const token = "ghp_supersecrettokenvalue1234567890";
+      const message = `fatal: Authentication failed for 'https://x-access-token:${token}@github.com/acme/repo.git/'`;
+
+      const result = redactGitCredentials(message);
+
+      expect(result).not.toContain(token);
+      expect(result).not.toContain("x-access-token");
+      expect(result).toBe(
+        "fatal: Authentication failed for 'https://***@github.com/acme/repo.git/'",
+      );
+    });
+
+    it("redacts a user:password style credential", () => {
+      const result = redactGitCredentials(
+        "clone https://alice:hunter2@example.com/repo.git failed",
+      );
+      expect(result).toBe("clone https://***@example.com/repo.git failed");
+      expect(result).not.toContain("hunter2");
+    });
+
+    it("redacts a bare token with no colon", () => {
+      const result = redactGitCredentials("https://ghp_abc123@github.com/org/repo.git");
+      expect(result).toBe("https://***@github.com/org/repo.git");
+      expect(result).not.toContain("ghp_abc123");
+    });
+
+    it("redacts every occurrence when multiple URLs are present", () => {
+      const message =
+        "https://x-access-token:tok1@github.com/a/b.git and https://x-access-token:tok2@github.com/c/d.git";
+
+      const result = redactGitCredentials(message);
+
+      expect(result).not.toContain("tok1");
+      expect(result).not.toContain("tok2");
+      expect(result).toBe("https://***@github.com/a/b.git and https://***@github.com/c/d.git");
+    });
+
+    it("leaves URLs without credentials untouched", () => {
+      const message = "fatal: repository 'https://github.com/org/repo.git' not found";
+      expect(redactGitCredentials(message)).toBe(message);
+    });
+
+    it("does not alter '//' occurrences that are not credentials", () => {
+      const message = "see https://github.com/org/repo/blob/main/file.ts for details";
+      expect(redactGitCredentials(message)).toBe(message);
+    });
+
+    it("returns non-URL text unchanged", () => {
+      expect(redactGitCredentials("some unrelated error message")).toBe(
+        "some unrelated error message",
+      );
     });
   });
 
