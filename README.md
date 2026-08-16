@@ -230,12 +230,16 @@ collision). The warning is framed as a note for you, not a task for the agent. I
 always exits 0 and never disrupts a session.
 
 ```bash
-# Install it as a Claude Code SessionStart hook (writes ~/.claude/settings.json)
+# Install it as a SessionStart hook for the targets your user store was synced to
+# (Claude → ~/.claude/settings.json, Codex → ~/.codex/hooks.json)
 agconf session-check --install-hook
 
 # Run it directly (what the hook runs)
 agconf session-check
 ```
+
+> On Codex the `hooks` feature is stable and enabled by default. If you've turned
+> it off, `--install-hook` warns you to re-enable it with `codex features enable hooks`.
 
 ### `agconf compile`
 

@@ -9,7 +9,12 @@ import {
   readAutosyncState,
   writeAutosyncState,
 } from "../core/autosync.js";
-import { installSessionStartHook } from "../core/session-check.js";
+import {
+  type CodexFeaturesRunner,
+  codexHooksDisabledWarning,
+  installSessionStartHooks,
+  resolveHookTargets,
+} from "../core/session-check.js";
 import { StoreBusyError } from "../core/user-scope.js";
 import { NoUserScopeSourceError, runUserScopeSync } from "./user-scope.js";
 
@@ -28,6 +33,8 @@ export interface AutosyncCommandOptions {
   /** Disable auto-sync, then exit. */
   disable?: boolean | undefined;
   quiet?: boolean | undefined;
+  /** Test seam: inject the `codex features list` runner for the disabled-hooks warning. */
+  codexFeaturesRun?: CodexFeaturesRunner | undefined;
 }
 
 /**
@@ -43,7 +50,8 @@ export interface AutosyncCommandOptions {
 export async function autosyncCommand(options: AutosyncCommandOptions = {}): Promise<void> {
   const homeDir = options.home ?? os.homedir();
 
-  if (options.install || options.enable) return enableAutosync(homeDir, options.quiet);
+  if (options.install || options.enable)
+    return enableAutosync(homeDir, options.quiet, options.codexFeaturesRun);
   if (options.uninstall || options.disable) return disableAutosync(homeDir, options.quiet);
 
   const trigger = options.trigger ?? "manual";
@@ -135,14 +143,20 @@ export async function autosyncCommand(options: AutosyncCommandOptions = {}): Pro
 }
 
 /**
- * Enable auto-sync: ensure the SessionStart hook is installed and write the
- * config (whose presence is the opt-in marker) with `enabled: true`. A malformed
- * settings.json we refuse to clobber is fatal here (explicit admin action).
+ * Enable auto-sync: ensure the SessionStart hook is installed for every target
+ * the user store was synced to (Claude → settings.json, Codex → hooks.json) and
+ * write the config (whose presence is the opt-in marker) with `enabled: true`. A
+ * malformed config file we refuse to clobber is fatal here (explicit admin action).
  */
-async function enableAutosync(homeDir: string, quiet?: boolean): Promise<void> {
-  let hook: Awaited<ReturnType<typeof installSessionStartHook>>;
+async function enableAutosync(
+  homeDir: string,
+  quiet?: boolean,
+  codexFeaturesRun?: CodexFeaturesRunner,
+): Promise<void> {
+  let hooks: Awaited<ReturnType<typeof installSessionStartHooks>>;
   try {
-    hook = await installSessionStartHook(homeDir);
+    const targets = await resolveHookTargets(homeDir);
+    hooks = await installSessionStartHooks(homeDir, targets);
   } catch (err) {
     console.error(pc.red(`✗ ${err instanceof Error ? err.message : String(err)}`));
     process.exitCode = 1;
@@ -153,11 +167,15 @@ async function enableAutosync(homeDir: string, quiet?: boolean): Promise<void> {
   if (quiet) return;
   console.log();
   console.log(`${pc.green("✓")} Auto-sync enabled — refreshes the user store at session start.`);
-  console.log(
-    hook.alreadyPresent
-      ? pc.dim(`  SessionStart hook already present (${hook.settingsPath})`)
-      : pc.dim(`  Installed SessionStart hook (${hook.settingsPath})`),
-  );
+  for (const hook of hooks) {
+    console.log(
+      hook.alreadyPresent
+        ? pc.dim(`  SessionStart hook already present for ${hook.target} (${hook.filePath})`)
+        : pc.dim(`  Installed SessionStart hook for ${hook.target} (${hook.filePath})`),
+    );
+  }
+  const warning = await codexHooksDisabledWarning(hooks, codexFeaturesRun);
+  if (warning) console.log(pc.yellow(`  ${warning}`));
   console.log(
     pc.dim("  Turn off with `agconf autosync --disable`. Debug log: ~/.agconf/logs/autosync.log"),
   );

@@ -39,6 +39,89 @@ describe("session-check command", () => {
     expect(mockExit).not.toHaveBeenCalled();
   });
 
+  it("installs the Codex hook (~/.codex/hooks.json) when the user store targets codex", async () => {
+    await writeLockfile(home, {
+      source: localSource,
+      globalBlockContent: "CANON",
+      skills: [],
+      targets: ["codex"],
+      markerPrefix: "agconf",
+    });
+    // Inject a runner reporting hooks enabled so no warning + no real `codex` shell-out.
+    await sessionCheckCommand({
+      installHook: true,
+      home,
+      codexFeaturesRun: async () => "hooks stable true\n",
+    });
+    const config = JSON.parse(await fs.readFile(path.join(home, ".codex", "hooks.json"), "utf-8"));
+    expect(config.hooks.SessionStart[0].hooks[0].command).toContain("session-check");
+    // A codex-only store does not create Claude's settings.json.
+    await expect(fs.access(path.join(home, ".claude", "settings.json"))).rejects.toThrow();
+    expect(mockExit).not.toHaveBeenCalled();
+  });
+
+  it("warns when Codex hooks are disabled", async () => {
+    await writeLockfile(home, {
+      source: localSource,
+      globalBlockContent: "CANON",
+      skills: [],
+      targets: ["codex"],
+      markerPrefix: "agconf",
+    });
+    await sessionCheckCommand({
+      installHook: true,
+      home,
+      codexFeaturesRun: async () => "hooks stable false\n",
+    });
+    const output = consoleLogSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(output).toContain("codex features enable hooks");
+  });
+
+  it("refuses to clobber a malformed ~/.codex/hooks.json on --install-hook", async () => {
+    await writeLockfile(home, {
+      source: localSource,
+      globalBlockContent: "CANON",
+      skills: [],
+      targets: ["codex"],
+      markerPrefix: "agconf",
+    });
+    await fs.mkdir(path.join(home, ".codex"), { recursive: true });
+    const malformed = "{ not valid json";
+    await fs.writeFile(path.join(home, ".codex", "hooks.json"), malformed);
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const prevExitCode = process.exitCode;
+
+    await sessionCheckCommand({
+      installHook: true,
+      home,
+      codexFeaturesRun: async () => "hooks stable true\n",
+    });
+
+    expect(await fs.readFile(path.join(home, ".codex", "hooks.json"), "utf-8")).toBe(malformed);
+    expect(errSpy.mock.calls.flat().join(" ")).toContain("not valid JSON");
+    process.exitCode = prevExitCode; // don't leak the failure exit code to the runner
+    errSpy.mockRestore();
+  });
+
+  it("--install-hook --quiet prints nothing and never shells out to codex", async () => {
+    await writeLockfile(home, {
+      source: localSource,
+      globalBlockContent: "CANON",
+      skills: [],
+      targets: ["codex"],
+      markerPrefix: "agconf",
+    });
+    const codexRun = vi.fn(async () => "hooks stable false\n");
+    await sessionCheckCommand({ installHook: true, home, quiet: true, codexFeaturesRun: codexRun });
+
+    // Hook is still installed...
+    const config = JSON.parse(await fs.readFile(path.join(home, ".codex", "hooks.json"), "utf-8"));
+    expect(config.hooks.SessionStart[0].hooks[0].command).toContain("session-check");
+    // ...but quiet mode prints nothing and never probes the codex feature state.
+    expect(consoleLogSpy).not.toHaveBeenCalled();
+    expect(codexRun).not.toHaveBeenCalled();
+  });
+
   it("stays silent (and never exits) when user scope is not synced", async () => {
     await sessionCheckCommand({ cwd: repo, home });
     expect(consoleLogSpy).not.toHaveBeenCalled();

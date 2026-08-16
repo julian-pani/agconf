@@ -14,15 +14,22 @@
  * scopes are a real double-load — repo skill X alongside user skill Y is not a
  * collision and is not flagged.
  *
- * `installSessionStartHook` registers `agconf session-check` as a Claude Code
- * SessionStart hook in `~/.claude/settings.json`, idempotently and preserving
- * any existing settings/hooks. All paths derive from an injectable `homeDir`.
- * See cli/docs/DISTRIBUTION_SCOPES.md (F5).
+ * The `install*SessionStartHook` installers register `agconf session-check` as a
+ * SessionStart hook — Claude Code in `~/.claude/settings.json`, Codex in
+ * `~/.codex/hooks.json` — idempotently and preserving any existing config/hooks.
+ * `installSessionStartHooks` fans that out to the targets the user store was
+ * synced to (`resolveHookTargets`). All paths derive from an injectable
+ * `homeDir`. See cli/docs/DISTRIBUTION_SCOPES.md (F5).
  */
 
+import { execFile } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { promisify } from "node:util";
 import { readLockfileSafe } from "./lockfile.js";
+import { isValidTarget, type Target } from "./targets.js";
+
+const execFileAsync = promisify(execFile);
 
 export type DuplicatedType = "instructions" | "skills" | "rules" | "agents";
 
@@ -113,9 +120,15 @@ export async function detectCrossScopeDuplication(options: {
 const HOOK_COMMAND = "agconf session-check";
 
 export interface HookInstallResult {
+  /** Which target's hook file this result is for. */
+  target: Target;
   installed: boolean;
   alreadyPresent: boolean;
-  settingsPath: string;
+  /**
+   * Absolute path of the file written: Claude's `settings.json` or Codex's
+   * `hooks.json`.
+   */
+  filePath: string;
 }
 
 interface SessionStartEntry {
@@ -127,62 +140,227 @@ interface SessionStartEntry {
 const HOOK_TIMEOUT_SECONDS = 10;
 
 /**
- * Register `agconf session-check` as a Claude Code SessionStart hook in
- * `~/.claude/settings.json`. Idempotent (keyed by the command string) and
- * non-destructive: existing settings and other hooks are preserved.
+ * Read a JSON hook-config file, or refuse. Returns `{}` ONLY when the file is
+ * genuinely absent (safe to create). If it exists but is unreadable or not a
+ * JSON object, throw rather than overwrite the user's real config — a malformed
+ * file is theirs to fix, not ours to wipe.
  */
-export async function installSessionStartHook(homeDir: string): Promise<HookInstallResult> {
-  const settingsPath = path.join(homeDir, ".claude", "settings.json");
-
-  // Start fresh ONLY when the file is genuinely absent. If it exists but is
-  // unreadable or not a JSON object, refuse rather than overwrite the user's
-  // real settings — a malformed settings.json is theirs to fix, not ours to wipe.
-  let settings: Record<string, unknown> = {};
+async function readHookConfigOrRefuse(filePath: string): Promise<Record<string, unknown>> {
   let raw: string | null = null;
   try {
-    raw = await fs.readFile(settingsPath, "utf-8");
+    raw = await fs.readFile(filePath, "utf-8");
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-    // ENOENT: no settings file yet — safe to create one.
+    return {}; // ENOENT: no file yet — safe to create one.
   }
-  if (raw !== null) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      throw new Error(
-        `Refusing to modify ${settingsPath}: it exists but is not valid JSON. Fix or remove it, then re-run.`,
-      );
-    }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new Error(
-        `Refusing to modify ${settingsPath}: expected a JSON object at the top level.`,
-      );
-    }
-    settings = parsed as Record<string, unknown>;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(
+      `Refusing to modify ${filePath}: it exists but is not valid JSON. Fix or remove it, then re-run.`,
+    );
   }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`Refusing to modify ${filePath}: expected a JSON object at the top level.`);
+  }
+  return parsed as Record<string, unknown>;
+}
 
-  const hooks = (
-    settings.hooks && typeof settings.hooks === "object" ? settings.hooks : {}
-  ) as Record<string, unknown>;
+/**
+ * Add the `agconf session-check` SessionStart entry to a parsed hook-config
+ * object. Claude's `settings.json` and Codex's `hooks.json` share the exact same
+ * shape here — both key SessionStart under a top-level `hooks` object — so one
+ * helper serves both. Mutates `root` in place; idempotent by the command string.
+ * `matcher` is passed only for Codex ("*", the form verified against a real
+ * install); Claude gets a matcher-less entry.
+ *
+ * Guards the same "never wipe the user's config" contract as the reader: if
+ * `hooks` or `hooks.SessionStart` exists with an unexpected shape (e.g. an array,
+ * or a non-array SessionStart), refuse rather than silently replace it. `filePath`
+ * is only used to make that error actionable.
+ */
+function upsertSessionStartHook(
+  root: Record<string, unknown>,
+  filePath: string,
+  matcher?: string,
+): { alreadyPresent: boolean } {
+  if (
+    "hooks" in root &&
+    (typeof root.hooks !== "object" || root.hooks === null || Array.isArray(root.hooks))
+  ) {
+    throw new Error(`Refusing to modify ${filePath}: "hooks" is not a JSON object.`);
+  }
+  const hooks = (root.hooks ?? {}) as Record<string, unknown>;
+  if ("SessionStart" in hooks && !Array.isArray(hooks.SessionStart)) {
+    throw new Error(`Refusing to modify ${filePath}: "hooks.SessionStart" is not an array.`);
+  }
   const sessionStart: SessionStartEntry[] = Array.isArray(hooks.SessionStart)
     ? (hooks.SessionStart as SessionStartEntry[])
     : [];
 
-  const already = sessionStart.some((entry) =>
-    entry.hooks?.some((h) => typeof h.command === "string" && h.command.includes(HOOK_COMMAND)),
+  const alreadyPresent = sessionStart.some((entry) =>
+    entry?.hooks?.some((h) => typeof h?.command === "string" && h.command.includes(HOOK_COMMAND)),
   );
-  if (already) {
-    return { installed: false, alreadyPresent: true, settingsPath };
+  if (!alreadyPresent) {
+    const entry: SessionStartEntry = {
+      hooks: [{ type: "command", command: HOOK_COMMAND, timeout: HOOK_TIMEOUT_SECONDS }],
+    };
+    if (matcher) entry.matcher = matcher;
+    sessionStart.push(entry);
+  }
+  hooks.SessionStart = sessionStart;
+  root.hooks = hooks;
+  return { alreadyPresent };
+}
+
+/**
+ * Where each target's SessionStart hook lives, and the matcher to write there.
+ * The exhaustive `switch` makes adding a value to `SUPPORTED_TARGETS` a
+ * compile error here until its hook file is defined.
+ */
+function hookFileSpec(homeDir: string, target: Target): { filePath: string; matcher?: string } {
+  switch (target) {
+    case "claude":
+      return { filePath: path.join(homeDir, ".claude", "settings.json") };
+    case "codex":
+      return { filePath: path.join(homeDir, ".codex", "hooks.json"), matcher: "*" };
+    default: {
+      const exhaustive: never = target;
+      throw new Error(`Unsupported hook target: ${String(exhaustive)}`);
+    }
+  }
+}
+
+async function installHookForTarget(homeDir: string, target: Target): Promise<HookInstallResult> {
+  const { filePath, matcher } = hookFileSpec(homeDir, target);
+  const config = await readHookConfigOrRefuse(filePath);
+  const { alreadyPresent } = upsertSessionStartHook(config, filePath, matcher);
+  if (!alreadyPresent) await writeHookConfig(filePath, config);
+  return { target, installed: !alreadyPresent, alreadyPresent, filePath };
+}
+
+async function writeHookConfig(filePath: string, config: Record<string, unknown>): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
+}
+
+/**
+ * Register `agconf session-check` as a Claude Code SessionStart hook in
+ * `~/.claude/settings.json`. Idempotent (keyed by the command string) and
+ * non-destructive: existing settings and other hooks are preserved.
+ */
+export async function installClaudeSessionStartHook(homeDir: string): Promise<HookInstallResult> {
+  return installHookForTarget(homeDir, "claude");
+}
+
+/**
+ * Register `agconf session-check` as a Codex SessionStart hook in
+ * `~/.codex/hooks.json`. Same idempotent, non-destructive contract as the Claude
+ * installer. Codex's `hooks` feature is stable and enabled by default, so no
+ * config-flag write is needed here; `getCodexHooksState` lets callers warn if a
+ * user has explicitly turned it off.
+ */
+export async function installCodexSessionStartHook(homeDir: string): Promise<HookInstallResult> {
+  return installHookForTarget(homeDir, "codex");
+}
+
+/**
+ * Install the SessionStart hook for each requested target (Claude →
+ * `settings.json`, Codex → `hooks.json`), atomically: every target's config is
+ * read and validated FIRST, so a malformed config for one target throws before
+ * any file is written and can't leave another target half-installed. Nothing is
+ * ever clobbered — each config is refuse-to-modify on a bad shape.
+ */
+export async function installSessionStartHooks(
+  homeDir: string,
+  targets: Target[],
+): Promise<HookInstallResult[]> {
+  // Phase 1: read + validate + stage every target (may throw — before any write).
+  const staged = targets.map((target) => ({ target, ...hookFileSpec(homeDir, target) }));
+  const prepared = [];
+  for (const { target, filePath, matcher } of staged) {
+    const config = await readHookConfigOrRefuse(filePath);
+    const { alreadyPresent } = upsertSessionStartHook(config, filePath, matcher);
+    prepared.push({ target, filePath, config, alreadyPresent });
   }
 
-  sessionStart.push({
-    hooks: [{ type: "command", command: HOOK_COMMAND, timeout: HOOK_TIMEOUT_SECONDS }],
-  });
-  hooks.SessionStart = sessionStart;
-  settings.hooks = hooks;
+  // Phase 2: persist the ones that changed.
+  const results: HookInstallResult[] = [];
+  for (const { target, filePath, config, alreadyPresent } of prepared) {
+    if (!alreadyPresent) await writeHookConfig(filePath, config);
+    results.push({ target, installed: !alreadyPresent, alreadyPresent, filePath });
+  }
+  return results;
+}
 
-  await fs.mkdir(path.dirname(settingsPath), { recursive: true });
-  await fs.writeFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, "utf-8");
-  return { installed: true, alreadyPresent: false, settingsPath };
+/**
+ * The targets whose SessionStart hook agconf should install: exactly the ones the
+ * user store was synced to (its lockfile's `content.targets`). Falls back to
+ * Claude when no user store exists yet, matching the sync default.
+ */
+export async function resolveHookTargets(homeDir: string): Promise<Target[]> {
+  const lock = (await readLockfileSafe(homeDir))?.lockfile;
+  const targets = (lock?.content.targets ?? []).filter(isValidTarget);
+  return targets.length > 0 ? targets : ["claude"];
+}
+
+export type CodexHooksState = "enabled" | "disabled" | "unknown";
+
+/**
+ * Parse `codex features list` output for the effective state of the `hooks`
+ * feature. Each line is `<name> <stage> <effective-bool>`, so the last column of
+ * the `hooks` row is what matters. Returns "unknown" when the feature isn't
+ * listed (older Codex) or the row isn't shaped as expected.
+ */
+export function parseCodexHooksState(featuresListOutput: string): CodexHooksState {
+  for (const line of featuresListOutput.split("\n")) {
+    const cols = line.trim().split(/\s+/);
+    if (cols[0] !== "hooks" || cols.length < 2) continue;
+    const effective = cols[cols.length - 1];
+    if (effective === "true") return "enabled";
+    if (effective === "false") return "disabled";
+    return "unknown";
+  }
+  return "unknown";
+}
+
+/** Runner seam so tests don't shell out. Returns `codex features list` stdout. */
+export type CodexFeaturesRunner = () => Promise<string>;
+
+const defaultCodexFeaturesRunner: CodexFeaturesRunner = async () => {
+  const { stdout } = await execFileAsync("codex", ["features", "list"], { timeout: 3000 });
+  return stdout;
+};
+
+/**
+ * Best-effort: is Codex's `hooks` feature enabled? Returns "unknown" when Codex
+ * isn't installed or the probe fails. Callers MUST NOT warn on "unknown" — a
+ * missing Codex is not the same as Codex-with-hooks-disabled.
+ */
+export async function getCodexHooksState(
+  run: CodexFeaturesRunner = defaultCodexFeaturesRunner,
+): Promise<CodexHooksState> {
+  try {
+    return parseCodexHooksState(await run());
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
+ * If Codex is among the just-installed targets AND its `hooks` feature is
+ * explicitly disabled, return a one-line warning (with the exact re-enable
+ * command) that the installed hook won't fire; otherwise null. Returns a string
+ * for the caller to print, keeping this module free of console output. Never
+ * warns when Codex isn't a target or its state can't be determined ("unknown").
+ */
+export async function codexHooksDisabledWarning(
+  results: HookInstallResult[],
+  run?: CodexFeaturesRunner,
+): Promise<string | null> {
+  if (!results.some((r) => r.target === "codex")) return null;
+  const state = await getCodexHooksState(run);
+  if (state !== "disabled") return null;
+  return "Codex hooks are disabled, so the agconf session-check hook won't run. Enable it with: codex features enable hooks";
 }

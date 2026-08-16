@@ -8,9 +8,12 @@ import {
   type SpawnFn,
 } from "../core/autosync.js";
 import {
+  type CodexFeaturesRunner,
+  codexHooksDisabledWarning,
   type DuplicationFinding,
   detectCrossScopeDuplication,
-  installSessionStartHook,
+  installSessionStartHooks,
+  resolveHookTargets,
 } from "../core/session-check.js";
 import { checkUserScope } from "../core/user-scope.js";
 import { getGitRoot } from "../utils/git.js";
@@ -23,12 +26,17 @@ export interface SessionCheckOptions {
   home?: string | undefined;
   /** Minimal output. */
   quiet?: boolean | undefined;
-  /** Install the SessionStart hook into ~/.claude/settings.json instead of checking. */
+  /**
+   * Install the SessionStart hook for the user store's targets (Claude →
+   * ~/.claude/settings.json, Codex → ~/.codex/hooks.json) instead of checking.
+   */
   installHook?: boolean | undefined;
   /** Test seam: inject the spawn used to launch the background auto-sync. */
   autosyncSpawn?: SpawnFn | undefined;
   /** Test seam: resolve canonical's latest version for the freshness probe. */
   probeLatest?: ((repo: string, timeoutMs: number) => Promise<string | null>) | undefined;
+  /** Test seam: inject the `codex features list` runner for the disabled-hooks warning. */
+  codexFeaturesRun?: CodexFeaturesRunner | undefined;
 }
 
 function describeFinding(f: DuplicationFinding): string {
@@ -50,7 +58,8 @@ function describeFinding(f: DuplicationFinding): string {
  * never disrupt a session; output goes to stdout so a SessionStart hook injects it
  * into the agent's context.
  *
- * With `--install-hook`, registers itself as a Claude Code SessionStart hook.
+ * With `--install-hook`, registers itself as a SessionStart hook for each target
+ * the user store was synced to (Claude → settings.json, Codex → hooks.json).
  */
 export async function sessionCheckCommand(options: SessionCheckOptions = {}): Promise<void> {
   const homeDir = options.home ?? os.homedir();
@@ -59,13 +68,19 @@ export async function sessionCheckCommand(options: SessionCheckOptions = {}): Pr
   // the advisory check path below, which must never break a session).
   if (options.installHook) {
     try {
-      const result = await installSessionStartHook(homeDir);
+      const targets = await resolveHookTargets(homeDir);
+      const results = await installSessionStartHooks(homeDir, targets);
       if (!options.quiet) {
-        console.log(
-          result.alreadyPresent
-            ? pc.dim(`agconf session-check hook already present in ${result.settingsPath}`)
-            : `${pc.green("✓")} Installed agconf session-check SessionStart hook (${result.settingsPath})`,
-        );
+        for (const r of results) {
+          console.log(
+            r.alreadyPresent
+              ? pc.dim(`agconf session-check hook already present for ${r.target} (${r.filePath})`)
+              : `${pc.green("✓")} Installed agconf session-check SessionStart hook for ${r.target} (${r.filePath})`,
+          );
+        }
+        // Guarded by !quiet so quiet mode never shells out to `codex features list`.
+        const warning = await codexHooksDisabledWarning(results, options.codexFeaturesRun);
+        if (warning) console.log(pc.yellow(warning));
       }
     } catch (err) {
       console.error(pc.red(`✗ ${err instanceof Error ? err.message : String(err)}`));
