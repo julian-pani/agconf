@@ -90,10 +90,13 @@ covers **every** content type (unlike plugins).
 - rules → Claude user rules (verify support) / concatenated into `~/.codex/AGENTS.md`
 - tracked in a **user-level lockfile** at `~/.agconf/lockfile.json`
 
-**Freshness** = a **SessionStart hook**. Both harnesses support it:
+**Freshness** = a **SessionStart hook**. Both harnesses support it (verified
+against Claude Code and Codex v0.147.0):
 - Claude: a hook in `~/.claude/settings.json` fires for **every** project the dev
   opens and can run a command + inject stdout into context.
-- Codex: `SessionStart` lifecycle hook (behind the `features.hooks` flag — verify).
+- Codex: a `SessionStart` hook in `~/.codex/hooks.json`. The `hooks` feature is
+  **stable and enabled by default** (`codex features list` → `hooks stable true`);
+  stdout is injected as developer context, exactly like Claude.
 
 The hook runs `agconf check --scope user` (a cheap hash comparison against the
 pinned canonical) and either warns ("your shared config is N versions behind — run
@@ -269,7 +272,10 @@ duplication and validates the hook/freshness model before the fuller build-out.
   `~/.codex/skills`. Confirm on the target Codex version before writing there.
 - **Codex plugin/marketplace on-disk paths** (`~/.agents/plugins/...`) are
   third-party-sourced — verify.
-- **Codex `features.hooks`** flag: confirm SessionStart hooks are available/on.
+- **Codex `features.hooks`** flag: ✅ resolved — `hooks` is **stable and on by
+  default** as of Codex v0.147.0 (`codex features list`); a user-scope
+  `~/.codex/hooks.json` SessionStart hook fires and completes. Historic bug
+  openai/codex#17532 (SessionStart not firing) does **not** affect current Codex.
 - **Codex global `~/.codex/AGENTS.md`** has open bug reports about not being read
   in some clients — verify reliability.
 - **Claude plugin auto-update** for third-party marketplaces is opt-in + delayed;
@@ -435,8 +441,11 @@ commands and mechanisms work in which mode — see [§16](#16--feature--mode-mat
 - It also reports user-scope **integrity** drift (via `checkUserScope`). Output
   goes to stdout so a SessionStart hook injects it into context; exits 0 always
   (advisory) and never throws.
-- `agconf session-check --install-hook` installs an idempotent Claude Code
-  SessionStart hook in `~/.claude/settings.json`, preserving existing settings/hooks.
+- `agconf session-check --install-hook` installs an idempotent SessionStart hook
+  for each target the user store was synced to — Claude Code in
+  `~/.claude/settings.json`, Codex in `~/.codex/hooks.json` — preserving existing
+  settings/hooks. Codex ships `hooks` enabled by default; if a user explicitly
+  disabled it, the installer warns with the exact `codex features enable hooks` fix.
 - **Deferred:** plugin-scope detection (needs reading harness plugin state, which is
   version-specific). repo↔user — the main double-load hazard — is covered. (The
   "behind-canonical" freshness gap is now closed by F5b below.)

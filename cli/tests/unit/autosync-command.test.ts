@@ -113,6 +113,22 @@ describe("autosync command", () => {
     expect((await loadUserScopeConfig(home)).autosync.enabled).toBe(true);
   });
 
+  it("--install installs the Codex hook when the user store targets codex", async () => {
+    await syncUserScopeCommand({ scope: "user", local: canonical, home, target: ["codex"] });
+    // Inject a runner reporting hooks enabled so no warning + no real `codex` shell-out.
+    await autosyncCommand({
+      home,
+      install: true,
+      codexFeaturesRun: async () => "hooks stable true\n",
+    });
+
+    const config = JSON.parse(await fs.readFile(path.join(home, ".codex", "hooks.json"), "utf-8"));
+    expect(config.hooks.SessionStart[0].hooks[0].command).toContain("session-check");
+    expect((await loadUserScopeConfig(home)).autosync.enabled).toBe(true);
+    // A codex-only store does not create Claude's settings.json.
+    await expect(fs.access(path.join(home, ".claude", "settings.json"))).rejects.toThrow();
+  });
+
   it("--uninstall disables auto-sync but leaves the shared hook in place", async () => {
     await autosyncCommand({ home, install: true });
     await autosyncCommand({ home, uninstall: true });

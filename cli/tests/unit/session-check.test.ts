@@ -4,8 +4,14 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { writeLockfile } from "../../src/core/lockfile.js";
 import {
+  codexHooksDisabledWarning,
   detectCrossScopeDuplication,
-  installSessionStartHook,
+  getCodexHooksState,
+  installClaudeSessionStartHook,
+  installCodexSessionStartHook,
+  installSessionStartHooks,
+  parseCodexHooksState,
+  resolveHookTargets,
 } from "../../src/core/session-check.js";
 
 const localSource = { type: "local" as const, path: "/canonical" };
@@ -165,20 +171,21 @@ describe("session-check core", () => {
     });
   });
 
-  describe("installSessionStartHook", () => {
+  describe("installClaudeSessionStartHook", () => {
     it("creates settings.json with a SessionStart hook", async () => {
-      const result = await installSessionStartHook(home);
+      const result = await installClaudeSessionStartHook(home);
       expect(result.installed).toBe(true);
-      const settings = JSON.parse(await fs.readFile(result.settingsPath, "utf-8"));
+      expect(result.target).toBe("claude");
+      const settings = JSON.parse(await fs.readFile(result.filePath, "utf-8"));
       const cmd = settings.hooks.SessionStart[0].hooks[0].command;
       expect(cmd).toContain("agconf session-check");
     });
 
     it("is idempotent (no duplicate hook on re-install)", async () => {
-      await installSessionStartHook(home);
-      const second = await installSessionStartHook(home);
+      await installClaudeSessionStartHook(home);
+      const second = await installClaudeSessionStartHook(home);
       expect(second.alreadyPresent).toBe(true);
-      const settings = JSON.parse(await fs.readFile(second.settingsPath, "utf-8"));
+      const settings = JSON.parse(await fs.readFile(second.filePath, "utf-8"));
       expect(settings.hooks.SessionStart).toHaveLength(1);
     });
 
@@ -193,7 +200,7 @@ describe("session-check core", () => {
         }),
       );
 
-      await installSessionStartHook(home);
+      await installClaudeSessionStartHook(home);
       const settings = JSON.parse(await fs.readFile(settingsPath, "utf-8"));
       expect(settings.model).toBe("opus"); // preserved
       expect(settings.hooks.PreToolUse).toHaveLength(1); // preserved
@@ -206,9 +213,172 @@ describe("session-check core", () => {
       const malformed = '{ "model": "opus", bad json here';
       await fs.writeFile(settingsPath, malformed);
 
-      await expect(installSessionStartHook(home)).rejects.toThrow(/not valid JSON/);
+      await expect(installClaudeSessionStartHook(home)).rejects.toThrow(/not valid JSON/);
       // The user's file is left exactly as it was — never clobbered.
       expect(await fs.readFile(settingsPath, "utf-8")).toBe(malformed);
+    });
+  });
+
+  describe("installCodexSessionStartHook", () => {
+    const hooksPath = () => path.join(home, ".codex", "hooks.json");
+
+    it("creates ~/.codex/hooks.json with a SessionStart hook", async () => {
+      const result = await installCodexSessionStartHook(home);
+      expect(result.installed).toBe(true);
+      expect(result.target).toBe("codex");
+      expect(result.filePath).toBe(hooksPath());
+      const config = JSON.parse(await fs.readFile(result.filePath, "utf-8"));
+      const entry = config.hooks.SessionStart[0];
+      expect(entry.hooks[0].command).toContain("agconf session-check");
+      // matcher "*" is the form verified against a real Codex install.
+      expect(entry.matcher).toBe("*");
+    });
+
+    it("is idempotent (no duplicate hook on re-install)", async () => {
+      await installCodexSessionStartHook(home);
+      const second = await installCodexSessionStartHook(home);
+      expect(second.alreadyPresent).toBe(true);
+      const config = JSON.parse(await fs.readFile(hooksPath(), "utf-8"));
+      expect(config.hooks.SessionStart).toHaveLength(1);
+    });
+
+    it("preserves existing hooks in hooks.json", async () => {
+      await fs.mkdir(path.dirname(hooksPath()), { recursive: true });
+      await fs.writeFile(
+        hooksPath(),
+        JSON.stringify({
+          hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "echo hi" }] }] },
+        }),
+      );
+
+      await installCodexSessionStartHook(home);
+      const config = JSON.parse(await fs.readFile(hooksPath(), "utf-8"));
+      expect(config.hooks.PreToolUse).toHaveLength(1); // preserved
+      expect(config.hooks.SessionStart[0].hooks[0].command).toContain("session-check");
+    });
+
+    it("refuses to overwrite an existing but malformed hooks.json", async () => {
+      await fs.mkdir(path.dirname(hooksPath()), { recursive: true });
+      const malformed = "{ not valid json";
+      await fs.writeFile(hooksPath(), malformed);
+
+      await expect(installCodexSessionStartHook(home)).rejects.toThrow(/not valid JSON/);
+      expect(await fs.readFile(hooksPath(), "utf-8")).toBe(malformed);
+    });
+
+    it("refuses (does not silently replace) when `hooks` is not an object", async () => {
+      await fs.mkdir(path.dirname(hooksPath()), { recursive: true });
+      const bad = JSON.stringify({ hooks: [] }); // array, not an object
+      await fs.writeFile(hooksPath(), bad);
+
+      await expect(installCodexSessionStartHook(home)).rejects.toThrow(
+        /"hooks" is not a JSON object/,
+      );
+      expect(await fs.readFile(hooksPath(), "utf-8")).toBe(bad); // untouched
+    });
+
+    it("refuses when `hooks.SessionStart` is not an array", async () => {
+      await fs.mkdir(path.dirname(hooksPath()), { recursive: true });
+      const bad = JSON.stringify({ hooks: { SessionStart: { nope: true } } });
+      await fs.writeFile(hooksPath(), bad);
+
+      await expect(installCodexSessionStartHook(home)).rejects.toThrow(
+        /"hooks\.SessionStart" is not an array/,
+      );
+      expect(await fs.readFile(hooksPath(), "utf-8")).toBe(bad); // untouched
+    });
+  });
+
+  describe("installSessionStartHooks (dispatch)", () => {
+    it("installs both targets, each to its own file", async () => {
+      const results = await installSessionStartHooks(home, ["claude", "codex"]);
+      expect(results.map((r) => r.target)).toEqual(["claude", "codex"]);
+      await expect(fs.access(path.join(home, ".claude", "settings.json"))).resolves.toBeUndefined();
+      await expect(fs.access(path.join(home, ".codex", "hooks.json"))).resolves.toBeUndefined();
+    });
+
+    it("installs only the requested target", async () => {
+      await installSessionStartHooks(home, ["codex"]);
+      await expect(fs.access(path.join(home, ".codex", "hooks.json"))).resolves.toBeUndefined();
+      // Claude settings.json is NOT created when only codex is requested.
+      await expect(fs.access(path.join(home, ".claude", "settings.json"))).rejects.toThrow();
+    });
+
+    it("is atomic — a malformed config for one target writes none", async () => {
+      // A malformed codex hooks.json must abort the whole install in phase 1,
+      // BEFORE Claude's settings.json is written (no partial install).
+      await fs.mkdir(path.join(home, ".codex"), { recursive: true });
+      await fs.writeFile(path.join(home, ".codex", "hooks.json"), "{ not json");
+
+      await expect(installSessionStartHooks(home, ["claude", "codex"])).rejects.toThrow(
+        /not valid JSON/,
+      );
+      await expect(fs.access(path.join(home, ".claude", "settings.json"))).rejects.toThrow();
+    });
+  });
+
+  describe("resolveHookTargets", () => {
+    it("defaults to claude when no user store is synced", async () => {
+      expect(await resolveHookTargets(home)).toEqual(["claude"]);
+    });
+
+    it("returns the user lockfile's targets", async () => {
+      await writeLockfile(home, {
+        source: localSource,
+        globalBlockContent: "CANON",
+        skills: [],
+        targets: ["codex"],
+        markerPrefix: "agconf",
+      });
+      expect(await resolveHookTargets(home)).toEqual(["codex"]);
+    });
+
+    it("keeps both targets and drops unknown ones", async () => {
+      await writeLockfile(home, {
+        source: localSource,
+        globalBlockContent: "CANON",
+        skills: [],
+        targets: ["claude", "codex", "bogus"],
+        markerPrefix: "agconf",
+      });
+      expect(await resolveHookTargets(home)).toEqual(["claude", "codex"]);
+    });
+  });
+
+  describe("Codex hooks feature detection", () => {
+    const listOutput = (state: string) =>
+      `apps                 stable             true\nhooks                stable             ${state}\nmemories             experimental       true\n`;
+
+    it("parses enabled / disabled / unknown from `codex features list`", () => {
+      expect(parseCodexHooksState(listOutput("true"))).toBe("enabled");
+      expect(parseCodexHooksState(listOutput("false"))).toBe("disabled");
+      expect(parseCodexHooksState("apps stable true\n")).toBe("unknown"); // hooks not listed
+    });
+
+    it("getCodexHooksState returns 'unknown' when the runner throws (codex absent)", async () => {
+      const state = await getCodexHooksState(async () => {
+        throw new Error("command not found: codex");
+      });
+      expect(state).toBe("unknown");
+    });
+
+    it("warns only when codex is a target AND its hooks feature is disabled", async () => {
+      const claudeOnly = [
+        { target: "claude" as const, installed: true, alreadyPresent: false, filePath: "x" },
+      ];
+      const withCodex = [
+        { target: "codex" as const, installed: true, alreadyPresent: false, filePath: "y" },
+      ];
+      const disabled = async () => listOutput("false");
+      const enabled = async () => listOutput("true");
+
+      // No codex target → never warns (even if the runner would say disabled).
+      expect(await codexHooksDisabledWarning(claudeOnly, disabled)).toBeNull();
+      // Codex target but hooks enabled → no warning.
+      expect(await codexHooksDisabledWarning(withCodex, enabled)).toBeNull();
+      // Codex target + hooks disabled → warns with the exact re-enable command.
+      const warning = await codexHooksDisabledWarning(withCodex, disabled);
+      expect(warning).toContain("codex features enable hooks");
     });
   });
 });
