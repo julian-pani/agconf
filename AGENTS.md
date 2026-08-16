@@ -53,6 +53,8 @@ pnpm install:global       # Build + install globally
 - `plugins.ts` - **Plugin compilation** (canonical-side, push-based). Compiles canonical skills/agents/mcps into installable Claude Code (`.claude-plugin/`) and Codex (`.codex-plugin/`) plugins plus per-target marketplace indexes, committed into the canonical repo. Output is a pure projection (no managed metadata injected). Freshness is enforced by `verifyPluginsFresh` (recompile to temp + tree diff), not per-file hashes. See [Plugin Compilation](#plugin-compilation).
 - `user-scope.ts` - **User-scope sync** (`sync --scope user`). Projects the canonical company content into a developer's per-user harness locations so company standards live once per machine instead of in every repo: the **global instructions block** (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`) via a marker upsert (`projectGlobalBlock`), plus **skills** (`~/.claude/skills`, `~/.agents/skills`), **subagents** (`~/.claude/agents/*.md`, `~/.codex/agents/*.toml`), and **rules** (`~/.claude/rules/` files; a Codex rules section in `~/.codex/AGENTS.md`). Key trick: each per-user path is exactly `<homeDir>/<the repo-scope relative path>`, so skills/agents/rules **reuse the repo-scope sync functions** (`syncSkillsToTarget`/`syncAgents`/`syncRules`) with `targetDir = homeDir` — no separate placement logic — and orphan cleanup (`deleteOrphaned{Skills,Rules,Agents}`) + `check --scope user` (the exported `check{Skill,Rule,Agent,CodexAgent}Files`) reuse the repo-scope helpers too. The company block is pure canonical (reuses `buildGlobalBlock`/`computeGlobalBlockHash`, so `checkUserScope` reuses `hasGlobalBlockChanges`). Before projecting content, it reuses the repo-scope overwrite guard (`detectUnmanagedCollisions` at `targetDir = homeDir`) and — unlike repo scope, which aborts on a divergent unmanaged file — **backs up** each conflicting skill/rule/agent into `backups/` and proceeds (user scope runs unattended; INV-4). `check --scope user` (`checkUserScope`) also reconciles managed files against the store lockfile via `findOrphanedManagedFiles` (ghosts + missing content), reporting every path absolute. A git-tracked store at `~/.agconf/` holds the user lockfile (via `writeLockfile(homeDir, …)`), a `global.md` mirror (readable diffs), a never-overwritten `USER.md` (the personal layer — imported on Claude via `@~/.agconf/USER.md`, referenced by note on Codex), timestamped `backups/` of any drifted/unmanaged file a projection would overwrite (rotated to the last 10), and a `.gitignore` excluding machine-local artifacts (`backups/`, `logs/`, `autosync-state.json`). MCPs are **not** projected to user scope (plugin-only). All paths derive from an injectable `homeDir` for testability. Command layer: `commands/user-scope.ts` (`runUserScopeSync` is the print-free core shared with autosync; it recovers the source from the store lockfile and has a `skipIfUpToDate` fast path). See [Distribution Scopes](cli/docs/DISTRIBUTION_SCOPES.md).
 - `autosync.ts` - **User-scope auto-sync** (`agconf autosync`). Keeps the per-user store fresh automatically. **No OS scheduler** (no cron/launchd) — freshness is driven entirely by the **SessionStart hook** (the ecosystem norm: Claude Code, Codex, gh, rustup all check on invocation, not via an installed scheduler). The hook calls `maybeStartBackgroundAutosync`, which spawns `agconf autosync --trigger startup` **detached** (so the session never blocks) and **throttled** (`isThrottled` vs `~/.agconf/autosync-state.json`, window = `interval_minutes`). Background sync is gated on an **explicit opt-in**: `isAutosyncInstalled` (presence of `~/.agconf/config.yaml`, written by `--install`/`--enable`) AND `autosync.enabled !== false` — so upgrading a user who only had the F5 hook never silently starts syncs/commits. Cheap when current — `runUserScopeSync({skipIfUpToDate})` skips the clone when the store is at/ahead of latest, and passes `throwOnResolveError` so an offline/clone failure is caught + logged (`result=error`) rather than `process.exit` escaping the best-effort/exit-0 runner (a held store lock logs `result=locked`). STATE is `~/.agconf/autosync-state.json`; runs append to `~/.agconf/logs/autosync.log` (rotated). Command layer: `commands/autosync.ts` — `--install`/`--enable` (install hook + set `enabled:true`), `--uninstall`/`--disable` (set `enabled:false`, leaving the shared hook), `--force`, `--trigger`; enable/disable use `setAutosyncEnabled` in `config/loader.ts`.
+- `propose.ts` - Downstream→canonical proposals (the reverse of `sync`). `detectProposedChanges` maps modified managed files to canonical paths, `detectNewContent` discovers unmanaged local content, `applyProposedChanges` commits/pushes/opens the PR. Every proposed file is reconciled against canonical HEAD before shipping — see [Propose Rebasing](#propose-rebasing).
+- `propose-merge.ts` - The reconciliation primitives behind that: `resolveMergeBase` (read a path at the lockfile's `commit_sha` out of the existing clone), `threeWayMerge` (`git merge-file`), `evaluateChange` (the propose/drop/conflict decision table), and `StaleBaseError`.
 
 ### Commands (`cli/src/commands/`)
 Commands: init, sync (with `--scope repo|user`), check (with `--hook` for pre-commit: branch-aware exit — block on master/main, warn on feature branches; and `--scope repo|user`), compile, propose, upgrade-cli (with `--package-manager` option), canonical (init), config, completion, session-check (with `--install-hook`), autosync (with `--install`/`--uninstall`/`--enable`/`--disable`/`--force`/`--trigger`)
@@ -163,6 +165,46 @@ lives in `cli/src/core/plugins.ts`; the full guide is `cli/docs/PLUGINS.md`.
 - `canonical init` scaffolds the `plugins` block, a self-CI workflow (`agconf-ci.yml`, runs `agconf check`), and an initial compile. `--no-plugins` skips all of it.
 
 > **Reminder**: `compile` is registered in `cli/src/cli.ts` and `cli/src/commands/completion.ts`. When changing compile/marketplace output, update `cli/docs/PLUGINS.md` and `verifyPluginsFresh` together.
+
+### Propose Rebasing
+
+A downstream copy is only ever as fresh as its last `sync`, so shipping it
+verbatim would silently revert anything canonical changed in the meantime.
+`detectProposedChanges` therefore reconciles each file against three versions:
+**base** (the path at `lockfile.source.commit_sha`, read out of the clone
+detection already made), **ours** (the local copy, metadata stripped), and
+**theirs** (canonical HEAD). `evaluateChange` in `propose-merge.ts` owns the
+decision:
+
+| base vs theirs | ours vs base | outcome |
+|---|---|---|
+| unchanged | changed | propose ours verbatim |
+| changed | changed, disjoint | `git merge-file`, propose the merge (`ProposedChange.rebased`) |
+| changed | changed, overlapping | conflict |
+| changed | unchanged | drop — the delta is upstream's alone (reported via `ProposeResult.dropped`) |
+| deleted upstream | changed | conflict |
+| added upstream | added locally, differing | conflict |
+| — | binary, changed both sides | conflict (no textual merge) |
+
+Any conflict aborts the **whole** propose with `StaleBaseError` (a partial
+proposal reads as complete to its author). `--override` does **not** disable
+reconciliation — it resolves conflicts by taking the local copy while still
+merging what merges and still dropping what the local repo never touched, so
+forcing one file can't silently revert canonical's work in another.
+
+Notes for future changes:
+- **Normalization matters.** `ours` has been through `stripManagedMetadata`,
+  which re-serializes YAML frontmatter; canonical files on disk have not. Both
+  the HEAD and base sides are run through `normalizeCanonical` (in `propose.ts`)
+  so a serialization round-trip can't read as a real edit. `agents-md-global`
+  normalizes by trimming instead, matching `stripMetadataComments`.
+- **Skill assets** carry no metadata, so they rely entirely on the merge base —
+  this is the only thing that distinguishes "I edited this asset" from
+  "canonical did". Binary assets never merge; a divergence conflicts.
+- **Fallback when there is no base** (`commit_sha` absent, force-push, shallow
+  clone): compare the file's embedded `agconf_content_hash` against canonical
+  HEAD's hash and conflict if it proves upstream moved. Assets have no hash, so
+  they fall back to the historical propose-as-is behavior.
 
 ## Commit Conventions
 

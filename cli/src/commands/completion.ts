@@ -69,6 +69,7 @@ const COMMANDS = {
       "--message",
       "--files",
       "--new",
+      "--override",
       "-y",
       "--yes",
     ],

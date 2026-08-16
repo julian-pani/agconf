@@ -7,19 +7,35 @@ import { type SimpleGit, simpleGit } from "simple-git";
 import { loadCanonicalRepoConfig } from "../config/loader.js";
 import type { CanonicalRepoConfig } from "../config/schema.js";
 import type { Source } from "../schemas/lockfile.js";
+import { removeTempDir } from "../utils/fs.js";
 import { validateAgentFrontmatter } from "./agents.js";
 import { readLockfile } from "./lockfile.js";
 import {
   type CheckManagedFilesOptions,
   checkAllManagedFiles,
+  computeContentHash,
   fileMatchesCanonical,
+  getManagedMetadata,
   isManaged,
   type ManagedFileCheckResult,
   skillMatchesCanonical,
   stripManagedMetadata,
   validateSkillFrontmatter,
 } from "./managed-content.js";
-import { parseAgentsMd, stripMetadataComments } from "./markers.js";
+import {
+  computeGlobalBlockHash,
+  parseAgentsMd,
+  parseGlobalBlockMetadata,
+  stripMetadataComments,
+} from "./markers.js";
+import {
+  evaluateChange,
+  type MergeDecision,
+  type ProposeConflict,
+  resolveMergeBase,
+  StaleBaseError,
+  verifyBaseCommit,
+} from "./propose-merge.js";
 import { getSkillsDir } from "./targets.js";
 
 const execAsync = promisify(exec);
@@ -40,6 +56,12 @@ export interface ProposedChange {
   content: string | Buffer;
   /** Type of content */
   type: "skill" | "skill-asset" | "rule" | "agent" | "agents-md-global";
+  /**
+   * True when `content` is a three-way merge of the local copy onto canonical
+   * HEAD rather than the local copy verbatim — canonical moved since the sync
+   * and the two sets of edits were reconciled. Surfaced in the PR body.
+   */
+  rebased?: boolean | undefined;
 }
 
 export interface ProposeOptions {
@@ -47,6 +69,12 @@ export interface ProposeOptions {
   cwd?: string | undefined;
   /** Only propose specific files (glob patterns relative to cwd) */
   files?: string[] | undefined;
+  /**
+   * Resolve conflicts by taking the local copy instead of aborting.
+   * Reconciliation still runs, so cleanly-mergeable files are still merged —
+   * forcing one file must not silently revert canonical's work in the others.
+   */
+  override?: boolean | undefined;
 }
 
 /** Context about the downstream repo where changes originated */
@@ -76,6 +104,18 @@ export interface ProposeResult {
    * clone twice in the full propose flow.
    */
   canonicalCloneDir?: string | undefined;
+  /**
+   * Canonical commit the downstream repo was synced from — the base every
+   * change was reconciled against. Recorded in the PR body so a reviewer can
+   * see what the proposal was rebased onto.
+   */
+  baseSha?: string | undefined;
+  /**
+   * Downstream paths that were examined but contributed nothing, because the
+   * only difference from canonical HEAD was canonical's own change. Surfaced so
+   * "nothing to propose" doesn't look like "nothing was looked at".
+   */
+  dropped?: string[] | undefined;
 }
 
 /**
@@ -166,12 +206,36 @@ export async function detectProposedChanges(options: ProposeOptions = {}): Promi
     dirs = resolveCanonicalDirs(await loadCanonicalRepoConfig(canonicalCloneDir));
   }
 
+  // Reconciliation needs the clone; without it there is nothing to propose and
+  // so nothing to reconcile.
+  const reconcile: ReconcileContext | null = canonicalCloneDir
+    ? {
+        cloneDir: canonicalCloneDir,
+        source,
+        metaOpts: markerPrefix ? { metadataPrefix: markerPrefix } : {},
+        // The base commit is the same for every file, so check it once.
+        commitVerified: source.commit_sha
+          ? await verifyBaseCommit(canonicalCloneDir, source.commit_sha)
+          : false,
+        forceConflicts: options.override === true,
+      }
+    : null;
+
   const changes: ProposedChange[] = [];
+  const conflicts: ProposeConflict[] = [];
+  const dropped: string[] = [];
+
   for (const file of filesToPropose) {
     const change = await buildProposedChange(targetDir, file, markerPrefix, dirs);
-    if (change) {
+    if (!change) continue;
+    if (!reconcile) {
       changes.push(change);
+      continue;
     }
+    const decision = await reconcileChange(change, reconcile, {
+      syncedHash: () => readSyncedHash(targetDir, file, markerPrefix),
+    });
+    collectDecision(decision, change, { changes, conflicts, dropped, reconcile });
   }
 
   if (canonicalCloneDir) {
@@ -182,13 +246,20 @@ export async function detectProposedChanges(options: ProposeOptions = {}): Promi
         skillName,
         canonicalCloneDir,
         dirs.skillsDir,
+        { reconcile, conflicts, dropped, matchesFilter },
       );
-      for (const change of assetChanges) {
-        if (matchesFilter(change.downstreamPath)) {
-          changes.push(change);
-        }
-      }
+      changes.push(...assetChanges);
     }
+  }
+
+  if (conflicts.length > 0) {
+    // The clone only existed to answer this question; nothing downstream will
+    // reuse it now that detection is aborting. Guarded rather than defaulted:
+    // an empty path would resolve to "." and delete the working directory.
+    if (canonicalCloneDir) {
+      await removeTempDir(path.dirname(canonicalCloneDir));
+    }
+    throw new StaleBaseError(conflicts);
   }
 
   // Gather downstream context
@@ -200,7 +271,177 @@ export async function detectProposedChanges(options: ProposeOptions = {}): Promi
     markerPrefix,
     downstream,
     canonicalCloneDir,
+    baseSha: source.commit_sha,
+    dropped,
   };
+}
+
+/** Everything reconciliation needs to compare a change against canonical. */
+interface ReconcileContext {
+  /** Canonical clone created during detection — holds both HEAD and history. */
+  cloneDir: string;
+  source: Source;
+  metaOpts: MetaOpts;
+  /** Whether the sync-time commit is present in the clone, resolved once per run. */
+  commitVerified: boolean;
+  /**
+   * `--override`: resolve conflicts by taking the local copy instead of
+   * aborting. Reconciliation still runs, so files that merge cleanly are still
+   * merged and files the local repo never touched are still dropped — forcing
+   * one file must not quietly revert canonical's changes in the others.
+   */
+  forceConflicts: boolean;
+}
+
+/**
+ * Put canonical-side content into the same serialization as the proposed
+ * content, so a frontmatter round-trip can't read as a real edit.
+ *
+ * `buildProposedChange` ships `stripManagedMetadata` output for markdown and a
+ * trimmed block for AGENTS.md, both of which re-serialize YAML; canonical files
+ * on disk are raw. Running both sides through the matching transform keeps
+ * comparisons and merges honest.
+ */
+function normalizeCanonical(raw: Buffer, type: ProposedChange["type"], metaOpts: MetaOpts): Buffer {
+  if (type === "skill-asset") return raw;
+  const text = raw.toString("utf-8");
+  if (type === "agents-md-global") return Buffer.from(text.trim(), "utf-8");
+  return Buffer.from(stripManagedMetadata(text, metaOpts), "utf-8");
+}
+
+function toBuffer(content: string | Buffer): Buffer {
+  return typeof content === "string" ? Buffer.from(content, "utf-8") : content;
+}
+
+/**
+ * The hash a downstream file recorded at sync time — i.e. what canonical's copy
+ * hashed to back then. Comparing it against canonical HEAD is the only
+ * staleness signal available when the merge base can't be resolved.
+ */
+async function readSyncedHash(
+  targetDir: string,
+  file: ManagedFileCheckResult,
+  markerPrefix: string | undefined,
+): Promise<string | undefined> {
+  try {
+    const content = await fs.readFile(path.join(targetDir, file.path), "utf-8");
+    if (file.type === "agents") {
+      const parsed = parseAgentsMd(content, markerPrefix ? { prefix: markerPrefix } : {});
+      return parsed.globalBlock
+        ? parseGlobalBlockMetadata(parsed.globalBlock).contentHash
+        : undefined;
+    }
+    return getManagedMetadata(content, markerPrefix).contentHash;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Reconcile one proposed change against canonical HEAD and the sync-time base.
+ * See `evaluateChange` for the decision table.
+ */
+async function reconcileChange(
+  change: ProposedChange,
+  ctx: ReconcileContext,
+  opts: {
+    /** Lazily read — only the base-unavailable path needs it. */
+    syncedHash?: (() => Promise<string | undefined>) | undefined;
+    /** Canonical HEAD bytes the caller already read, to avoid a second read. */
+    theirsRaw?: Buffer | null | undefined;
+  } = {},
+): Promise<MergeDecision> {
+  const { cloneDir, source, metaOpts } = ctx;
+
+  let theirsRaw: Buffer | null;
+  if (opts.theirsRaw !== undefined) {
+    theirsRaw = opts.theirsRaw;
+  } else {
+    try {
+      theirsRaw = await fs.readFile(path.join(cloneDir, change.canonicalPath));
+    } catch {
+      theirsRaw = null; // Path does not exist upstream
+    }
+  }
+
+  const base = await resolveMergeBase(cloneDir, source, change.canonicalPath, ctx.commitVerified);
+
+  return evaluateChange({
+    ours: toBuffer(change.content),
+    theirs: theirsRaw === null ? null : normalizeCanonical(theirsRaw, change.type, metaOpts),
+    base: {
+      available: base.available,
+      content:
+        base.content === null ? null : normalizeCanonical(base.content, change.type, metaOpts),
+    },
+    upstreamMoved: base.available
+      ? undefined
+      : upstreamMoved(await opts.syncedHash?.(), theirsRaw, change.type, metaOpts),
+  });
+}
+
+/**
+ * Whether canonical HEAD differs from what this file was synced from, judged
+ * purely by the embedded hash. Undefined when there is nothing to compare —
+ * skill assets carry no metadata, and an absent upstream file is not "moved".
+ */
+function upstreamMoved(
+  syncedHash: string | undefined,
+  theirsRaw: Buffer | null,
+  type: ProposedChange["type"],
+  metaOpts: MetaOpts,
+): boolean | undefined {
+  if (!syncedHash || theirsRaw === null) return undefined;
+  const text = theirsRaw.toString("utf-8");
+  const current =
+    type === "agents-md-global" ? computeGlobalBlockHash(text) : computeContentHash(text, metaOpts);
+  return current !== syncedHash;
+}
+
+/** Where a reconciled decision is recorded. All three lists are mutated. */
+interface DecisionSink {
+  changes: ProposedChange[];
+  conflicts: ProposeConflict[];
+  /** Downstream paths dropped because the delta belonged to canonical alone. */
+  dropped: string[];
+  reconcile: ReconcileContext;
+}
+
+/** Fold a merge decision into the running change/conflict/dropped lists. */
+function collectDecision(
+  decision: MergeDecision,
+  change: ProposedChange,
+  sink: DecisionSink,
+): void {
+  if (decision.kind === "drop") {
+    sink.dropped.push(change.downstreamPath);
+    return;
+  }
+
+  if (decision.kind === "conflict") {
+    if (!sink.reconcile.forceConflicts) {
+      sink.conflicts.push({
+        downstreamPath: change.downstreamPath,
+        canonicalPath: change.canonicalPath,
+        reason: decision.reason,
+      });
+      return;
+    }
+    // --override: the local copy wins this file.
+    sink.changes.push(change);
+    return;
+  }
+
+  if (!decision.rebased) {
+    sink.changes.push(change);
+    return;
+  }
+
+  sink.changes.push({
+    ...change,
+    content: change.type === "skill-asset" ? decision.content : decision.content.toString("utf-8"),
+    rebased: true,
+  });
 }
 
 /**
@@ -217,6 +458,7 @@ async function detectSkillAssetChanges(
   skillName: string,
   canonicalCloneDir: string,
   skillsDir: string,
+  ctx: AssetScanContext,
 ): Promise<ProposedChange[]> {
   const canonicalSkillDir = path.join(canonicalCloneDir, skillsDir, skillName);
 
@@ -228,17 +470,39 @@ async function detectSkillAssetChanges(
       continue; // Skill not synced to this target
     }
 
-    return diffSkillDir(target, skillName, downstreamSkillDir, canonicalSkillDir, skillsDir);
+    return diffSkillDir(target, skillName, downstreamSkillDir, canonicalSkillDir, skillsDir, ctx);
   }
   return [];
 }
 
+interface AssetScanContext {
+  /** Null only when there is no canonical clone to reconcile against. */
+  reconcile: ReconcileContext | null;
+  /** Collects files that can't be proposed without user action (mutated) */
+  conflicts: ProposeConflict[];
+  /** Collects files dropped as already-up-to-date (mutated) */
+  dropped: string[];
+  /**
+   * The `--files` predicate. Applied before reconciliation so an excluded file
+   * neither costs a git lookup nor aborts the propose on a conflict it would
+   * never have contributed to.
+   */
+  matchesFilter: (relPath: string) => boolean;
+}
+
+/**
+ * Assets carry no metadata, so a plain byte diff against canonical HEAD can't
+ * tell "I edited this" from "canonical moved". Each differing file is therefore
+ * run through the same reconciliation as metadata-bearing content, which
+ * resolves that from the merge base.
+ */
 async function diffSkillDir(
   target: string,
   skillName: string,
   downstreamSkillDir: string,
   canonicalSkillDir: string,
   skillsDir: string,
+  ctx: AssetScanContext,
 ): Promise<ProposedChange[]> {
   const changes: ProposedChange[] = [];
 
@@ -276,13 +540,30 @@ async function diffSkillDir(
     // Use POSIX separators in canonical paths so the canonical commit is
     // platform-portable regardless of which OS the proposer is on.
     const downstreamPath = path.join(getSkillsDir(target), skillName, relPath);
+    if (!ctx.matchesFilter(downstreamPath)) continue;
+
     const canonicalPath = `${skillsDir}/${skillName}/${relPath.split(path.sep).join("/")}`;
 
-    changes.push({
+    const change: ProposedChange = {
       downstreamPath,
       canonicalPath,
       content: downstreamBytes,
       type: "skill-asset",
+    };
+
+    if (!ctx.reconcile) {
+      changes.push(change);
+      continue;
+    }
+
+    // Canonical HEAD is already in hand from the byte diff above, and assets
+    // carry no embedded hash so there is no fallback signal to supply.
+    const decision = await reconcileChange(change, ctx.reconcile, { theirsRaw: canonicalBytes });
+    collectDecision(decision, change, {
+      changes,
+      conflicts: ctx.conflicts,
+      dropped: ctx.dropped,
+      reconcile: ctx.reconcile,
     });
   }
 
@@ -866,7 +1147,7 @@ export async function applyProposedChanges(
     pushed = true;
   } catch {
     const pushCmd = `git push -u origin ${branch}`;
-    const prCmd = buildGhPrCommand(source, branch, result.changes, result.downstream, options);
+    const prCmd = buildGhPrCommand(branch, result, options);
     manualCommands = [`cd ${cloneDir}`, pushCmd, "", "Then create a PR:", prCmd].join("\n");
     return { cloneDir, branch, pushed, manualCommands };
   }
@@ -874,11 +1155,11 @@ export async function applyProposedChanges(
   // Try to open PR (only for GitHub sources)
   if (source.type === "github") {
     try {
-      const prCmd = buildGhPrCommand(source, branch, result.changes, result.downstream, options);
+      const prCmd = buildGhPrCommand(branch, result, options);
       const { stdout } = await execAsync(prCmd, { cwd: cloneDir });
       prUrl = stdout.trim();
     } catch {
-      const prCmd = buildGhPrCommand(source, branch, result.changes, result.downstream, options);
+      const prCmd = buildGhPrCommand(branch, result, options);
       manualCommands = ["Branch was pushed successfully. To create a PR:", prCmd].join("\n");
     }
   }
@@ -976,11 +1257,8 @@ async function getDownstreamContext(targetDir: string): Promise<DownstreamContex
 /**
  * Build the default PR body with downstream context.
  */
-function buildPrBody(
-  changes: ProposedChange[],
-  downstream: DownstreamContext,
-  options: ApplyOptions,
-): string {
+function buildPrBody(result: ProposeResult, options: ApplyOptions): string {
+  const { changes, downstream } = result;
   const lines: string[] = [];
 
   if (options.message) {
@@ -989,7 +1267,10 @@ function buildPrBody(
 
   lines.push("## Changed files", "");
   for (const c of changes) {
-    lines.push(`- ${c.canonicalPath} (${c.type})`);
+    // Flag merged files explicitly: their content is not what the downstream
+    // repo has on disk, so a reviewer should know it was reconciled.
+    const note = c.rebased ? ", merged onto canonical HEAD" : "";
+    lines.push(`- ${c.canonicalPath} (${c.type}${note})`);
   }
 
   lines.push("", "## Origin", "");
@@ -998,6 +1279,9 @@ function buildPrBody(
   }
   if (downstream.commitSha) {
     lines.push(`- **Commit:** ${downstream.commitSha.slice(0, 12)}`);
+  }
+  if (result.baseSha) {
+    lines.push(`- **Synced from canonical:** ${result.baseSha.slice(0, 12)}`);
   }
   if (downstream.authorName) {
     const author = downstream.authorEmail
@@ -1012,14 +1296,9 @@ function buildPrBody(
 /**
  * Build the gh pr create command string.
  */
-function buildGhPrCommand(
-  source: Source,
-  branch: string,
-  changes: ProposedChange[],
-  downstream: DownstreamContext,
-  options: ApplyOptions,
-): string {
-  const body = buildPrBody(changes, downstream, options);
+function buildGhPrCommand(branch: string, result: ProposeResult, options: ApplyOptions): string {
+  const body = buildPrBody(result, options);
+  const { source } = result;
 
   const repo = source.type === "github" ? ` --repo ${source.repository}` : "";
   // Use single quotes to avoid shell interpreting backticks or special chars
