@@ -409,14 +409,20 @@ Canonical content types and their reachable homes:
 - Overwriting a drifted/unmanaged user-scope file first creates a copy under
   `~/.agconf/backups/<timestamp>/`; backups rotate to the last 10.
 
-**F5 — Dedup + freshness hook**
+**F5 — Dedup + freshness hook** ✅ *implemented*
 - `agconf session-check` prints/injects a warning when agconf-managed content of a
-  type is present in ≥2 scopes, naming type + scopes, and annotating identical vs
-  divergent — **and still fires when the two copies differ** (identity, not equality).
-- It reports staleness when the user store is behind the pinned canonical.
-- `agconf init --scope user` installs an idempotent SessionStart hook in
-  `~/.claude/settings.json` that preserves any existing settings/hooks.
-- Exits 0 by default (advisory), even when duplication is present.
+  type is present in ≥2 scopes (repo lockfile vs `~/.agconf` lockfile), naming type
+  + scopes, annotating instructions as identical vs divergent — **and still firing
+  when the two copies differ** (identity, not equality).
+- It also reports user-scope **integrity** drift (via `checkUserScope`). Output
+  goes to stdout so a SessionStart hook injects it into context; exits 0 always
+  (advisory) and never throws.
+- `agconf session-check --install-hook` installs an idempotent Claude Code
+  SessionStart hook in `~/.claude/settings.json`, preserving existing settings/hooks.
+- **Deferred:** plugin-scope detection (needs reading harness plugin state, which is
+  version-specific) and network "behind-canonical" freshness (a session hook should
+  stay fast/offline). Both noted as follow-ups; repo↔user — the main double-load
+  hazard — is covered.
 
 **F6 — Auto-bump** ✅ *implemented*
 - `agconf compile --bump` (=`auto`≡patch; or `patch`/`minor`/`major`) bumps each

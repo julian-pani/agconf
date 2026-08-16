@@ -206,6 +206,26 @@ In a **canonical** repo (one with a `plugins` block in `agconf.yaml`), `check`
 instead verifies that the committed plugin/marketplace artifacts are in sync
 with the canonical source.
 
+### `agconf session-check`
+
+Advisory check for **cross-scope duplication** — meant to run automatically at the
+start of every session. If you use user scope (`sync --scope user`) *and* a repo
+you're working in also commits agconf-managed content, the same standards can load
+twice; `session-check` warns you (and, for instructions, notes whether the two
+copies are identical or divergent). Instructions are flagged whenever both scopes
+carry the block; skills/rules/agents are flagged only for the specific objects
+present in **both** scopes (a repo skill and a different user skill is not a
+collision). The warning is framed as a note for you, not a task for the agent. It
+always exits 0 and never disrupts a session.
+
+```bash
+# Install it as a Claude Code SessionStart hook (writes ~/.claude/settings.json)
+agconf session-check --install-hook
+
+# Run it directly (what the hook runs)
+agconf session-check
+```
+
 ### `agconf compile`
 
 Compile installable Claude Code / Codex plugins and a marketplace index from a
