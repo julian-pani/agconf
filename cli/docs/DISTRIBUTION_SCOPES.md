@@ -1,12 +1,15 @@
-# Distribution Scopes — per-repo vs per-user vs plugin (analysis / RFC)
+# Distribution Scopes — per-repo vs per-user vs plugin (design + status)
 
-> Status: **analysis, not yet implemented.** This document evaluates moving agconf
-> beyond its current "sync a copy into every repo" model, toward optionally
-> managing canonical content **once per developer**. It covers both proposed
-> mechanisms (a per-user "base directory" and plugins), how to support both, and
-> — the hard part — how to stop a developer from getting the same instructions
-> and skills loaded **twice** when a repo carries committed content *and* the dev
-> also has it installed at the user level.
+> Status: **implemented.** agconf supports three ways to deliver canonical
+> content: **repo scope** (committed into each repo, the original model), **user
+> scope** (`sync --scope user` — projected **once per machine** into `~/.claude`/
+> `~/.codex` via a git-tracked `~/.agconf` store, kept fresh by `agconf autosync`),
+> and **plugins** (`agconf compile`). This document is the design record and living
+> spec: the analysis behind the split, the invariants (INV-1…INV-9), the
+> acceptance criteria, and the per-feature status (F1–F6) below — including how a
+> developer is stopped from loading the same content **twice** when a repo commits
+> content *and* they also have it at user scope (see `agconf session-check`). For
+> user-facing usage, see the [README](../../README.md#user-scope---scope-user).
 
 ## 1. The problem
 

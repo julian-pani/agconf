@@ -111,7 +111,10 @@ GitHub Actions workflows are created automatically to keep downstream repos in s
 |---------|-------------|
 | `init` | Initialize repo from a canonical source |
 | `sync` | Sync content from canonical repo (fetches latest by default) |
-| `check` | Verify managed files are unchanged (in a canonical repo, verifies compiled plugin freshness) |
+| `sync --scope user` | Project company standards **once per machine** into `~/.claude`/`~/.codex` instead of committing them per repo ([details](#user-scope---scope-user)) |
+| `check` | Verify managed files are unchanged (`--scope user` verifies the per-user projection; in a canonical repo, verifies compiled plugin freshness) |
+| `autosync` | Keep the per-user store fresh automatically (runs at session start; opt-in) |
+| `session-check` | Advisory cross-scope duplication + integrity check, run at session start |
 | `compile` | Compile installable Claude Code / Codex plugins + marketplace from canonical content (canonical repos) |
 | `propose` | Propose local changes (or new skills/rules/agents via `--new`) back to canonical as a PR |
 | `upgrade-cli` | Upgrade the CLI to latest version (auto-detects package manager) |
@@ -505,15 +508,15 @@ See: [GitHub Docs: Sharing actions and workflows from your private repository](h
 
 ## FAQ
 
-### Why not just use user instructions like `~/.claude/CLAUDE.md`?
+### Why not just hand-edit user instructions like `~/.claude/CLAUDE.md`?
 
-User-level instructions work for personal preferences, but fall short for team/org standards:
+Hand-editing that file works for personal preferences, but falls short for team/org standards:
 
 1. **Not git tracked** — You can't review changes, audit history, or roll back mistakes
 2. **Easy to override by mistake** — A stray edit or tool update can wipe your config
 3. **No separation between user and company standards** — Personal preferences get mixed with org policies, making it hard to enforce consistency
 
-agconf keeps company standards in the repo (git tracked, reviewable) while letting users keep their personal config separate.
+agconf solves all three either way you deliver standards. Committed **repo scope** keeps them git-tracked and reviewable in each repo. And if you want them once-per-machine, **[user scope](#user-scope---scope-user)** (`sync --scope user`) is the *managed* way to write `~/.claude/CLAUDE.md`: the company block is version-controlled in the `~/.agconf` git store (1), overwrite-protected via backups + `check --scope user` (2), and kept strictly separate from your personal `~/.agconf/USER.md`, which agconf never touches (3). So you get the convenience of user-level instructions without the drift.
 
 ### Why not just use Claude Code plugins/extensions?
 

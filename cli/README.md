@@ -21,7 +21,7 @@ Full documentation available on GitHub: https://github.com/julian-pani/agconf
 |---------|-------------|---------|
 | `init` | Initialize repo from a canonical source | `agconf init --source org/standards` |
 | `sync` | Sync content from canonical repo (fetches latest by default) | `agconf sync` or `agconf sync --pinned` |
-| `check` | Verify managed files are unchanged (in a canonical repo, verifies compiled plugin freshness) | `agconf check` |
+| `check` | Verify managed files are unchanged (`--scope user` checks the per-user projection; in a canonical repo, verifies compiled plugin freshness) | `agconf check` or `agconf check --scope user` |
 | `compile` | Compile installable Claude Code / Codex plugins + marketplace from canonical content | `agconf compile` or `agconf compile --check` |
 | `sync --scope user` | Project the company instructions once per machine into `~/.claude`/`~/.codex` (git-tracked `~/.agconf` store) | `agconf sync --scope user --source org/standards` |
 | `autosync` | Keep the per-user store fresh automatically (runs at session start; opt-in) | `agconf autosync --install` |

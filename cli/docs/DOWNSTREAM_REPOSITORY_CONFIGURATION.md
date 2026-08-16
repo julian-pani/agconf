@@ -16,6 +16,12 @@ After initializing a downstream repository with `agconf init`, you can optionall
 - **Canonical config (`agconf.yaml`)** in the source repo defines *what* content exists
 - **Downstream config (`.agconf/config.yaml`)** in consuming repos defines *how* sync operates
 
+> **Not to be confused with the user-scope config.** This guide covers the
+> **repo** file at `<repo>/.agconf/config.yaml`. User scope (`sync --scope user`)
+> has its own, separate file at **`~/.agconf/config.yaml`** in your home directory
+> with a different schema (just an `autosync` block). Same filename, different
+> location and purpose — see [Distribution Scopes](DISTRIBUTION_SCOPES.md).
+
 ## Configuration File
 
 Create `.agconf/config.yaml` in your downstream repository:
