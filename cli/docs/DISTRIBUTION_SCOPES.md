@@ -429,23 +429,35 @@ Canonical content types and their reachable homes:
   "behind-canonical" freshness gap is now closed by F5b below.)
 
 **F5b — User-scope auto-sync** ✅ *implemented*
-- Keeps the per-user store current automatically (`agconf autosync`), **on by
-  default** — safe because the store is git-tracked and pre-overwrite backups are
-  taken. Disable with `autosync.enabled: false` in `~/.agconf/config.yaml`.
-- Two triggers, one runner: the SessionStart hook launches it **detached**
-  (`maybeStartBackgroundAutosync`) so the session never blocks; a `crontab` entry
-  (idempotent by the `# agconf-autosync` marker) runs it every `interval_minutes`
-  (default 10). `agconf autosync --install` wires up both (a crontab failure is a
-  non-fatal warning — session-start autosync still works); `--uninstall` removes the
-  cron and points at the real off-switch (`autosync.enabled: false`), leaving the
-  SessionStart hook (shared with the duplication check) in place.
+- Keeps the per-user store current automatically (`agconf autosync`). Freshness is
+  driven **entirely by the SessionStart hook — no OS scheduler** (no cron/launchd/
+  systemd). This matches the ecosystem norm: Claude Code, Codex, gh, and rustup all
+  check on invocation/startup rather than installing a scheduler; the tools that do
+  install one (`brew autoupdate`, `topgrade`) are those with no natural invocation
+  point, which agconf has. Dropping the scheduler also removes a class of macOS cron
+  failures (deprecated/TCC Full-Disk-Access, minimal PATH, no keychain/token).
+- **Opt-in, off by default until installed:** background sync runs only after
+  `agconf autosync --install` / `--enable`, which installs the hook and writes
+  `~/.agconf/config.yaml` — its **presence is the install marker** (`isAutosyncInstalled`).
+  So upgrading a user who only had the F5 duplication hook never silently starts
+  syncs or git commits. `--uninstall` / `--disable` set `autosync.enabled: false`
+  (the shared SessionStart hook stays, as it also powers the duplication check).
+- The hook launches the runner **detached** (`maybeStartBackgroundAutosync`) so the
+  session never blocks; runs are throttled via `~/.agconf/autosync-state.json`
+  (`last_attempt`, window = `interval_minutes`, default 10).
 - Cheap when current: resolves the latest version first and **skips the clone/write**
-  when the store is at/ahead (`runUserScopeSync({skipIfUpToDate})`). Session-start
-  runs are throttled via `~/.agconf/autosync-state.json` (`last_attempt`); cron uses
-  `--force`. Every run appends to `~/.agconf/logs/autosync.log` (rotated). Always
-  best-effort/exit-0.
-- **In-session caveat (documented):** memory files load at launch, so a startup
-  auto-sync lands for the *next* session; the cron keeps the gap ≤ interval.
+  when the store is at/ahead (`runUserScopeSync({skipIfUpToDate})`); a resolution
+  failure is caught + logged (`throwOnResolveError`, not `process.exit`), a held
+  store lock logs `result=locked`. Every run appends to `~/.agconf/logs/autosync.log`
+  (rotated). Always best-effort/exit-0.
+- **In-session freshness (the startup-staleness answer):** memory/instructions load
+  at launch, so a refresh applies to the *next* session. To avoid silent staleness,
+  the SessionStart hook runs a cheap, bounded **freshness probe** (`probeUserScopeFreshness`
+  — a version lookup against the latest release, **no clone**); if the store is behind,
+  it prints a note recommending the developer **restart the session** (or run `sync
+  --scope user`) to load the update, while the detached background sync makes that
+  restart current. It never attempts an in-time synchronous apply (that would block
+  startup on the network and still not reliably reload already-read context).
 - Config-vs-state kept clean: intent in `config.yaml`, throttle in `autosync-state.json`,
   sync record in the lockfile.
 

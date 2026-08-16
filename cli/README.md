@@ -24,7 +24,7 @@ Full documentation available on GitHub: https://github.com/julian-pani/agconf
 | `check` | Verify managed files are unchanged (in a canonical repo, verifies compiled plugin freshness) | `agconf check` |
 | `compile` | Compile installable Claude Code / Codex plugins + marketplace from canonical content | `agconf compile` or `agconf compile --check` |
 | `sync --scope user` | Project the company instructions once per machine into `~/.claude`/`~/.codex` (git-tracked `~/.agconf` store) | `agconf sync --scope user --source org/standards` |
-| `autosync` | Keep the per-user store fresh automatically (session start + cron); on by default | `agconf autosync --install` |
+| `autosync` | Keep the per-user store fresh automatically (runs at session start; opt-in) | `agconf autosync --install` |
 | `session-check` | Advisory cross-scope duplication + integrity check (SessionStart hook) | `agconf session-check --install-hook` |
 | `propose` | Propose local changes to managed content back to the canonical repo (opens a PR) | `agconf propose` |
 | `propose --new [path]` | Propose new (unmanaged) skills/rules/agents upstream; optional path filters discovery | `agconf propose --new .claude/skills/my-skill` |

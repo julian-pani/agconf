@@ -1,10 +1,15 @@
 /**
  * Auto-sync plumbing for the user store (F5b): throttle state, a debug log, and
- * cron installation. The runner itself lives in `commands/autosync.ts`; this
- * module holds the testable pieces.
+ * the detached background launcher. The runner itself lives in
+ * `commands/autosync.ts`; this module holds the testable pieces.
+ *
+ * Freshness is driven entirely by the SessionStart hook (the ecosystem norm —
+ * Claude Code, Codex, gh, rustup all check on invocation, not via an installed
+ * OS scheduler). No cron/launchd/systemd entry is installed.
  *
  * Split of concerns (see the config-vs-state principle in DISTRIBUTION_SCOPES.md):
- * - INTENT lives in `~/.agconf/config.yaml` (`autosync.enabled` / `interval_minutes`).
+ * - INTENT lives in `~/.agconf/config.yaml` (`autosync.enabled`); its PRESENCE is
+ *   the install marker (background sync only runs once explicitly installed).
  * - STATE lives in `~/.agconf/autosync-state.json` (last attempt / result) — used
  *   to throttle session-start runs so opening many sessions doesn't hammer sync.
  * - The lockfile stays the record of what was synced.
@@ -12,17 +17,11 @@
  * All paths derive from an injectable `homeDir` for testability.
  */
 
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { promisify } from "node:util";
-import { loadUserScopeConfig } from "../config/loader.js";
+import { isAutosyncInstalled, loadUserScopeConfig } from "../config/loader.js";
 import { getUserPaths } from "./user-scope.js";
-
-const execFileAsync = promisify(execFile);
-
-/** Marker comment that makes the crontab entry idempotent + removable. */
-export const CRON_MARKER = "# agconf-autosync";
 
 /** Cap the debug log; one rollover to `.1` keeps it bounded. */
 const LOG_MAX_BYTES = 256 * 1024;
@@ -40,7 +39,13 @@ export function getAutosyncPaths(homeDir: string): AutosyncPaths {
   };
 }
 
-export type AutosyncResult = "synced" | "up-to-date" | "throttled" | "disabled" | "error";
+export type AutosyncResult =
+  | "synced"
+  | "up-to-date"
+  | "throttled"
+  | "locked"
+  | "disabled"
+  | "error";
 
 export interface AutosyncState {
   version: number;
@@ -110,98 +115,6 @@ export function formatLogLine(
   return detail ? `${base} ${detail}` : base;
 }
 
-/** Cron schedule expression for an interval in minutes. */
-export function cronScheduleFor(intervalMinutes: number): string {
-  if (intervalMinutes >= 1 && intervalMinutes <= 59) return `*/${intervalMinutes} * * * *`;
-  return "0 * * * *"; // hourly fallback for out-of-range intervals
-}
-
-/**
- * Produce a crontab body with exactly one agconf-autosync line, preserving all
- * other entries. Idempotent (keyed by {@link CRON_MARKER}). Pure — testable.
- */
-export function buildCrontab(
-  existing: string,
-  cronLine: string,
-): { content: string; changed: boolean } {
-  const kept = existing
-    .split("\n")
-    .filter((l) => !l.includes(CRON_MARKER))
-    .join("\n")
-    .replace(/\n+$/, "");
-  const body = kept ? `${kept}\n${cronLine}\n` : `${cronLine}\n`;
-  return {
-    content: body,
-    changed: body !== (existing.endsWith("\n") ? existing : `${existing}\n`),
-  };
-}
-
-/** Remove the agconf-autosync line from a crontab body. Pure. */
-export function stripCrontab(existing: string): { content: string; changed: boolean } {
-  const lines = existing.split("\n");
-  const kept = lines.filter((l) => !l.includes(CRON_MARKER));
-  const changed = kept.length !== lines.length;
-  const body = kept.join("\n").replace(/\n+$/, "");
-  return { content: body ? `${body}\n` : "", changed };
-}
-
-/** Injectable read/write of the user crontab (so tests never touch the real one). */
-export interface CrontabIO {
-  read: () => Promise<string>;
-  write: (content: string) => Promise<void>;
-}
-
-const defaultCrontabIO: CrontabIO = {
-  async read() {
-    try {
-      const { stdout } = await execFileAsync("crontab", ["-l"]);
-      return stdout;
-    } catch (err) {
-      const e = err as { stderr?: unknown; code?: unknown };
-      const stderr = typeof e.stderr === "string" ? e.stderr : "";
-      // A genuinely empty crontab ("no crontab for <user>") or a missing crontab
-      // binary (ENOENT) → "" is safe. But any OTHER failure must NOT be treated
-      // as empty: doing so would make the next write() wipe the user's real
-      // entries. Surface it so the caller can report instead of clobbering.
-      if (/no crontab/i.test(stderr) || e.code === "ENOENT") return "";
-      throw err;
-    }
-  },
-  write(content: string) {
-    // `crontab -` reads the new table from stdin.
-    return new Promise<void>((resolve, reject) => {
-      const child = execFile("crontab", ["-"], (err) => (err ? reject(err) : resolve()));
-      child.stdin?.end(content);
-    });
-  },
-};
-
-/**
- * Install (or refresh) the agconf-autosync crontab entry. Best-effort and
- * mac/Linux only (uses the `crontab` binary). Returns whether it changed.
- */
-export async function installCron(options: {
-  invocation: string;
-  intervalMinutes: number;
-  io?: CrontabIO;
-}): Promise<{ changed: boolean; line: string }> {
-  const io = options.io ?? defaultCrontabIO;
-  const line = `${cronScheduleFor(options.intervalMinutes)} ${options.invocation} >/dev/null 2>&1 ${CRON_MARKER}`;
-  const existing = await io.read();
-  const { content, changed } = buildCrontab(existing, line);
-  if (changed) await io.write(content);
-  return { changed, line };
-}
-
-export async function uninstallCron(
-  io: CrontabIO = defaultCrontabIO,
-): Promise<{ changed: boolean }> {
-  const existing = await io.read();
-  const { content, changed } = stripCrontab(existing);
-  if (changed) await io.write(content);
-  return { changed };
-}
-
 /** Fire-and-forget spawn used to launch the background auto-sync. Injectable for tests. */
 export type SpawnFn = (command: string, args: string[]) => void;
 
@@ -219,15 +132,21 @@ const defaultSpawn: SpawnFn = (command, args) => {
 };
 
 /**
- * Launch `agconf autosync --trigger startup` in a detached background process
- * when auto-sync is enabled, so a SessionStart hook returns instantly instead of
- * waiting on a sync. Returns whether a process was started. Never throws.
+ * Launch `agconf autosync --trigger startup` in a detached background process,
+ * so the SessionStart hook returns instantly instead of waiting on a sync.
+ * Returns whether a process was started. Never throws.
+ *
+ * Gated on an EXPLICIT opt-in — background sync runs only when auto-sync was
+ * installed (`~/.agconf/config.yaml` present, via `autosync --install`/`--enable`)
+ * AND `autosync.enabled` is not false. So upgrading a user who only had the F5
+ * duplication hook never silently starts background syncs or git commits.
  */
 export async function maybeStartBackgroundAutosync(
   homeDir: string,
   opts: { spawn?: SpawnFn } = {},
 ): Promise<boolean> {
   try {
+    if (!(await isAutosyncInstalled(homeDir))) return false;
     const config = await loadUserScopeConfig(homeDir);
     if (!config.autosync.enabled) return false;
     const spawnFn = opts.spawn ?? defaultSpawn;

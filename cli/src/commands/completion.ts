@@ -42,8 +42,17 @@ const COMMANDS = {
     options: ["--install-hook", "-q", "--quiet"],
   },
   autosync: {
-    description: "Auto-refresh the per-user store (session-start + cron runner)",
-    options: ["--install", "--uninstall", "--force", "--trigger", "-q", "--quiet"],
+    description: "Auto-refresh the per-user store (runs at session start)",
+    options: [
+      "--install",
+      "--uninstall",
+      "--enable",
+      "--disable",
+      "--force",
+      "--trigger",
+      "-q",
+      "--quiet",
+    ],
   },
   compile: {
     description: "Compile installable plugins + marketplace from canonical content",

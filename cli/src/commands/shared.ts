@@ -204,6 +204,12 @@ export async function resolveVersion(
 export async function resolveSource(
   options: SharedSyncOptions,
   resolvedVersion: ResolvedVersion,
+  /**
+   * When true, a resolution failure THROWS instead of calling `process.exit(1)`.
+   * The unattended auto-sync path sets this so its best-effort/exit-0 catch can
+   * record the error to state + log rather than the process dying uncatchably.
+   */
+  throwOnError = false,
 ): Promise<{ resolvedSource: ResolvedSource; tempDir: string | null; repository: string }> {
   const logger = createLogger();
   let resolvedSource: ResolvedSource;
@@ -248,8 +254,9 @@ Example .agconf.yaml:
     return { resolvedSource, tempDir, repository };
   } catch (error) {
     spinner.fail("Failed to resolve source");
-    logger.error(error instanceof Error ? error.message : String(error));
     if (tempDir) await removeTempDir(tempDir);
+    if (throwOnError) throw error instanceof Error ? error : new Error(String(error));
+    logger.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
   }
 }

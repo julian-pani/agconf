@@ -61,6 +61,9 @@ describe("session-check command", () => {
       targets: ["claude"],
       markerPrefix: "agconf",
     });
+    // Opt into auto-sync (its config file is the install marker), so the
+    // background trigger fires.
+    await fs.writeFile(path.join(home, ".agconf", "config.yaml"), "autosync:\n  enabled: true\n");
 
     // Inject a no-op spawn so the background auto-sync doesn't launch a real process.
     const autosyncSpawn = vi.fn();
@@ -70,7 +73,23 @@ describe("session-check command", () => {
     expect(output).toContain("more than one scope");
     expect(output).toContain("instructions");
     expect(mockExit).not.toHaveBeenCalled(); // advisory: always exit 0
-    // User scope is synced, so a background auto-sync is triggered.
+    // Auto-sync is installed + enabled, so a background refresh is triggered.
     expect(autosyncSpawn).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not trigger background auto-sync when it is not installed", async () => {
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    await writeLockfile(home, {
+      source: localSource,
+      globalBlockContent: "CANON",
+      skills: [],
+      targets: ["claude"],
+      markerPrefix: "agconf",
+    });
+    // No ~/.agconf/config.yaml — user has synced but never ran `autosync --install`.
+    const autosyncSpawn = vi.fn();
+    await sessionCheckCommand({ cwd: repo, home, autosyncSpawn });
+    expect(autosyncSpawn).not.toHaveBeenCalled();
+    expect(mockExit).not.toHaveBeenCalled();
   });
 });

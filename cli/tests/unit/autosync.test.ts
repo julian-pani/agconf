@@ -2,15 +2,15 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadUserScopeConfig } from "../../src/config/loader.js";
 import {
-  buildCrontab,
-  CRON_MARKER,
-  cronScheduleFor,
+  isAutosyncInstalled,
+  loadUserScopeConfig,
+  setAutosyncEnabled,
+} from "../../src/config/loader.js";
+import {
   isThrottled,
   maybeStartBackgroundAutosync,
   readAutosyncState,
-  stripCrontab,
   writeAutosyncState,
 } from "../../src/core/autosync.js";
 
@@ -50,6 +50,22 @@ describe("autosync core", () => {
     });
   });
 
+  describe("install marker (isAutosyncInstalled / setAutosyncEnabled)", () => {
+    it("reports not installed until the config file exists", async () => {
+      expect(await isAutosyncInstalled(home)).toBe(false);
+      await setAutosyncEnabled(home, true);
+      expect(await isAutosyncInstalled(home)).toBe(true);
+      expect((await loadUserScopeConfig(home)).autosync.enabled).toBe(true);
+    });
+
+    it("flips enabled while keeping the file (still installed)", async () => {
+      await setAutosyncEnabled(home, true);
+      await setAutosyncEnabled(home, false);
+      expect(await isAutosyncInstalled(home)).toBe(true); // marker persists
+      expect((await loadUserScopeConfig(home)).autosync.enabled).toBe(false);
+    });
+  });
+
   describe("isThrottled", () => {
     const now = new Date("2026-08-06T12:00:00.000Z");
     it("does not throttle with no prior attempt", () => {
@@ -72,36 +88,9 @@ describe("autosync core", () => {
     });
   });
 
-  describe("crontab builders", () => {
-    const line = `*/10 * * * * agconf autosync --trigger cron ${CRON_MARKER}`;
-    it("adds the entry to an empty crontab", () => {
-      const { content, changed } = buildCrontab("", line);
-      expect(changed).toBe(true);
-      expect(content).toContain(CRON_MARKER);
-    });
-    it("preserves other entries and stays idempotent", () => {
-      const withOther = "0 3 * * * backup.sh\n";
-      const once = buildCrontab(withOther, line).content;
-      expect(once).toContain("backup.sh");
-      // Re-applying yields exactly one agconf line.
-      const twice = buildCrontab(once, line).content;
-      expect(twice.match(new RegExp(CRON_MARKER, "g"))?.length).toBe(1);
-    });
-    it("strips the entry", () => {
-      const withBoth = `0 3 * * * backup.sh\n${line}\n`;
-      const { content, changed } = stripCrontab(withBoth);
-      expect(changed).toBe(true);
-      expect(content).toContain("backup.sh");
-      expect(content).not.toContain(CRON_MARKER);
-    });
-    it("maps intervals to schedules", () => {
-      expect(cronScheduleFor(10)).toBe("*/10 * * * *");
-      expect(cronScheduleFor(90)).toBe("0 * * * *");
-    });
-  });
-
   describe("maybeStartBackgroundAutosync", () => {
-    it("spawns the runner when enabled", async () => {
+    it("spawns the runner when installed and enabled", async () => {
+      await setAutosyncEnabled(home, true); // writes the install marker
       const spawn = vi.fn();
       const started = await maybeStartBackgroundAutosync(home, { spawn });
       expect(started).toBe(true);
@@ -111,7 +100,15 @@ describe("autosync core", () => {
       expect(args).toContain("startup");
     });
 
-    it("does nothing when disabled", async () => {
+    it("does nothing when not installed (no opt-in marker)", async () => {
+      const spawn = vi.fn();
+      // No config file — e.g. a user who only has the F5 duplication hook.
+      const started = await maybeStartBackgroundAutosync(home, { spawn });
+      expect(started).toBe(false);
+      expect(spawn).not.toHaveBeenCalled();
+    });
+
+    it("does nothing when installed but disabled", async () => {
       await writeConfig("autosync:\n  enabled: false\n");
       const spawn = vi.fn();
       const started = await maybeStartBackgroundAutosync(home, { spawn });

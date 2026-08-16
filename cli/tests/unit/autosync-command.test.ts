@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { autosyncCommand } from "../../src/commands/autosync.js";
 import { syncUserScopeCommand } from "../../src/commands/user-scope.js";
+import { isAutosyncInstalled, loadUserScopeConfig } from "../../src/config/loader.js";
 import { getAutosyncPaths, writeAutosyncState } from "../../src/core/autosync.js";
 
 describe("autosync command", () => {
@@ -60,7 +61,7 @@ describe("autosync command", () => {
     await fs.mkdir(path.join(home, ".agconf"), { recursive: true });
     await fs.writeFile(path.join(home, ".agconf", "config.yaml"), "autosync:\n  enabled: false\n");
 
-    await autosyncCommand({ home, trigger: "cron" });
+    await autosyncCommand({ home, trigger: "startup" });
 
     expect(await readLog()).toContain("result=disabled");
     // No harness files were written.
@@ -81,82 +82,72 @@ describe("autosync command", () => {
     expect(await readLog()).toContain("result=throttled");
   });
 
-  it("logs an error (never throws) when there is no source", async () => {
+  it("logs an error (never throws / exits) when there is no source", async () => {
     // Fresh home — no store lockfile.
-    await expect(autosyncCommand({ home, trigger: "cron" })).resolves.toBeUndefined();
+    await expect(autosyncCommand({ home, trigger: "startup" })).resolves.toBeUndefined();
     expect(await readLog()).toContain("result=error");
     expect(mockExit).not.toHaveBeenCalled();
   });
 
-  it("--install writes the SessionStart hook and a cron entry (injected io)", async () => {
-    let written = "";
-    const io = {
-      read: async () => "",
-      write: async (c: string) => {
-        written = c;
-      },
-    };
+  it("records an error (never process.exit) when the source can't be resolved", async () => {
+    await seedUserScope(); // records a local source in the store lockfile
+    await fs.rm(canonical, { recursive: true, force: true }); // ...then it vanishes
 
-    await autosyncCommand({
-      home,
-      install: true,
-      invocation: "agconf autosync --trigger cron",
-      crontabIo: io,
-    });
-
-    const settings = JSON.parse(
-      await fs.readFile(path.join(home, ".claude", "settings.json"), "utf-8"),
-    );
-    expect(settings.hooks.SessionStart[0].hooks[0].command).toContain("session-check");
-    expect(written).toContain("# agconf-autosync");
-    expect(written).toContain("*/10 * * * *");
-  });
-
-  it("--install cron line passes --force so scheduled runs bypass the throttle", async () => {
-    let written = "";
-    const io = {
-      read: async () => "",
-      write: async (c: string) => {
-        written = c;
-      },
-    };
-
-    // No explicit `invocation` — exercise the real default cron invocation.
-    await autosyncCommand({ home, install: true, crontabIo: io });
-
-    expect(written).toContain("--trigger cron --force");
-  });
-
-  it("--install still installs the hook when the crontab is unavailable", async () => {
-    const io = {
-      read: async () => {
-        throw new Error("crontab: command not found");
-      },
-      write: async () => {},
-    };
-
-    await autosyncCommand({ home, install: true, crontabIo: io });
-
-    // Hook was installed despite the cron failure, and the failure was surfaced
-    // (not swallowed into a crontab wipe).
-    const settings = JSON.parse(
-      await fs.readFile(path.join(home, ".claude", "settings.json"), "utf-8"),
-    );
-    expect(settings.hooks.SessionStart[0].hooks[0].command).toContain("session-check");
-    const logged = consoleLogSpy.mock.calls.flat().join(" ");
-    expect(logged).toContain("cron not installed");
-  });
-
-  it("--uninstall reports gracefully when the crontab read fails", async () => {
-    const io = {
-      read: async () => {
-        throw new Error("crontab read failed");
-      },
-      write: async () => {},
-    };
-
+    // resolveSource now throws (throwOnResolveError) instead of process.exit, so
+    // the best-effort catch records it rather than the process dying.
     await expect(
-      autosyncCommand({ home, uninstall: true, crontabIo: io }),
+      autosyncCommand({ home, trigger: "manual", force: true }),
     ).resolves.toBeUndefined();
+    expect(await readLog()).toContain("result=error");
+    expect(mockExit).not.toHaveBeenCalled();
+  });
+
+  it("--install installs the SessionStart hook and enables auto-sync", async () => {
+    await autosyncCommand({ home, install: true });
+
+    const settings = JSON.parse(
+      await fs.readFile(path.join(home, ".claude", "settings.json"), "utf-8"),
+    );
+    expect(settings.hooks.SessionStart[0].hooks[0].command).toContain("session-check");
+    expect(await isAutosyncInstalled(home)).toBe(true);
+    expect((await loadUserScopeConfig(home)).autosync.enabled).toBe(true);
+  });
+
+  it("--uninstall disables auto-sync but leaves the shared hook in place", async () => {
+    await autosyncCommand({ home, install: true });
+    await autosyncCommand({ home, uninstall: true });
+
+    // The hook remains (it also powers the cross-scope duplication check)...
+    const settings = JSON.parse(
+      await fs.readFile(path.join(home, ".claude", "settings.json"), "utf-8"),
+    );
+    expect(settings.hooks.SessionStart[0].hooks[0].command).toContain("session-check");
+    // ...but auto-sync is now off.
+    expect((await loadUserScopeConfig(home)).autosync.enabled).toBe(false);
+  });
+
+  it("--disable then --enable flip the config flag", async () => {
+    await autosyncCommand({ home, disable: true });
+    expect((await loadUserScopeConfig(home)).autosync.enabled).toBe(false);
+
+    await autosyncCommand({ home, enable: true });
+    expect((await loadUserScopeConfig(home)).autosync.enabled).toBe(true);
+  });
+
+  it("refuses to clobber a malformed settings.json on --install", async () => {
+    const settingsPath = path.join(home, ".claude", "settings.json");
+    await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+    const malformed = "{ not valid json";
+    await fs.writeFile(settingsPath, malformed);
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const prevExitCode = process.exitCode;
+
+    await autosyncCommand({ home, install: true });
+
+    expect(await fs.readFile(settingsPath, "utf-8")).toBe(malformed); // untouched
+    expect(errSpy.mock.calls.flat().join(" ")).toContain("not valid JSON");
+
+    process.exitCode = prevExitCode; // don't leak the failure exit code to the runner
+    errSpy.mockRestore();
   });
 });

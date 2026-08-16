@@ -261,14 +261,17 @@ export type DownstreamConfig = z.infer<typeof DownstreamConfigSchema>;
 // defaults apply. See cli/docs/DISTRIBUTION_SCOPES.md (F5b).
 
 /**
- * Auto-sync behavior for the user store. On by default because the store is
- * git-tracked and pre-overwrite backups are taken — the safety net makes silent
- * updates safe. Set `enabled: false` to opt out entirely.
+ * Auto-sync behavior for the user store. Background auto-sync runs from the
+ * SessionStart hook and is gated on an explicit opt-in: the presence of this
+ * config file (written by `agconf autosync --install` / `--enable`). Absent file
+ * = not installed = no background sync. When installed, `enabled` defaults true
+ * (the git-tracked store + pre-overwrite backups make silent updates safe);
+ * `--disable` / `--uninstall` set it false.
  */
 export const AutosyncConfigSchema = z.object({
-  /** Whether `agconf autosync` (session-start + cron) does anything. Default true. */
+  /** Whether the SessionStart background auto-sync runs. Default true (once installed). */
   enabled: z.boolean().default(true),
-  /** Cron cadence and session-start throttle window, in minutes. Default 10. */
+  /** Session-start throttle window, in minutes (min gap between background runs). Default 10. */
   interval_minutes: z.number().int().positive().default(10),
 });
 

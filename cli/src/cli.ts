@@ -156,16 +156,20 @@ export function createCli(): Command {
 
   program
     .command("autosync")
-    .description("Refresh the per-user store when behind canonical (session-start + cron runner)")
-    .option("--install", "Install the SessionStart hook + cron entry so this runs automatically")
-    .option("--uninstall", "Remove the agconf-autosync cron entry")
-    .option("--force", "Bypass the throttle window (used by the cron entry)")
-    .option("--trigger <trigger>", "Label for the log line: startup | cron | manual")
+    .description("Refresh the per-user store when behind canonical (runs at session start)")
+    .option("--install", "Install the SessionStart hook and enable auto-sync")
+    .option("--uninstall", "Disable auto-sync (leaves the shared SessionStart hook in place)")
+    .option("--enable", "Enable auto-sync (ensures the SessionStart hook is installed)")
+    .option("--disable", "Disable auto-sync")
+    .option("--force", "Bypass the throttle window (manual runs)")
+    .option("--trigger <trigger>", "Label for the log line: startup | manual")
     .option("-q, --quiet", "Minimal output")
     .action(
       async (options: {
         install?: boolean;
         uninstall?: boolean;
+        enable?: boolean;
+        disable?: boolean;
         force?: boolean;
         trigger?: string;
         quiet?: boolean;

@@ -49,7 +49,7 @@ export interface RunUserScopeSyncResult {
  * already at or ahead of the latest canonical version — the auto-sync fast path.
  */
 export async function runUserScopeSync(
-  options: UserScopeSyncOptions & { skipIfUpToDate?: boolean },
+  options: UserScopeSyncOptions & { skipIfUpToDate?: boolean; throwOnResolveError?: boolean },
 ): Promise<RunUserScopeSyncResult> {
   const homeDir = options.home ?? os.homedir();
   const status = await getSyncStatus(homeDir);
@@ -91,7 +91,11 @@ export async function runUserScopeSync(
     return { result: null, upToDate: true, pinnedVersion: pinned };
   }
 
-  const { resolvedSource, tempDir } = await resolveSource(optionsWithSource, resolvedVersion);
+  const { resolvedSource, tempDir } = await resolveSource(
+    optionsWithSource,
+    resolvedVersion,
+    options.throwOnResolveError,
+  );
   try {
     const result = await syncUserScope(resolvedSource, {
       targets,
@@ -101,6 +105,52 @@ export async function runUserScopeSync(
     return { result, upToDate: false, pinnedVersion: resolvedVersion.version };
   } finally {
     if (tempDir) await removeTempDir(tempDir);
+  }
+}
+
+export interface FreshnessProbe {
+  /** The store is behind canonical's latest release. */
+  behind: boolean;
+  /** The store's currently-synced version (when known). */
+  current?: string;
+  /** Canonical's latest release version (when known). */
+  latest?: string;
+}
+
+/**
+ * Cheap, bounded freshness check: compare the store's synced version against
+ * canonical's latest RELEASE — a lightweight version lookup, NOT a clone. Only
+ * meaningful for a GitHub source with releases; a local source, no releases,
+ * offline, or a timeout all return `{ behind: false }`. Never throws — used at
+ * session start to decide whether to nudge the developer to restart.
+ */
+export async function probeUserScopeFreshness(
+  homeDir: string,
+  timeoutMs = 4000,
+): Promise<FreshnessProbe> {
+  try {
+    const status = await getSyncStatus(homeDir);
+    const pinned = status.lockfile?.pinned_version;
+    if (!status.lockfile || !pinned || status.lockfile.source.type !== "github") {
+      return { behind: false };
+    }
+    const sourceRepo = status.lockfile.source.repository;
+    const timeout = new Promise<null>((resolve) => {
+      const t = setTimeout(() => resolve(null), timeoutMs);
+      t.unref?.();
+    });
+    const resolved = await Promise.race([
+      resolveVersion({ source: sourceRepo }, status, "sync", sourceRepo),
+      timeout,
+    ]);
+    if (!resolved?.version) return { behind: false };
+    return {
+      behind: compareVersions(pinned, resolved.version) < 0,
+      current: pinned,
+      latest: resolved.version,
+    };
+  } catch {
+    return { behind: false };
   }
 }
 

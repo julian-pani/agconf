@@ -1,6 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { parse as parseYaml } from "yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
   type CanonicalRepoConfig,
   CanonicalRepoConfigSchema,
@@ -57,13 +57,18 @@ export async function loadDownstreamConfig(
   }
 }
 
+/** Absolute path of the user-scope config (`~/.agconf/config.yaml`). */
+export function getUserScopeConfigPath(homeDir: string): string {
+  return path.join(homeDir, ".agconf", DOWNSTREAM_CONFIG);
+}
+
 /**
  * Load user-scope config (~/.agconf/config.yaml). Returns defaults (autosync
  * enabled, 10-minute interval) when the file is absent — the config is optional
  * INTENT, so no file means "use defaults". Malformed YAML still throws.
  */
 export async function loadUserScopeConfig(homeDir: string): Promise<UserScopeConfig> {
-  const configPath = path.join(homeDir, ".agconf", DOWNSTREAM_CONFIG);
+  const configPath = getUserScopeConfigPath(homeDir);
 
   try {
     const content = await fs.readFile(configPath, "utf-8");
@@ -75,6 +80,34 @@ export async function loadUserScopeConfig(homeDir: string): Promise<UserScopeCon
     }
     throw new Error(`Failed to load ~/.agconf/${DOWNSTREAM_CONFIG}: ${error}`);
   }
+}
+
+/**
+ * Whether background auto-sync has been explicitly installed — i.e. the user
+ * ran `agconf autosync --install`/`--enable`, which writes the config file. The
+ * file's PRESENCE is the opt-in marker (independent of the `enabled` value), so
+ * upgrading a user who only has the session-check hook does not silently start
+ * auto-sync.
+ */
+export async function isAutosyncInstalled(homeDir: string): Promise<boolean> {
+  try {
+    await fs.access(getUserScopeConfigPath(homeDir));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Write the user-scope config with `autosync.enabled` set, preserving other
+ * values. Creating the file is what marks auto-sync as installed.
+ */
+export async function setAutosyncEnabled(homeDir: string, enabled: boolean): Promise<void> {
+  const configPath = getUserScopeConfigPath(homeDir);
+  const current = await loadUserScopeConfig(homeDir);
+  const next = { ...current, autosync: { ...current.autosync, enabled } };
+  await fs.mkdir(path.dirname(configPath), { recursive: true });
+  await fs.writeFile(configPath, stringifyYaml(next), "utf-8");
 }
 
 // Type guard for Node.js errors with code property

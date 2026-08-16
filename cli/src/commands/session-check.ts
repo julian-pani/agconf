@@ -8,6 +8,7 @@ import {
 } from "../core/session-check.js";
 import { checkUserScope } from "../core/user-scope.js";
 import { getGitRoot } from "../utils/git.js";
+import { probeUserScopeFreshness } from "./user-scope.js";
 
 export interface SessionCheckOptions {
   /** Working directory to resolve the repo git root from (default: process.cwd()). */
@@ -74,12 +75,28 @@ export async function sessionCheckCommand(options: SessionCheckOptions = {}): Pr
       return;
     }
 
-    // User scope is set up — kick off a throttled background refresh (auto-sync),
-    // detached so the hook returns instantly. No-op when autosync is disabled.
-    await maybeStartBackgroundAutosync(
+    // Auto-sync (opt-in): kick off a detached background refresh so the hook
+    // returns instantly, then — if it actually started (installed + enabled) —
+    // cheaply probe whether this session loaded a stale version and, if so, nudge
+    // the developer to restart. The current session can't reload its already-read
+    // context, so a restart is the reliable way to pick up the update; the
+    // background refresh makes that restart current.
+    const startedAutosync = await maybeStartBackgroundAutosync(
       homeDir,
       options.autosyncSpawn ? { spawn: options.autosyncSpawn } : {},
     );
+    if (startedAutosync) {
+      const fresh = await probeUserScopeFreshness(homeDir).catch(
+        () => ({ behind: false }) as const,
+      );
+      if (fresh.behind) {
+        console.log(
+          pc.dim(
+            `Note for the developer: company standards were updated (${fresh.current} → ${fresh.latest}) since this session loaded its config — restart the session (or run \`agconf sync --scope user\`) to pick up the latest.`,
+          ),
+        );
+      }
+    }
 
     const integrity = await checkUserScope({ homeDir });
     const hasIntegrityIssue = !integrity.ok && integrity.hasLockfile;

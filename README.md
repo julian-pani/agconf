@@ -187,12 +187,12 @@ agconf sync --scope user
 
 This projects the company standards into your per-user harness locations, preserving your own content: the **global instructions block** into `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`, plus **skills** (`~/.claude/skills`, `~/.agents/skills`), **subagents** (`~/.claude/agents`, `~/.codex/agents`), and **rules** (`~/.claude/rules`; a rules section in `~/.codex/AGENTS.md`). It's all tracked in a git store at `~/.agconf/` (run `git -C ~/.agconf log` to see diffs). Your personal instructions go in the never-overwritten `~/.agconf/USER.md` (Claude imports it automatically; on Codex it's referenced by a note). Any pre-existing file that would be overwritten is backed up under `~/.agconf/backups/` first. (MCP servers are delivered via plugins, not user scope.)
 
-**Keep it fresh automatically.** `agconf autosync --install` sets up auto-sync so you don't have to run it by hand — it refreshes the store at session start (in the background) and every 10 minutes via cron, but only when you're actually behind canonical. It's on by default (safe: git-tracked store + backups); turn it off with `autosync: { enabled: false }` in `~/.agconf/config.yaml`. Runs are logged to `~/.agconf/logs/autosync.log`.
+**Keep it fresh automatically.** `agconf autosync --install` sets up auto-sync so you don't have to run it by hand — it refreshes the store in the background at session start (throttled, and only when you're actually behind canonical), the same check-on-startup approach Claude Code and Codex use for their own updates. No cron or other background scheduler is installed. If a new version landed after your session started, agconf tells you to restart to pick it up. Auto-sync is opt-in (nothing runs until you `--install`); once installed it's on by default (safe: git-tracked store + backups). Runs are logged to `~/.agconf/logs/autosync.log`.
 
 ```bash
-agconf autosync --install     # SessionStart hook + cron (every 10 min)
-agconf autosync               # run once now (throttled)
-agconf autosync --uninstall   # remove the cron entry
+agconf autosync --install     # install the SessionStart hook + enable auto-sync
+agconf autosync               # run once now (throttled; --force to bypass)
+agconf autosync --disable     # turn off (or --uninstall); --enable to turn back on
 ```
 
 ### `agconf check`
