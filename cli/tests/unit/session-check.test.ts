@@ -122,6 +122,47 @@ describe("session-check core", () => {
       // only shared thing here (both carry the "CANON" block).
       expect(findings.some((f) => f.type === "skills")).toBe(false);
     });
+
+    it("flags overlapping rules and agents by their real intersection", async () => {
+      const common = {
+        source: localSource,
+        globalBlockContent: "CANON",
+        skills: [],
+        targets: ["claude"] as string[],
+        markerPrefix: "agconf",
+      };
+      await writeLockfile(repoDir, {
+        ...common,
+        rules: { files: ["security/auth.md", "repo-only.md"], content_hash: "sha256:aaa" },
+        agents: { files: ["reviewer.md", "repo-agent.md"], content_hash: "sha256:bbb" },
+      });
+      await writeLockfile(home, {
+        ...common,
+        rules: { files: ["security/auth.md", "user-only.md"], content_hash: "sha256:ccc" },
+        agents: { files: ["reviewer.md", "user-agent.md"], content_hash: "sha256:ddd" },
+      });
+      const { findings } = await detectCrossScopeDuplication({ repoDir, homeDir: home });
+      expect(findings.find((f) => f.type === "rules")?.objects).toEqual(["security/auth.md"]);
+      expect(findings.find((f) => f.type === "agents")?.objects).toEqual(["reviewer.md"]);
+    });
+
+    it("degrades to 'no findings' when a scope's lockfile is corrupt (does not throw)", async () => {
+      await writeLockfile(home, {
+        source: localSource,
+        globalBlockContent: "CANON",
+        skills: [],
+        targets: ["claude"],
+        markerPrefix: "agconf",
+      });
+      // A torn repo lockfile must not throw (it would kill the whole session hook).
+      await fs.mkdir(path.join(repoDir, ".agconf"), { recursive: true });
+      await fs.writeFile(path.join(repoDir, ".agconf", "lockfile.json"), "{ not json");
+
+      const result = await detectCrossScopeDuplication({ repoDir, homeDir: home });
+      expect(result.userSynced).toBe(true);
+      expect(result.repoSynced).toBe(false); // corrupt repo lockfile → treated as unsynced
+      expect(result.findings).toEqual([]);
+    });
   });
 
   describe("installSessionStartHook", () => {

@@ -212,9 +212,11 @@ Advisory check for **cross-scope duplication** — meant to run automatically at
 start of every session. If you use user scope (`sync --scope user`) *and* a repo
 you're working in also commits agconf-managed content, the same standards can load
 twice; `session-check` warns you (and, for instructions, notes whether the two
-copies are identical or divergent). It's presence-based (a type managed in two
-scopes is flagged regardless of whether the copies match), always exits 0, and
-never disrupts a session.
+copies are identical or divergent). Instructions are flagged whenever both scopes
+carry the block; skills/rules/agents are flagged only for the specific objects
+present in **both** scopes (a repo skill and a different user skill is not a
+collision). The warning is framed as a note for you, not a task for the agent. It
+always exits 0 and never disrupts a session.
 
 ```bash
 # Install it as a Claude Code SessionStart hook (writes ~/.claude/settings.json)

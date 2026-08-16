@@ -22,7 +22,7 @@
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { readLockfile } from "./lockfile.js";
+import { readLockfileSafe } from "./lockfile.js";
 
 export type DuplicatedType = "instructions" | "skills" | "rules" | "agents";
 
@@ -56,8 +56,15 @@ export async function detectCrossScopeDuplication(options: {
   /** User home dir (the `~/.agconf` store lives under it). */
   homeDir: string;
 }): Promise<CrossScopeResult> {
-  const repoLock = options.repoDir ? (await readLockfile(options.repoDir))?.lockfile : undefined;
-  const userLock = (await readLockfile(options.homeDir))?.lockfile;
+  // Safe reads: a corrupt lockfile in either scope must degrade to "not synced"
+  // for that scope, not throw — a thrown error here is swallowed by the session
+  // hook's blanket catch and would silently kill the dedup warning, the
+  // background auto-sync spawn, and the freshness nudge (leaving the store with
+  // no way to self-heal, since auto-sync is the only refresh path).
+  const repoLock = options.repoDir
+    ? (await readLockfileSafe(options.repoDir))?.lockfile
+    : undefined;
+  const userLock = (await readLockfileSafe(options.homeDir))?.lockfile;
 
   const repoSynced = Boolean(repoLock);
   const userSynced = Boolean(userLock);
@@ -113,8 +120,11 @@ export interface HookInstallResult {
 
 interface SessionStartEntry {
   matcher?: string;
-  hooks?: Array<{ type?: string; command?: string }>;
+  hooks?: Array<{ type?: string; command?: string; timeout?: number }>;
 }
+
+/** Hard cap (seconds) on the hook so a slow probe/network can't stall session start. */
+const HOOK_TIMEOUT_SECONDS = 10;
 
 /**
  * Register `agconf session-check` as a Claude Code SessionStart hook in
@@ -166,7 +176,9 @@ export async function installSessionStartHook(homeDir: string): Promise<HookInst
     return { installed: false, alreadyPresent: true, settingsPath };
   }
 
-  sessionStart.push({ hooks: [{ type: "command", command: HOOK_COMMAND }] });
+  sessionStart.push({
+    hooks: [{ type: "command", command: HOOK_COMMAND, timeout: HOOK_TIMEOUT_SECONDS }],
+  });
   hooks.SessionStart = sessionStart;
   settings.hooks = hooks;
 
