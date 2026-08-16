@@ -1,12 +1,15 @@
-# Distribution Scopes — per-repo vs per-user vs plugin (analysis / RFC)
+# Distribution Scopes — per-repo vs per-user vs plugin (design + status)
 
-> Status: **analysis, not yet implemented.** This document evaluates moving agconf
-> beyond its current "sync a copy into every repo" model, toward optionally
-> managing canonical content **once per developer**. It covers both proposed
-> mechanisms (a per-user "base directory" and plugins), how to support both, and
-> — the hard part — how to stop a developer from getting the same instructions
-> and skills loaded **twice** when a repo carries committed content *and* the dev
-> also has it installed at the user level.
+> Status: **implemented.** agconf supports three ways to deliver canonical
+> content: **repo scope** (committed into each repo, the original model), **user
+> scope** (`sync --scope user` — projected **once per machine** into `~/.claude`/
+> `~/.codex` via a git-tracked `~/.agconf` store, kept fresh by `agconf autosync`),
+> and **plugins** (`agconf compile`). This document is the design record and living
+> spec: the analysis behind the split, the invariants (INV-1…INV-9), the
+> acceptance criteria, and the per-feature status (F1–F6) below — including how a
+> developer is stopped from loading the same content **twice** when a repo commits
+> content *and* they also have it at user scope (see `agconf session-check`). For
+> user-facing usage, see the [README](../../README.md#user-scope---scope-user).
 
 ## 1. The problem
 
@@ -405,9 +408,14 @@ Canonical content types and their reachable homes:
 
 **F4 — Backups + git store** ✅ *implemented*
 - `~/.agconf/` is initialized as a git repo; each user-scope sync produces a commit
-  (best-effort — a missing/misconfigured git is non-fatal).
+  (best-effort — a missing/misconfigured git is non-fatal). A store `.gitignore`
+  keeps machine-local artifacts (`backups/`, `logs/`, `autosync-state.json`) out of
+  that history, so the committed diff is just the company block + lockfile.
 - Overwriting a drifted/unmanaged user-scope file first creates a copy under
-  `~/.agconf/backups/<timestamp>/`; backups rotate to the last 10.
+  `~/.agconf/backups/<timestamp>/`; backups rotate to the last 10. This covers both
+  the instruction files and the projected content (a divergent unmanaged skill,
+  rule, or agent is detected by the repo-scope overwrite guard and backed up before
+  the projection replaces it).
 
 **F5 — Dedup + freshness hook** ✅ *implemented*
 - `agconf session-check` prints/injects a warning when agconf-managed content of a
@@ -420,9 +428,47 @@ Canonical content types and their reachable homes:
 - `agconf session-check --install-hook` installs an idempotent Claude Code
   SessionStart hook in `~/.claude/settings.json`, preserving existing settings/hooks.
 - **Deferred:** plugin-scope detection (needs reading harness plugin state, which is
-  version-specific) and network "behind-canonical" freshness (a session hook should
-  stay fast/offline). Both noted as follow-ups; repo↔user — the main double-load
-  hazard — is covered.
+  version-specific). repo↔user — the main double-load hazard — is covered. (The
+  "behind-canonical" freshness gap is now closed by F5b below.)
+
+**F5b — User-scope auto-sync** ✅ *implemented*
+- Keeps the per-user store current automatically (`agconf autosync`). Freshness is
+  driven **entirely by the SessionStart hook — no OS scheduler** (no cron/launchd/
+  systemd). This matches the ecosystem norm: Claude Code, Codex, gh, and rustup all
+  check on invocation/startup rather than installing a scheduler; the tools that do
+  install one (`brew autoupdate`, `topgrade`) are those with no natural invocation
+  point, which agconf has. Dropping the scheduler also removes a class of macOS cron
+  failures (deprecated/TCC Full-Disk-Access, minimal PATH, no keychain/token).
+- **Opt-in, off by default until installed:** background sync runs only after
+  `agconf autosync --install` / `--enable`, which installs the hook and writes
+  `~/.agconf/config.yaml` — its **presence is the install marker** (`isAutosyncInstalled`).
+  So upgrading a user who only had the F5 duplication hook never silently starts
+  syncs or git commits. `--uninstall` / `--disable` set `autosync.enabled: false`
+  (the shared SessionStart hook stays, as it also powers the duplication check).
+- The hook launches the runner **detached** (`maybeStartBackgroundAutosync`) so the
+  session never blocks; runs are throttled via `~/.agconf/autosync-state.json`
+  (`last_attempt`, window = `interval_minutes`, default 10).
+- Cheap when current: resolves the latest version first and **skips the clone/write**
+  when the store is at/ahead (`runUserScopeSync({skipIfUpToDate})`); a resolution
+  failure is caught + logged (`throwOnResolveError`, not `process.exit`), a held
+  store lock logs `result=locked`. Every run appends to `~/.agconf/logs/autosync.log`
+  (rotated). Always best-effort/exit-0.
+- **In-session freshness (the startup-staleness answer):** memory/instructions load
+  at launch, so a refresh applies to the *next* session. To avoid silent staleness,
+  the SessionStart hook runs a cheap, bounded **freshness probe** (`probeUserScopeFreshness`
+  — a version lookup against the latest release, **no clone**); if the store is behind,
+  it prints a note recommending the developer **restart the session** (or run `sync
+  --scope user`) to load the update, while the detached background sync makes that
+  restart current. It never attempts an in-time synchronous apply (that would block
+  startup on the network and still not reliably reload already-read context). The
+  probe is bounded (abortable, ~3s) and throttled (skipped when a sync ran within
+  `interval_minutes`, so it isn't a network call on *every* session start). It is a
+  deliberate no-op — `behind:false`, never a false nudge — for a **local** canonical
+  source, a repo with **no releases**, or when **no GitHub token** is available
+  (private canonical + no `gh`/`GITHUB_TOKEN`); those setups get background freshness
+  but no restart nudge.
+- Config-vs-state kept clean: intent in `config.yaml`, throttle in `autosync-state.json`,
+  sync record in the lockfile.
 
 **F6 — Auto-bump** ✅ *implemented*
 - `agconf compile --bump` (=`auto`≡patch; or `patch`/`minor`/`major`) bumps each

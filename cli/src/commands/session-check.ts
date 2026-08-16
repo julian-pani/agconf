@@ -1,5 +1,12 @@
 import * as os from "node:os";
 import pc from "picocolors";
+import { loadUserScopeConfig } from "../config/loader.js";
+import {
+  isThrottled,
+  maybeStartBackgroundAutosync,
+  readAutosyncState,
+  type SpawnFn,
+} from "../core/autosync.js";
 import {
   type DuplicationFinding,
   detectCrossScopeDuplication,
@@ -7,6 +14,7 @@ import {
 } from "../core/session-check.js";
 import { checkUserScope } from "../core/user-scope.js";
 import { getGitRoot } from "../utils/git.js";
+import { probeUserScopeFreshness } from "./user-scope.js";
 
 export interface SessionCheckOptions {
   /** Working directory to resolve the repo git root from (default: process.cwd()). */
@@ -17,6 +25,10 @@ export interface SessionCheckOptions {
   quiet?: boolean | undefined;
   /** Install the SessionStart hook into ~/.claude/settings.json instead of checking. */
   installHook?: boolean | undefined;
+  /** Test seam: inject the spawn used to launch the background auto-sync. */
+  autosyncSpawn?: SpawnFn | undefined;
+  /** Test seam: resolve canonical's latest version for the freshness probe. */
+  probeLatest?: ((repo: string, timeoutMs: number) => Promise<string | null>) | undefined;
 }
 
 function describeFinding(f: DuplicationFinding): string {
@@ -69,6 +81,38 @@ export async function sessionCheckCommand(options: SessionCheckOptions = {}): Pr
     // Only relevant once the developer uses user scope.
     if (!cross.userSynced) {
       return;
+    }
+
+    // Auto-sync (opt-in): kick off a detached background refresh so the hook
+    // returns instantly, then — if it actually started (installed + enabled) —
+    // cheaply probe whether this session loaded a stale version and, if so, nudge
+    // the developer to restart. The current session can't reload its already-read
+    // context, so a restart is the reliable way to pick up the update; the
+    // background refresh makes that restart current.
+    //
+    // Read the throttle state BEFORE spawning (the spawned runner writes it): if a
+    // sync ran within the interval the store is already current, so skip the probe
+    // — no need to spend a network call or nag on every session start.
+    const preState = await readAutosyncState(homeDir);
+    const startedAutosync = await maybeStartBackgroundAutosync(
+      homeDir,
+      options.autosyncSpawn ? { spawn: options.autosyncSpawn } : {},
+    );
+    if (startedAutosync) {
+      const config = await loadUserScopeConfig(homeDir);
+      if (!isThrottled(preState, config.autosync.interval_minutes, new Date())) {
+        const fresh = await probeUserScopeFreshness({
+          home: homeDir,
+          ...(options.probeLatest ? { fetchLatest: options.probeLatest } : {}),
+        }).catch(() => ({ behind: false }) as const);
+        if (fresh.behind) {
+          console.log(
+            pc.dim(
+              `Note for the developer: company standards were updated (${fresh.current} → ${fresh.latest}) since this session loaded its config — restart the session (or run \`agconf sync --scope user\`) to pick up the latest.`,
+            ),
+          );
+        }
+      }
     }
 
     const integrity = await checkUserScope({ homeDir });

@@ -61,12 +61,61 @@ describe("session-check command", () => {
       targets: ["claude"],
       markerPrefix: "agconf",
     });
+    // Opt into auto-sync (its config file is the install marker), so the
+    // background trigger fires.
+    await fs.writeFile(path.join(home, ".agconf", "config.yaml"), "autosync:\n  enabled: true\n");
 
-    await sessionCheckCommand({ cwd: repo, home });
+    // Inject a no-op spawn so the background auto-sync doesn't launch a real process.
+    const autosyncSpawn = vi.fn();
+    await sessionCheckCommand({ cwd: repo, home, autosyncSpawn });
 
     const output = consoleLogSpy.mock.calls.map((c) => String(c[0])).join("\n");
     expect(output).toContain("more than one scope");
     expect(output).toContain("instructions");
     expect(mockExit).not.toHaveBeenCalled(); // advisory: always exit 0
+    // Auto-sync is installed + enabled, so a background refresh is triggered.
+    expect(autosyncSpawn).toHaveBeenCalledTimes(1);
+  });
+
+  it("nudges the developer to restart when the probe reports the store is behind", async () => {
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    await writeLockfile(home, {
+      source: { type: "github", repository: "o/r", commit_sha: "abc123", ref: "v1.0.0" },
+      globalBlockContent: "CANON",
+      skills: [],
+      targets: ["claude"],
+      markerPrefix: "agconf",
+      pinnedVersion: "1.0.0",
+    });
+    await fs.writeFile(path.join(home, ".agconf", "config.yaml"), "autosync:\n  enabled: true\n");
+
+    const autosyncSpawn = vi.fn();
+    await sessionCheckCommand({
+      cwd: repo,
+      home,
+      autosyncSpawn,
+      probeLatest: async () => "1.1.0", // canonical is ahead
+    });
+
+    const output = consoleLogSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(output).toContain("1.0.0 → 1.1.0");
+    expect(output).toContain("restart");
+    expect(autosyncSpawn).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not trigger background auto-sync when it is not installed", async () => {
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    await writeLockfile(home, {
+      source: localSource,
+      globalBlockContent: "CANON",
+      skills: [],
+      targets: ["claude"],
+      markerPrefix: "agconf",
+    });
+    // No ~/.agconf/config.yaml — user has synced but never ran `autosync --install`.
+    const autosyncSpawn = vi.fn();
+    await sessionCheckCommand({ cwd: repo, home, autosyncSpawn });
+    expect(autosyncSpawn).not.toHaveBeenCalled();
+    expect(mockExit).not.toHaveBeenCalled();
   });
 });

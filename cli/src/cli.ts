@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import pc from "picocolors";
+import { autosyncCommand } from "./commands/autosync.js";
 import { canonicalInitCommand } from "./commands/canonical.js";
 import { checkCommand } from "./commands/check.js";
 import { compileCommand } from "./commands/compile.js";
@@ -152,6 +153,30 @@ export function createCli(): Command {
     .action(async (options: { installHook?: boolean; quiet?: boolean }) => {
       await sessionCheckCommand(options);
     });
+
+  program
+    .command("autosync")
+    .description("Refresh the per-user store when behind canonical (runs at session start)")
+    .option("--install", "Install the SessionStart hook and enable auto-sync")
+    .option("--uninstall", "Disable auto-sync (leaves the shared SessionStart hook in place)")
+    .option("--enable", "Enable auto-sync (ensures the SessionStart hook is installed)")
+    .option("--disable", "Disable auto-sync")
+    .option("--force", "Bypass the throttle window (manual runs)")
+    .option("--trigger <trigger>", "Label for the log line: startup | manual")
+    .option("-q, --quiet", "Minimal output")
+    .action(
+      async (options: {
+        install?: boolean;
+        uninstall?: boolean;
+        enable?: boolean;
+        disable?: boolean;
+        force?: boolean;
+        trigger?: string;
+        quiet?: boolean;
+      }) => {
+        await autosyncCommand(options);
+      },
+    );
 
   program
     .command("compile")
