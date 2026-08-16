@@ -128,9 +128,29 @@ describe("user-scope", () => {
       await syncUserScope(source, { targets: ["claude"], homeDir: home });
 
       const gitignore = await read(path.join(getUserPaths(home).storeDir, ".gitignore"));
-      expect(gitignore).toContain("backups/");
-      expect(gitignore).toContain("logs/");
-      expect(gitignore).toContain("autosync-state.json");
+      for (const pat of ["backups/", "logs/", "autosync-state.json", ".lock", "*.tmp"]) {
+        expect(gitignore).toContain(pat);
+      }
+    });
+
+    it("merges missing patterns into an older store .gitignore, preserving user lines", async () => {
+      const storeDir = getUserPaths(home).storeDir;
+      await fs.mkdir(storeDir, { recursive: true });
+      // Simulate a store written by an older build (no .lock / *.tmp) plus a user line.
+      await fs.writeFile(
+        path.join(storeDir, ".gitignore"),
+        "backups/\nlogs/\nautosync-state.json\nmy-own-note.txt\n",
+      );
+
+      const source = await resolveLocalSource({ path: canonical });
+      await syncUserScope(source, { targets: ["claude"], homeDir: home });
+
+      const gitignore = await read(path.join(storeDir, ".gitignore"));
+      expect(gitignore).toContain(".lock"); // newly merged in
+      expect(gitignore).toContain("*.tmp"); // newly merged in
+      expect(gitignore).toContain("my-own-note.txt"); // user line preserved
+      // No duplicate of an already-present pattern.
+      expect(gitignore.match(/^backups\/$/gm)?.length).toBe(1);
     });
 
     it("never overwrites USER.md after it exists", async () => {

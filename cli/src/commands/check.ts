@@ -30,6 +30,7 @@ import { resolvePluginTargets, verifyPluginsFresh } from "../core/plugins.js";
 import { resolveLocalSource } from "../core/source.js";
 import { getCurrentBranch } from "../utils/git.js";
 import { toMetadataPrefix } from "../utils/prefix.js";
+import { validateScope } from "./shared.js";
 import { checkUserScopeCommand } from "./user-scope.js";
 
 export interface CheckOptions {
@@ -84,10 +85,7 @@ export interface ModifiedFileInfo {
  */
 export async function checkCommand(options: CheckOptions = {}): Promise<void> {
   // Reject an unknown --scope rather than silently checking the repo instead.
-  if (options.scope !== undefined && options.scope !== "repo" && options.scope !== "user") {
-    console.error(pc.red(`Invalid --scope "${options.scope}". Use "repo" (default) or "user".`));
-    process.exit(1);
-  }
+  validateScope(options.scope);
 
   // User scope: verify ~/.claude, ~/.codex against the ~/.agconf store lockfile.
   if (options.scope === "user") {

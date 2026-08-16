@@ -62,6 +62,17 @@ export interface ResolvedVersion {
   releaseInfo: ReleaseInfo | null; // Full release info if fetched
 }
 
+/**
+ * Reject an unknown `--scope` (exit 1) so a typo like `--scope usr` never falls
+ * through to a repo sync/check. Shared by `sync` and `check`.
+ */
+export function validateScope(scope: string | undefined): void {
+  if (scope !== undefined && scope !== "repo" && scope !== "user") {
+    createLogger().error(`Invalid --scope "${scope}". Use "repo" (default) or "user".`);
+    process.exit(1);
+  }
+}
+
 export async function parseAndValidateTargets(
   targetOptions: string[] | undefined,
 ): Promise<Target[]> {

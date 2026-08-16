@@ -1,6 +1,6 @@
 import * as os from "node:os";
 import pc from "picocolors";
-import { getSyncStatus } from "../core/sync.js";
+import { getSyncStatusSafe } from "../core/sync.js";
 import { checkUserScope, getUserPaths, StoreBusyError, syncUserScope } from "../core/user-scope.js";
 import { removeTempDir } from "../utils/fs.js";
 import { createLogger } from "../utils/logger.js";
@@ -28,7 +28,9 @@ export async function syncUserScopeCommand(options: UserScopeSyncOptions): Promi
   const homeDir = options.home ?? os.homedir();
 
   // The user store lockfile (~/.agconf/lockfile.json) records the source/version.
-  const status = await getSyncStatus(homeDir);
+  // Safe read: a corrupt store lockfile degrades to "not synced" (self-heals on
+  // this sync) rather than crashing the command.
+  const status = await getSyncStatusSafe(homeDir);
 
   const targetsFromLockfile = status.lockfile?.content.targets;
   const targets = await parseAndValidateTargets(
@@ -71,7 +73,10 @@ export async function syncUserScopeCommand(options: UserScopeSyncOptions): Promi
       });
     } catch (err) {
       if (err instanceof StoreBusyError) {
+        // Explicit user command — signal failure so scripts (`sync && deploy`)
+        // don't proceed on a sync that never ran.
         logger.error(`${err.message} — try again in a moment.`);
+        process.exitCode = 1;
         return;
       }
       throw err;

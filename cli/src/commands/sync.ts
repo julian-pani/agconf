@@ -12,6 +12,7 @@ import {
   resolveTargetDirectory,
   resolveVersion,
   type SharedSyncOptions,
+  validateScope,
 } from "./shared.js";
 import { syncUserScopeCommand } from "./user-scope.js";
 
@@ -22,10 +23,7 @@ export async function syncCommand(options: SyncOptions): Promise<void> {
 
   // Reject an unknown --scope rather than silently falling through to a repo
   // sync — a typo like `--scope usr` must not commit canonical into the repo.
-  if (options.scope !== undefined && options.scope !== "repo" && options.scope !== "user") {
-    logger.error(`Invalid --scope "${options.scope}". Use "repo" (default) or "user".`);
-    process.exit(1);
-  }
+  validateScope(options.scope);
 
   // User scope: project the company block into ~/.claude, ~/.codex via the
   // ~/.agconf store, instead of writing into a repo. Delegates to its own path.

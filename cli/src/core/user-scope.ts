@@ -242,18 +242,27 @@ async function backupPaths(
  * is `git init`'d and committed for readable diffs of the *company block* and
  * lockfile; backups, logs, and autosync run-state are transient noise.
  */
-const STORE_GITIGNORE = `# agconf store — machine-local artifacts (do not version)
-backups/
-logs/
-autosync-state.json
-.lock
-`;
+const STORE_GITIGNORE_HEADER = "# agconf store — machine-local artifacts (do not version)";
+/** Patterns the store's .gitignore must contain (each on its own line). */
+const STORE_GITIGNORE_PATTERNS = ["backups/", "logs/", "autosync-state.json", ".lock", "*.tmp"];
 
-/** Write the store's .gitignore once (idempotent; leaves an edited one alone). */
+/**
+ * Ensure the store's .gitignore covers every machine-local artifact. Merges any
+ * MISSING pattern into an existing file (rather than skipping when it exists), so
+ * a store created by an older build gains new entries — e.g. `.lock` / `*.tmp`,
+ * which would otherwise be committed on every sync and churn the store history.
+ * A user-added line is preserved.
+ */
 async function ensureStoreGitignore(storeDir: string): Promise<void> {
   const gitignorePath = path.join(storeDir, ".gitignore");
-  if (await pathExists(gitignorePath)) return;
-  await fs.writeFile(gitignorePath, STORE_GITIGNORE, "utf-8");
+  const existing = (await readIfExists(gitignorePath)) ?? "";
+  const present = new Set(existing.split("\n").map((l) => l.trim()));
+  const missing = STORE_GITIGNORE_PATTERNS.filter((p) => !present.has(p));
+  if (existing && missing.length === 0) return;
+  const body = existing.trim()
+    ? `${existing.trimEnd()}\n${missing.join("\n")}\n`
+    : `${STORE_GITIGNORE_HEADER}\n${STORE_GITIGNORE_PATTERNS.join("\n")}\n`;
+  await fs.writeFile(gitignorePath, body, "utf-8");
 }
 
 /** A user-scope sync could not start because another one holds the store lock. */
@@ -287,11 +296,20 @@ async function acquireStoreLock(storeDir: string, nowMs: number): Promise<StoreL
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const fh = await fs.open(lockPath, "wx"); // O_CREAT | O_EXCL — atomic
-      await fh.write(String(nowMs));
-      await fh.close();
+      try {
+        await fh.write(String(nowMs));
+      } finally {
+        await fh.close();
+      }
       return { release };
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      // Anything other than "already held" (EEXIST) — e.g. a write/close failure
+      // after our exclusive create — must not leave the lock behind (it would
+      // block every run until it goes stale). Remove it and surface the error.
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
+        await fs.rm(lockPath, { force: true });
+        throw err;
+      }
       const heldMs = Number((await fs.readFile(lockPath, "utf-8").catch(() => "")) || "0");
       if (!heldMs || nowMs - heldMs > LOCK_STALE_MS) {
         await fs.rm(lockPath, { force: true }); // stale — steal it, then retry once
@@ -701,7 +719,7 @@ export async function checkUserScope(options: { homeDir?: string }): Promise<Use
   // path is consistent with the instruction-file entries above.
   const metaOpt = { metadataPrefix: toMetadataPrefix(markerPrefix) };
   const inferTarget = (p: string): Target =>
-    p.includes(".codex") || p.includes(".agents") ? "codex" : "claude";
+    p.startsWith(".codex/") || p.startsWith(".agents/") ? "codex" : "claude";
   const abs = (p: string): string => path.join(homeDir, p);
 
   for (const s of await checkSkillFiles(homeDir, targets, metaOpt)) {

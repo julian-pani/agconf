@@ -15,7 +15,7 @@ import {
   emitCodexAgentToml,
   validateAgentFrontmatter,
 } from "./agents.js";
-import { readLockfileSafe, writeLockfile } from "./lockfile.js";
+import { readLockfile, writeLockfile } from "./lockfile.js";
 import {
   addManagedMetadata,
   codexAgentHasManualChanges,
@@ -991,9 +991,7 @@ export interface SyncStatus {
 }
 
 export async function getSyncStatus(targetDir: string): Promise<SyncStatus> {
-  // Safe read: a corrupt/torn lockfile degrades to "not synced" (so `sync`
-  // rebuilds it and `check` reports cleanly) instead of throwing.
-  const result = await readLockfileSafe(targetDir);
+  const result = await readLockfile(targetDir);
   const agentsMdPath = path.join(targetDir, "AGENTS.md");
   // Skills can live under either target's location (.claude/skills for Claude,
   // .agents/skills for Codex), so treat the repo as "has skills" if either exists.
@@ -1024,6 +1022,28 @@ export async function getSyncStatus(targetDir: string): Promise<SyncStatus> {
     schemaWarning: result?.schemaCompatibility.warning ?? null,
     schemaError: result?.schemaCompatibility.error ?? null,
   };
+}
+
+/**
+ * Like {@link getSyncStatus} but a corrupt/torn lockfile degrades to "not synced"
+ * instead of throwing. Used by the unattended user-scope / auto-sync callers so a
+ * damaged `~/.agconf/lockfile.json` self-heals on the next sync rather than
+ * bricking the feature. Repo-scope callers keep the strict {@link getSyncStatus}
+ * (fail-fast) so a corrupt repo lockfile still surfaces loudly.
+ */
+export async function getSyncStatusSafe(targetDir: string): Promise<SyncStatus> {
+  try {
+    return await getSyncStatus(targetDir);
+  } catch {
+    return {
+      hasSynced: false,
+      lockfile: null,
+      agentsMdExists: false,
+      skillsExist: false,
+      schemaWarning: null,
+      schemaError: null,
+    };
+  }
 }
 
 /**
