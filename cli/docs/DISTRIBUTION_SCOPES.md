@@ -10,6 +10,10 @@
 > developer is stopped from loading the same content **twice** when a repo commits
 > content *and* they also have it at user scope (see `agconf session-check`). For
 > user-facing usage, see the [README](../../README.md#user-scope---scope-user).
+>
+> **Looking for "does feature X work in mode Y?"** → [§16 Feature × mode
+> matrix](#16-feature--mode-matrix), with the open gaps (including `propose` at
+> user scope) called out in [§17](#17-known-gaps).
 
 ## 1. The problem
 
@@ -305,7 +309,10 @@ Canonical content types and their reachable homes:
 | rules | ✅ | ✅ (verify Claude `~/.claude/rules`) | ❌ |
 | skills | ✅ | ✅ | ✅ |
 | agents | ✅ | ✅ | ✅ (Claude native; Codex down-converts) |
-| mcps | (not synced today) | ✅ | ✅ |
+| mcps | ❌ (not synced) | ❌ (deliberately plugin-only) | ✅ |
+
+That is the **content** axis. For the **feature/command** axis — which agconf
+commands and mechanisms work in which mode — see [§16](#16--feature--mode-matrix).
 
 ## 11. Feature set
 
@@ -488,3 +495,134 @@ Canonical content types and their reachable homes:
 auto-bump** (independent; supports F2's plugin flow) → 3. **F1+F3+F4 user scope**
 (the large one) → 4. **F5 hook** (depends on F1/F2 existing). Each lands as its
 own tested slice; `pnpm test`, `pnpm typecheck`, `pnpm check` green before moving on.
+
+---
+
+# Part III — Feature coverage per mode
+
+§2/§10 answer *where each content type can live*. This part answers the other
+question a user actually asks: **which agconf features work in which mode**. Every
+cell below was verified against the code (the file/symbol is named in the note),
+not inferred from the design docs.
+
+## 16. Feature × mode matrix
+
+Legend: **✅ supported** · **⚠️ partial** · **❌ not supported** (a gap — could
+exist, doesn't yet) · **➖ not applicable** (the mode has no such concept).
+
+| Feature | Repo scope (`sync`) | User scope (`sync --scope user`) | Plugin (`compile` + harness install) |
+|---|---|---|---|
+| **Project content** | ✅ `sync`/`init` write into the git root (`commands/sync.ts`) | ✅ `syncCommand` branches at the top to `syncUserScopeCommand` (`commands/user-scope.ts`) | ➖ agconf only *publishes*; the harness installs. `sync` skips any type set to `delivery: plugin` |
+| **First-time setup (`init`)** | ✅ `initCommand` → `resolveTargetDirectory` (git root) | ❌ no `--scope` on `init`; `sync --scope user` performs the first projection instead (deliberate, §14 F1) | ➖ `canonical init` scaffolds the `plugins` block canonical-side |
+| **Integrity check** | ✅ `checkDownstream` — per-file hashes + lockfile reconciliation | ✅ `checkUserScope` — block + skills/rules/agents, absolute paths, ghosts/missing | ⚠️ canonical-side only: `check`/`compile --check` run `verifyPluginsFresh` on the *committed artifacts*. Nothing verifies an **installed** plugin on a developer machine |
+| **Pre-commit verdict (`check --hook`)** | ✅ branch-aware exit (`printHookVerdict`) | ❌ flag ignored — `checkCommand` returns inside the `--scope user` branch **before** the hook verdict, so `--hook --scope user` just exits 1 on any drift | ➖ |
+| **Propose managed edits upstream** | ✅ `detectProposedChanges` + three-way rebase onto canonical HEAD | ❌ **gap** — no `--scope user`; see [§17.1](#171-propose-at-user-scope-the-gap) | ❌ published plugin files are a pure projection with **no managed metadata**, so a local edit is undetectable and has no hash to reconcile |
+| **Propose new content (`--new`)** | ✅ `detectNewContent` scans the repo's managed dirs | ❌ **gap**, and not a straight port — the scan would sweep the developer's *personal* skills (§17.1) | ❌ same reason as above |
+| **Compile plugins (`compile`, `--check`, `--bump`)** | ➖ | ➖ | ✅ `core/plugins.ts`; runs in the **canonical** repo, not downstream |
+| **Automatic freshness** | ⚠️ no local auto-sync — freshness comes from the generated CI PR bot, so it lands as a PR to merge, not a live update | ✅ `agconf autosync` (SessionStart-driven, throttled, opt-in) | ⚠️ harness-owned and uneven: Claude auto-update is **opt-in + delayed** for third-party marketplaces, Codex requires a manual `marketplace upgrade` (§5) |
+| **Cross-scope duplication warning** | ✅ repo half of the pair (repo lockfile) | ✅ user half (`~/.agconf` lockfile) | ❌ plugin-scope detection deferred — needs version-specific harness state (§14 F5) |
+| **Orphan cleanup** (content dropped from canonical) | ✅ prompt, or auto with `--yes` (`resolveOrphans`) | ✅ automatic, no prompt — every deletion is backed up first and the store is git-tracked | ✅ `compilePlugins` cleans its managed roots before writing; a `sync`→`plugin` delivery flip orphan-removes the previously synced repo copies |
+| **Overwrite guard for your own files** | ✅ **aborts** the whole sync on a divergent unmanaged file (`UnmanagedOverwriteError`) unless `--override` | ✅ same detector (`detectUnmanagedCollisions` at `targetDir = homeDir`) but **backs up and proceeds** — user scope runs unattended (INV-4) | ➖ output tree is regenerated from canonical |
+| **Adopt an identical unmanaged file** | ✅ reported in `SyncResult.adopted` | ✅ same guard | ➖ |
+| **Pre-commit hook install** | ✅ `installPreCommitHook` (standalone or pre-commit framework) — called only from `performSync` | ❌ nothing to gate; there is no commit | ➖ |
+| **Generated CI workflows** | ✅ `syncWorkflows` writes the sync + check workflows (GitHub sources only) | ❌ the store is machine-local; there is no CI to run | ✅ `canonical init` scaffolds `agconf-ci.yml`, which runs `agconf check` as the plugin-freshness gate |
+| **Lockfile + version pinning** | ✅ `.agconf/lockfile.json` | ✅ `~/.agconf/lockfile.json` (same `LockfileSchema`, same `source.commit_sha`) | ❌ no lockfile. A plugin carries a semver in its manifest, and `--check` freshness is **decoupled** from that string — hence `--bump` (F6) |
+| **Per-type delivery map (`delivery.*`)** | ✅ downstream `.agconf/config.yaml` | ❌ the user projection is unconditional (`syncUserScope` takes no delivery map); MCPs are simply never projected | ✅ this map is what *selects* plugin delivery |
+| **`USER.md` personal layer** | ➖ | ✅ scaffolded once, never overwritten (INV-3) | ➖ |
+| **History of the local copy** | the repo's own git history | ✅ the `~/.agconf` git store + rotated `backups/` | ➖ the harness owns the installed tree |
+| **Instructions + rules delivery** | ✅ | ✅ | ❌ **no plugin slot in either harness** — the structural fact behind the whole split (§2) |
+| **MCP servers** | ❌ never synced into a repo | ❌ deliberately not projected (plugin-only) | ✅ `core/mcp.ts` → `.mcp.json` in the compiled plugin |
+
+`upgrade-cli`, `completion` and `config` are **scope-independent** — they manage
+the CLI itself, not content, and are omitted from the table (`agconf config`
+currently exposes no keys at all).
+
+## 17. Known gaps
+
+Distinguishing "not yet supported" from "deliberately not applicable" — the ❌
+cells above that are **gaps**, in rough priority order:
+
+1. **`propose` at user scope** — a developer whose only copy of canonical is at
+   user scope cannot send anything back. See §17.1.
+2. **Installed-plugin verification.** `check` verifies the *committed* plugin
+   artifacts in canonical. There is no equivalent of "is the plugin I have
+   installed the one canonical publishes", and `session-check` cannot see plugin
+   scope, so a plugin-delivered skill can silently duplicate a synced one.
+3. **`check --hook` at user scope** is accepted but ignored. It should either be
+   rejected as an invalid combination or made a no-op with a message; today it
+   silently degrades to a plain check that exits 1 on any drift.
+4. **`init --scope user`** does not exist. Low priority — `sync --scope user`
+   already covers first-time projection — but the asymmetry with `sync`/`check`
+   is a discoverability wart.
+5. **No delivery map at user scope.** You cannot say "skills come from a plugin,
+   instructions from user scope" at the per-user level the way a repo can.
+
+Deliberately **not applicable** (do not file these as gaps): instructions/rules
+via plugin (no slot exists in either harness), CI workflows or a pre-commit hook
+at user scope (no repo, no commit), MCP servers at repo or user scope
+(plugin-only by design), and `compile` anywhere but a canonical repo.
+
+### 17.1 `propose` at user scope (the gap)
+
+**The problem.** `detectProposedChanges` / `detectNewContent`
+(`cli/src/core/propose.ts`) begin with `readLockfile(targetDir)` and throw
+*"No lockfile found. Run 'agconf init' first."* without one, then scan
+repo-relative paths. `proposeCommand` has no `--scope`. So user-scope-only
+developers have a perfectly good managed copy in `~/.claude` and a lockfile in
+`~/.agconf/lockfile.json`, and no way to propose from it.
+
+**Verdict: feasible, and mostly already works.** The same trick that made
+`user-scope.ts` cheap — every per-user path is exactly
+`<homeDir>/<the repo-scope relative path>` — carries over. Running
+`detectProposedChanges({ cwd: homeDir })` against a user-scope projection today
+already produces correct proposals for **skills, skill assets, rules and Claude
+agents**, including the canonical path mapping (the `^\.[^/]+\/skills\/` rewrite
+handles Codex's `.agents/skills/` too) and the full three-way rebase, because the
+store lockfile records `source.commit_sha` exactly like a repo lockfile.
+
+Four things need work before it can ship:
+
+1. **The instructions block is invisible — the one true code gap.**
+   `checkAllManagedFiles` → `checkAgentsMd` reads `<targetDir>/AGENTS.md`. At user
+   scope the block lives in `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`, so
+   `<homeDir>/AGENTS.md` does not exist and the block is silently skipped: editing
+   it yields **zero** proposed changes while `check --scope user` *does* report it
+   as modified. The user is told about drift they cannot propose. The block itself
+   parses identically (same `agconf:global:start/end` markers, same metadata), so
+   the fix is a scope-aware instruction-file resolver — reuse
+   `getUserInstructionFile` from `core/user-scope.ts` — feeding `checkAgentsMd`
+   and `buildProposedChange`'s `agents` case. One decision to make: at user scope
+   the same block exists for both targets, so pick one (Claude) as the proposal
+   source and treat "the two copies drifted differently" as a conflict.
+2. **`--new` discovery must not sweep personal content.** At repo scope
+   `.claude/skills` is a project directory; at user scope it is the developer's
+   own, mixing company content with private skills. Verified: an unmanaged
+   `~/.claude/skills/<personal>` is discovered as a proposal candidate, so
+   `propose --new --yes` at user scope would ship personal material to the company
+   repo. At minimum `--new` at user scope should require an explicit path and
+   never auto-select or accept a blanket `--yes`.
+3. **Provenance is wrong.** `getDownstreamContext(homeDir)` runs git in the home
+   directory: usually not a repo (empty context), and for a developer whose `~` is
+   a **dotfiles repo** it reports that repo's name, HEAD, and author as the origin
+   of the proposal. User scope should report the `~/.agconf` store (or an explicit
+   "user scope" origin) instead.
+4. **`USER.md` is already safe** — no change needed, and worth keeping that way.
+   It lives in `~/.agconf/`, which no discovery path scans, and the personal-layer
+   line sits *outside* the marked block, so `buildProposedChange` (which extracts
+   only `parsed.globalBlock`) cannot pick it up.
+
+**Shape.** A `--scope user` flag on `propose`, mirroring `sync`/`check`, is the
+right move: `validateScope` already exists, and both sibling commands branch at
+the top of their command function. Thread a scope (plus the `home` test seam)
+into `ProposeOptions`/`DetectNewContentOptions`, resolve `targetDir` and the
+instruction file from it, and leave the reconciliation, filtering and apply path
+untouched. Estimate: a small-to-moderate slice — a resolver plus four touch
+points in `propose.ts`, the command branch, completions, and tests covering the
+instruction-block round trip, the personal-content guard, and provenance.
+
+**Incidental finding (pre-existing, not user-scope specific).** When a skill is
+synced to two targets, `managedSkillNames` in `detectProposedChanges` contains
+that skill's name **once per target**, so `detectSkillAssetChanges` runs twice and
+each modified asset is emitted as two identical `ProposedChange`s (same canonical
+path, written twice, listed twice in the PR body). Harmless but sloppy; it
+reproduces at repo scope with `targets: [claude, codex]`.

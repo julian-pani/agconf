@@ -116,10 +116,15 @@ GitHub Actions workflows are created automatically to keep downstream repos in s
 | `autosync` | Keep the per-user store fresh automatically (runs at session start; opt-in) |
 | `session-check` | Advisory cross-scope duplication + integrity check, run at session start |
 | `compile` | Compile installable Claude Code / Codex plugins + marketplace from canonical content (canonical repos) |
-| `propose` | Propose local changes (or new skills/rules/agents via `--new`) back to canonical as a PR |
+| `propose` | Propose local changes (or new skills/rules/agents via `--new`) back to canonical as a PR — **repo scope only** |
 | `upgrade-cli` | Upgrade the CLI to latest version (auto-detects package manager) |
 | `canonical init` | Scaffold a new canonical repository |
 | `config` | Manage global CLI configuration |
+
+Not every command applies to every delivery mode. For the full picture of which
+feature works in repo scope, user scope, and plugin delivery — and which
+combinations are gaps rather than intentional omissions — see the
+[feature × mode matrix](cli/docs/DISTRIBUTION_SCOPES.md#16-feature--mode-matrix).
 
 ### `agconf init`
 
@@ -197,6 +202,15 @@ agconf autosync --install     # install the SessionStart hook + enable auto-sync
 agconf autosync               # run once now (throttled; --force to bypass)
 agconf autosync --disable     # turn off (or --uninstall); --enable to turn back on
 ```
+
+**What user scope doesn't do (yet).** `agconf propose` is repo scope only, so
+edits you make to the projected files in `~/.claude` can't be sent back to
+canonical from there — propose them from a repo that syncs the same content.
+Generated CI workflows and the pre-commit hook are also repo-only (there's no
+repo and no commit to gate), and MCP servers are delivered via plugins rather
+than user scope. See the
+[feature × mode matrix](cli/docs/DISTRIBUTION_SCOPES.md#16-feature--mode-matrix)
+and the [gap list](cli/docs/DISTRIBUTION_SCOPES.md#17-known-gaps).
 
 ### `agconf check`
 
@@ -277,6 +291,8 @@ agconf propose --dry-run
 ```
 
 Once a proposed item is merged into canonical, the next `agconf sync` adopts your local copy as managed automatically — no need to re-run `propose --new`.
+
+`propose` works from a **synced repo** (it reads that repo's `.agconf/lockfile.json`). It has no `--scope user`, so changes made to the per-user projection in `~/.claude` / `~/.codex` can't be proposed from there — see [§17.1](cli/docs/DISTRIBUTION_SCOPES.md#171-propose-at-user-scope-the-gap).
 
 #### Rebasing onto canonical
 
