@@ -1,3 +1,9 @@
+## [0.22.0](https://github.com/julian-pani/agconf/compare/v0.21.0...v0.22.0) (2026-08-16)
+
+### Features
+
+* **propose:** rebase proposals onto canonical HEAD ([21362a0](https://github.com/julian-pani/agconf/commit/21362a0c85947d15d5d7796409f2ca99e8ece195))
+
 ## [0.21.0](https://github.com/julian-pani/agconf/compare/v0.20.1...v0.21.0) (2026-08-16)
 
 ### Features
