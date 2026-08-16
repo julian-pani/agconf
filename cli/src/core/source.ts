@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { type SimpleGit, simpleGit } from "simple-git";
 import { loadCanonicalRepoConfig } from "../config/loader.js";
 import type { Source } from "../schemas/lockfile.js";
+import { redactGitCredentials } from "../utils/git.js";
 
 const execAsync = promisify(exec);
 
@@ -147,7 +148,13 @@ async function cloneRepository(repository: string, ref: string, tempDir: string)
     : `https://github.com/${repository}.git`;
 
   const git: SimpleGit = simpleGit();
-  await git.clone(repoUrl, tempDir, ["--depth", "1", "--branch", ref]);
+  try {
+    await git.clone(repoUrl, tempDir, ["--depth", "1", "--branch", ref]);
+  } catch (error) {
+    // git's stderr can echo repoUrl with the embedded token — redact before
+    // the error propagates to any caller that logs it.
+    throw new Error(redactGitCredentials(error instanceof Error ? error.message : String(error)));
+  }
 }
 
 /**
