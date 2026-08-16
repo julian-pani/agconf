@@ -1,3 +1,9 @@
+## [0.23.0](https://github.com/julian-pani/agconf/compare/v0.22.2...v0.23.0) (2026-08-16)
+
+### Features
+
+* **propose:** support --scope user ([9b6699a](https://github.com/julian-pani/agconf/commit/9b6699a2d4311a9afb8155a4df6a95fed196ca10))
+
 ## [0.22.2](https://github.com/julian-pani/agconf/compare/v0.22.1...v0.22.2) (2026-08-16)
 
 ### Bug Fixes
