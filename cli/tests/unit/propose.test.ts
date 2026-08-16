@@ -243,6 +243,65 @@ ORIGINAL skill body.
       expect(result.canonicalCloneDir).toBeTruthy();
     });
 
+    it("proposes a modified asset once when the skill is synced to two targets", async () => {
+      // A skill synced to claude + codex is reported once per target by
+      // checkAllManagedFiles; the asset scan must still emit a single change.
+      const skillBody = `---
+name: multi-target
+description: Synced to both targets.
+---
+
+Body.
+`;
+      const originalAsset = "print('original')";
+      const tamperedAsset = "print('TAMPERED')";
+
+      const canonicalRefs = path.join(canonicalDir, "skills", "multi-target", "references");
+      await fs.mkdir(canonicalRefs, { recursive: true });
+      await fs.writeFile(
+        path.join(canonicalDir, "skills", "multi-target", "SKILL.md"),
+        skillBody,
+        "utf-8",
+      );
+      await fs.writeFile(path.join(canonicalRefs, "template.py"), originalAsset, "utf-8");
+      initCanonicalGitRepo();
+
+      // Downstream: same skill under both target dirs, asset tampered in both.
+      for (const skillsDir of [".claude/skills", ".agents/skills"]) {
+        const skillDir = path.join(downstreamDir, ...skillsDir.split("/"), "multi-target");
+        await fs.mkdir(path.join(skillDir, "references"), { recursive: true });
+        await fs.writeFile(path.join(skillDir, "SKILL.md"), addManagedMetadata(skillBody), "utf-8");
+        await fs.writeFile(
+          path.join(skillDir, "references", "template.py"),
+          tamperedAsset,
+          "utf-8",
+        );
+      }
+
+      const lockfile = {
+        version: "1.0.0",
+        synced_at: new Date().toISOString(),
+        source: { type: "local" as const, path: canonicalDir },
+        content: {
+          agents_md: { global_block_hash: "sha256:abc", merged: true },
+          skills: ["multi-target"],
+          targets: ["claude", "codex"],
+        },
+      };
+      await fs.mkdir(path.join(downstreamDir, ".agconf"), { recursive: true });
+      await fs.writeFile(
+        path.join(downstreamDir, ".agconf", "lockfile.json"),
+        JSON.stringify(lockfile, null, 2),
+        "utf-8",
+      );
+
+      const result = await detectProposedChanges({ cwd: downstreamDir });
+      const assetChanges = result.changes.filter((c) => c.type === "skill-asset");
+      expect(assetChanges.map((c) => c.canonicalPath)).toEqual([
+        "skills/multi-target/references/template.py",
+      ]);
+    });
+
     it("does NOT propose references/ files that match canonical exactly", async () => {
       const skillBody = `---
 name: skill-a

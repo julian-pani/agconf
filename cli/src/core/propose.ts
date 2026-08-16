@@ -191,9 +191,16 @@ export async function detectProposedChanges(options: ProposeOptions = {}): Promi
   });
 
   // Non-SKILL.md files inside managed skill dirs are diffed against canonical.
-  const managedSkillNames = allFiles
-    .filter((f) => f.type === "skill" && f.isManaged && f.skillName)
-    .map((f) => f.skillName as string);
+  // Deduped: a skill synced to several targets yields one entry per target, and
+  // detectSkillAssetChanges already scans every target for a given skill — so
+  // without the Set each asset would be proposed once per target.
+  const managedSkillNames = [
+    ...new Set(
+      allFiles
+        .filter((f) => f.type === "skill" && f.isManaged && f.skillName)
+        .map((f) => f.skillName as string),
+    ),
+  ];
 
   // Clone canonical (once) whenever there is anything to propose so the
   // canonical-side destination paths honor the configured content dirs
