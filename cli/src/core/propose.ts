@@ -192,9 +192,9 @@ export async function detectProposedChanges(options: ProposeOptions = {}): Promi
   });
 
   // Non-SKILL.md files inside managed skill dirs are diffed against canonical.
-  // Deduped: a skill synced to several targets yields one entry per target, and
-  // detectSkillAssetChanges already scans every target for a given skill — so
-  // without the Set each asset would be proposed once per target.
+  // Deduped: checkAllManagedFiles reports a skill once per target it is synced
+  // to, while detectSkillAssetChanges diffs a skill name once (it returns at the
+  // first target whose skill dir exists). One pass per name is all that is used.
   const managedSkillNames = [
     ...new Set(
       allFiles
