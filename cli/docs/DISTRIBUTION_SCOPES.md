@@ -457,7 +457,13 @@ Canonical content types and their reachable homes:
   it prints a note recommending the developer **restart the session** (or run `sync
   --scope user`) to load the update, while the detached background sync makes that
   restart current. It never attempts an in-time synchronous apply (that would block
-  startup on the network and still not reliably reload already-read context).
+  startup on the network and still not reliably reload already-read context). The
+  probe is bounded (abortable, ~3s) and throttled (skipped when a sync ran within
+  `interval_minutes`, so it isn't a network call on *every* session start). It is a
+  deliberate no-op — `behind:false`, never a false nudge — for a **local** canonical
+  source, a repo with **no releases**, or when **no GitHub token** is available
+  (private canonical + no `gh`/`GITHUB_TOKEN`); those setups get background freshness
+  but no restart nudge.
 - Config-vs-state kept clean: intent in `config.yaml`, throttle in `autosync-state.json`,
   sync record in the lockfile.
 

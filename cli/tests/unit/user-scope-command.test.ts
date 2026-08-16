@@ -2,7 +2,12 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { checkUserScopeCommand, syncUserScopeCommand } from "../../src/commands/user-scope.js";
+import {
+  checkUserScopeCommand,
+  probeUserScopeFreshness,
+  syncUserScopeCommand,
+} from "../../src/commands/user-scope.js";
+import { writeLockfile } from "../../src/core/lockfile.js";
 import { getUserPaths } from "../../src/core/user-scope.js";
 
 describe("user-scope commands", () => {
@@ -88,5 +93,54 @@ describe("user-scope commands", () => {
     const content = await fs.readFile(claudeFile, "utf-8");
     await fs.writeFile(claudeFile, content.replace("Be excellent.", "TAMPERED"), "utf-8");
     expect(await checkUserScopeCommand({ home })).toBe(true);
+  });
+
+  describe("probeUserScopeFreshness", () => {
+    const seedGithubStore = (pinnedVersion: string) =>
+      writeLockfile(home, {
+        source: { type: "github", repository: "o/r", commit_sha: "abc123", ref: "v1.0.0" },
+        globalBlockContent: "CANON",
+        skills: [],
+        targets: ["claude"],
+        markerPrefix: "agconf",
+        pinnedVersion,
+      });
+
+    it("reports behind when canonical's latest release is newer", async () => {
+      await seedGithubStore("1.0.0");
+      const probe = await probeUserScopeFreshness({
+        home,
+        fetchLatest: async () => "1.1.0",
+      });
+      expect(probe.behind).toBe(true);
+      expect(probe.current).toBe("1.0.0");
+      expect(probe.latest).toBe("1.1.0");
+    });
+
+    it("reports not-behind when the store is at the latest", async () => {
+      await seedGithubStore("1.1.0");
+      const probe = await probeUserScopeFreshness({ home, fetchLatest: async () => "1.1.0" });
+      expect(probe.behind).toBe(false);
+    });
+
+    it("is a no-op (behind:false) when the lookup can't resolve a version", async () => {
+      await seedGithubStore("1.0.0");
+      const probe = await probeUserScopeFreshness({ home, fetchLatest: async () => null });
+      expect(probe.behind).toBe(false);
+    });
+
+    it("is a no-op for a local source (never hits the network)", async () => {
+      await syncUserScopeCommand({ scope: "user", local: canonical, home, target: ["claude"] });
+      let called = false;
+      const probe = await probeUserScopeFreshness({
+        home,
+        fetchLatest: async () => {
+          called = true;
+          return "9.9.9";
+        },
+      });
+      expect(probe.behind).toBe(false);
+      expect(called).toBe(false); // local source short-circuits before any lookup
+    });
   });
 });

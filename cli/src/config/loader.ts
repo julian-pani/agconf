@@ -1,6 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { parseDocument, parse as parseYaml } from "yaml";
 import {
   type CanonicalRepoConfig,
   CanonicalRepoConfigSchema,
@@ -99,15 +99,23 @@ export async function isAutosyncInstalled(homeDir: string): Promise<boolean> {
 }
 
 /**
- * Write the user-scope config with `autosync.enabled` set, preserving other
- * values. Creating the file is what marks auto-sync as installed.
+ * Set `autosync.enabled` in the user-scope config, PRESERVING the rest of the
+ * file — comments and any other keys — by patching the YAML document in place
+ * rather than round-tripping through the (unknown-key-stripping) Zod schema.
+ * Creating the file is what marks auto-sync as installed.
  */
 export async function setAutosyncEnabled(homeDir: string, enabled: boolean): Promise<void> {
   const configPath = getUserScopeConfigPath(homeDir);
-  const current = await loadUserScopeConfig(homeDir);
-  const next = { ...current, autosync: { ...current.autosync, enabled } };
+  let raw = "";
+  try {
+    raw = await fs.readFile(configPath, "utf-8");
+  } catch (error) {
+    if (!(isNodeError(error) && error.code === "ENOENT")) throw error;
+  }
+  const doc = parseDocument(raw); // empty string → empty document
+  doc.setIn(["autosync", "enabled"], enabled);
   await fs.mkdir(path.dirname(configPath), { recursive: true });
-  await fs.writeFile(configPath, stringifyYaml(next), "utf-8");
+  await fs.writeFile(configPath, doc.toString(), "utf-8");
 }
 
 // Type guard for Node.js errors with code property

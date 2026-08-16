@@ -1,6 +1,6 @@
 import * as os from "node:os";
 import pc from "picocolors";
-import { getSyncStatus } from "../core/sync.js";
+import { getSyncStatusSafe } from "../core/sync.js";
 import {
   checkUserScope,
   getUserPaths,
@@ -8,7 +8,7 @@ import {
   syncUserScope,
   type UserSyncResult,
 } from "../core/user-scope.js";
-import { compareVersions } from "../core/version.js";
+import { compareVersions, getLatestReleaseSafe } from "../core/version.js";
 import { removeTempDir } from "../utils/fs.js";
 import { createLogger } from "../utils/logger.js";
 import {
@@ -52,7 +52,9 @@ export async function runUserScopeSync(
   options: UserScopeSyncOptions & { skipIfUpToDate?: boolean; throwOnResolveError?: boolean },
 ): Promise<RunUserScopeSyncResult> {
   const homeDir = options.home ?? os.homedir();
-  const status = await getSyncStatus(homeDir);
+  // Safe read: a corrupt store lockfile degrades to "not synced" (self-heals on
+  // this sync) rather than throwing out of the unattended runner.
+  const status = await getSyncStatusSafe(homeDir);
 
   const targetsFromLockfile = status.lockfile?.content.targets;
   const targets = await parseAndValidateTargets(
@@ -117,38 +119,40 @@ export interface FreshnessProbe {
   latest?: string;
 }
 
+export interface ProbeFreshnessOptions {
+  /** Home directory (default: os.homedir()). */
+  home?: string;
+  /** Abort the network lookup after this many ms (default 3000). */
+  timeoutMs?: number;
+  /** Test seam: resolve canonical's latest version (default: a bounded GH lookup). */
+  fetchLatest?: (repo: string, timeoutMs: number) => Promise<string | null>;
+}
+
 /**
- * Cheap, bounded freshness check: compare the store's synced version against
- * canonical's latest RELEASE — a lightweight version lookup, NOT a clone. Only
- * meaningful for a GitHub source with releases; a local source, no releases,
- * offline, or a timeout all return `{ behind: false }`. Never throws — used at
- * session start to decide whether to nudge the developer to restart.
+ * Cheap, bounded, NON-BLOCKING freshness check: compare the store's synced
+ * version against canonical's latest RELEASE via a lightweight, abortable API
+ * lookup (NOT a clone, and NOT the blocking `execSync`/unbounded-fetch path in
+ * `resolveVersion`). Only meaningful for a GitHub source; a local source, no
+ * releases, missing token, offline, or a timeout all return `{ behind: false }`.
+ * Never throws — used at session start to decide whether to nudge the developer.
  */
 export async function probeUserScopeFreshness(
-  homeDir: string,
-  timeoutMs = 4000,
+  options: ProbeFreshnessOptions = {},
 ): Promise<FreshnessProbe> {
+  const homeDir = options.home ?? os.homedir();
+  const timeoutMs = options.timeoutMs ?? 3000;
+  const fetchLatest =
+    options.fetchLatest ??
+    (async (repo, ms) => (await getLatestReleaseSafe(repo, ms))?.version ?? null);
   try {
-    const status = await getSyncStatus(homeDir);
+    const status = await getSyncStatusSafe(homeDir);
     const pinned = status.lockfile?.pinned_version;
     if (!status.lockfile || !pinned || status.lockfile.source.type !== "github") {
       return { behind: false };
     }
-    const sourceRepo = status.lockfile.source.repository;
-    const timeout = new Promise<null>((resolve) => {
-      const t = setTimeout(() => resolve(null), timeoutMs);
-      t.unref?.();
-    });
-    const resolved = await Promise.race([
-      resolveVersion({ source: sourceRepo }, status, "sync", sourceRepo),
-      timeout,
-    ]);
-    if (!resolved?.version) return { behind: false };
-    return {
-      behind: compareVersions(pinned, resolved.version) < 0,
-      current: pinned,
-      latest: resolved.version,
-    };
+    const latest = await fetchLatest(status.lockfile.source.repository, timeoutMs);
+    if (!latest) return { behind: false };
+    return { behind: compareVersions(pinned, latest) < 0, current: pinned, latest };
   } catch {
     return { behind: false };
   }
@@ -174,7 +178,10 @@ export async function syncUserScopeCommand(options: UserScopeSyncOptions): Promi
       process.exit(1);
     }
     if (error instanceof StoreBusyError) {
+      // Explicit user command — exit non-zero so scripts don't proceed on a sync
+      // that never ran (the unattended runner logs result=locked and exits 0).
       logger.error(`${error.message} — try again in a moment.`);
+      process.exitCode = 1;
       return;
     }
     throw error;

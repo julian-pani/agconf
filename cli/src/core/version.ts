@@ -5,7 +5,8 @@
  * and determining the appropriate version to use.
  */
 
-import { execSync } from "node:child_process";
+import { execFile, execSync } from "node:child_process";
+import { promisify } from "node:util";
 
 const GITHUB_API_BASE = "https://api.github.com";
 
@@ -92,6 +93,57 @@ export async function getLatestRelease(repo: string): Promise<ReleaseInfo> {
 
   const data: unknown = await response.json();
   return parseReleaseResponse(data as Record<string, unknown>);
+}
+
+/**
+ * Best-effort, non-blocking GitHub token lookup for latency-sensitive paths
+ * (e.g. the session-start freshness probe). Unlike {@link getGitHubToken}, this
+ * NEVER throws and NEVER blocks the event loop: the env var is checked first,
+ * then `gh auth token` runs via async `execFile` (not `execSync`). Returns null
+ * when no token is available.
+ */
+async function getGitHubTokenSafe(): Promise<string | null> {
+  if (process.env.GITHUB_TOKEN) return process.env.GITHUB_TOKEN;
+  try {
+    // Promisified at call time (not module load) so importing this module under
+    // a partial `node:child_process` mock doesn't fail.
+    const { stdout } = await promisify(execFile)("gh", ["auth", "token"]);
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Time-bounded, best-effort latest-release lookup for the freshness probe.
+ * Returns null on ANY failure (no token, private repo without auth, no releases,
+ * network error, or timeout) — the probe treats null as "can't tell, assume
+ * current". The request is aborted after `timeoutMs` via an AbortSignal, so it
+ * can never keep the process alive and stall session start (unlike a bare
+ * `Promise.race`, which leaves the underlying request pending).
+ */
+export async function getLatestReleaseSafe(
+  repo: string,
+  timeoutMs: number,
+): Promise<ReleaseInfo | null> {
+  try {
+    const token = await getGitHubTokenSafe();
+    const headers: Record<string, string> = {
+      Accept: "application/vnd.github.v3+json",
+      "User-Agent": "agconf-cli",
+    };
+    if (token) headers.Authorization = `token ${token}`;
+    const response = await fetch(`${GITHUB_API_BASE}/repos/${repo}/releases/latest`, {
+      headers,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!response.ok) return null;
+    const data = (await response.json()) as Record<string, unknown>;
+    const parsed = parseReleaseResponse(data);
+    return parsed.version ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

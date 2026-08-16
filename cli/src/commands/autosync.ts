@@ -106,12 +106,17 @@ export async function autosyncCommand(options: AutosyncCommandOptions = {}): Pro
       await appendAutosyncLog(homeDir, formatLogLine(nowIso, trigger, "locked")).catch(() => {});
       return;
     }
-    const msg =
+    // Redact any `//user:token@host` credentials before persisting: a clone
+    // failure's message can echo the `https://x-access-token:<token>@github.com/…`
+    // URL, and this error is written to the state file + log unattended.
+    const redact = (s: string) => s.replace(/\/\/[^/@\s]*@/g, "//***@");
+    const msg = redact(
       error instanceof NoUserScopeSourceError
         ? "no source (run `agconf sync --scope user --source …` once)"
         : error instanceof Error
           ? error.message
-          : String(error);
+          : String(error),
+    );
     await writeAutosyncState(homeDir, {
       version: stateVersion,
       last_attempt: nowIso,

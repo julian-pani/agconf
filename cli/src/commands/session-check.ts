@@ -1,6 +1,12 @@
 import * as os from "node:os";
 import pc from "picocolors";
-import { maybeStartBackgroundAutosync, type SpawnFn } from "../core/autosync.js";
+import { loadUserScopeConfig } from "../config/loader.js";
+import {
+  isThrottled,
+  maybeStartBackgroundAutosync,
+  readAutosyncState,
+  type SpawnFn,
+} from "../core/autosync.js";
 import {
   type DuplicationFinding,
   detectCrossScopeDuplication,
@@ -21,6 +27,8 @@ export interface SessionCheckOptions {
   installHook?: boolean | undefined;
   /** Test seam: inject the spawn used to launch the background auto-sync. */
   autosyncSpawn?: SpawnFn | undefined;
+  /** Test seam: resolve canonical's latest version for the freshness probe. */
+  probeLatest?: ((repo: string, timeoutMs: number) => Promise<string | null>) | undefined;
 }
 
 function describeFinding(f: DuplicationFinding): string {
@@ -81,20 +89,29 @@ export async function sessionCheckCommand(options: SessionCheckOptions = {}): Pr
     // the developer to restart. The current session can't reload its already-read
     // context, so a restart is the reliable way to pick up the update; the
     // background refresh makes that restart current.
+    //
+    // Read the throttle state BEFORE spawning (the spawned runner writes it): if a
+    // sync ran within the interval the store is already current, so skip the probe
+    // — no need to spend a network call or nag on every session start.
+    const preState = await readAutosyncState(homeDir);
     const startedAutosync = await maybeStartBackgroundAutosync(
       homeDir,
       options.autosyncSpawn ? { spawn: options.autosyncSpawn } : {},
     );
     if (startedAutosync) {
-      const fresh = await probeUserScopeFreshness(homeDir).catch(
-        () => ({ behind: false }) as const,
-      );
-      if (fresh.behind) {
-        console.log(
-          pc.dim(
-            `Note for the developer: company standards were updated (${fresh.current} → ${fresh.latest}) since this session loaded its config — restart the session (or run \`agconf sync --scope user\`) to pick up the latest.`,
-          ),
-        );
+      const config = await loadUserScopeConfig(homeDir);
+      if (!isThrottled(preState, config.autosync.interval_minutes, new Date())) {
+        const fresh = await probeUserScopeFreshness({
+          home: homeDir,
+          ...(options.probeLatest ? { fetchLatest: options.probeLatest } : {}),
+        }).catch(() => ({ behind: false }) as const);
+        if (fresh.behind) {
+          console.log(
+            pc.dim(
+              `Note for the developer: company standards were updated (${fresh.current} → ${fresh.latest}) since this session loaded its config — restart the session (or run \`agconf sync --scope user\`) to pick up the latest.`,
+            ),
+          );
+        }
       }
     }
 
