@@ -111,7 +111,10 @@ GitHub Actions workflows are created automatically to keep downstream repos in s
 |---------|-------------|
 | `init` | Initialize repo from a canonical source |
 | `sync` | Sync content from canonical repo (fetches latest by default) |
-| `check` | Verify managed files are unchanged (in a canonical repo, verifies compiled plugin freshness) |
+| `sync --scope user` | Project company standards **once per machine** into `~/.claude`/`~/.codex` instead of committing them per repo ([details](#user-scope---scope-user)) |
+| `check` | Verify managed files are unchanged (`--scope user` verifies the per-user projection; in a canonical repo, verifies compiled plugin freshness) |
+| `autosync` | Keep the per-user store fresh automatically (runs at session start; opt-in) |
+| `session-check` | Advisory cross-scope duplication + integrity check, run at session start |
 | `compile` | Compile installable Claude Code / Codex plugins + marketplace from canonical content (canonical repos) |
 | `propose` | Propose local changes (or new skills/rules/agents via `--new`) back to canonical as a PR |
 | `upgrade-cli` | Upgrade the CLI to latest version (auto-detects package manager) |
@@ -172,6 +175,29 @@ agconf sync --override
 
 By default `sync` will **not** silently overwrite a local skill/rule/agent it does not manage. If a local **unmanaged** file is identical to canonical it is **adopted** (gains tracking metadata); if it **differs**, sync stops with an error and writes nothing. Use `agconf propose` to send the change upstream, or `--override` to discard it. CI sync jobs typically pass `--override` (the working tree is committed, so overwrites are git-recoverable).
 
+#### User scope (`--scope user`)
+
+Instead of committing the company standards into every repo, project them **once per machine** into your per-user harness files:
+
+```bash
+# First time: point at the canonical source
+agconf sync --scope user --source your-org/standards
+# or a local canonical:  agconf sync --scope user --local /path/to/canonical
+
+# Later: re-sync (source is remembered in ~/.agconf/lockfile.json)
+agconf sync --scope user
+```
+
+This projects the company standards into your per-user harness locations, preserving your own content: the **global instructions block** into `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`, plus **skills** (`~/.claude/skills`, `~/.agents/skills`), **subagents** (`~/.claude/agents`, `~/.codex/agents`), and **rules** (`~/.claude/rules`; a rules section in `~/.codex/AGENTS.md`). It's all tracked in a git store at `~/.agconf/` (run `git -C ~/.agconf log` to see diffs). Your personal instructions go in the never-overwritten `~/.agconf/USER.md` (Claude imports it automatically; on Codex it's referenced by a note). Any pre-existing file that would be overwritten is backed up under `~/.agconf/backups/` first. (MCP servers are delivered via plugins, not user scope.)
+
+**Keep it fresh automatically.** `agconf autosync --install` sets up auto-sync so you don't have to run it by hand — it refreshes the store in the background at session start (throttled, and only when you're actually behind canonical), the same check-on-startup approach Claude Code and Codex use for their own updates. No cron or other background scheduler is installed. If a new version landed after your session started, agconf tells you to restart to pick it up. Auto-sync is opt-in (nothing runs until you `--install`); once installed it's on by default (safe: git-tracked store + backups). Runs are logged to `~/.agconf/logs/autosync.log`.
+
+```bash
+agconf autosync --install     # install the SessionStart hook + enable auto-sync
+agconf autosync               # run once now (throttled; --force to bypass)
+agconf autosync --disable     # turn off (or --uninstall); --enable to turn back on
+```
+
 ### `agconf check`
 
 Check if managed files have been modified.
@@ -180,6 +206,7 @@ Check if managed files have been modified.
 agconf check                   # Show detailed check results
 agconf check --quiet           # Exit code only (for scripts/CI)
 agconf check --debug           # Show hash computation details
+agconf check --scope user      # Verify the per-user ~/.claude, ~/.codex projection
 ```
 
 Exit codes:
@@ -189,6 +216,26 @@ Exit codes:
 In a **canonical** repo (one with a `plugins` block in `agconf.yaml`), `check`
 instead verifies that the committed plugin/marketplace artifacts are in sync
 with the canonical source.
+
+### `agconf session-check`
+
+Advisory check for **cross-scope duplication** — meant to run automatically at the
+start of every session. If you use user scope (`sync --scope user`) *and* a repo
+you're working in also commits agconf-managed content, the same standards can load
+twice; `session-check` warns you (and, for instructions, notes whether the two
+copies are identical or divergent). Instructions are flagged whenever both scopes
+carry the block; skills/rules/agents are flagged only for the specific objects
+present in **both** scopes (a repo skill and a different user skill is not a
+collision). The warning is framed as a note for you, not a task for the agent. It
+always exits 0 and never disrupts a session.
+
+```bash
+# Install it as a Claude Code SessionStart hook (writes ~/.claude/settings.json)
+agconf session-check --install-hook
+
+# Run it directly (what the hook runs)
+agconf session-check
+```
 
 ### `agconf compile`
 
@@ -461,15 +508,15 @@ See: [GitHub Docs: Sharing actions and workflows from your private repository](h
 
 ## FAQ
 
-### Why not just use user instructions like `~/.claude/CLAUDE.md`?
+### Why not just hand-edit user instructions like `~/.claude/CLAUDE.md`?
 
-User-level instructions work for personal preferences, but fall short for team/org standards:
+Hand-editing that file works for personal preferences, but falls short for team/org standards:
 
 1. **Not git tracked** — You can't review changes, audit history, or roll back mistakes
 2. **Easy to override by mistake** — A stray edit or tool update can wipe your config
 3. **No separation between user and company standards** — Personal preferences get mixed with org policies, making it hard to enforce consistency
 
-agconf keeps company standards in the repo (git tracked, reviewable) while letting users keep their personal config separate.
+agconf solves all three either way you deliver standards. Committed **repo scope** keeps them git-tracked and reviewable in each repo. And if you want them once-per-machine, **[user scope](#user-scope---scope-user)** (`sync --scope user`) is the *managed* way to write `~/.claude/CLAUDE.md`: the company block is version-controlled in the `~/.agconf` git store (1), overwrite-protected via backups + `check --scope user` (2), and kept strictly separate from your personal `~/.agconf/USER.md`, which agconf never touches (3). So you get the convenience of user-level instructions without the drift.
 
 ### Why not just use Claude Code plugins/extensions?
 

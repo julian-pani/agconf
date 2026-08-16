@@ -75,7 +75,15 @@ agconf check --quiet
 
 # Show hash computation details (for debugging)
 agconf check --debug
+
+# Verify the per-user projection instead of the repo (see User scope below)
+agconf check --scope user
 ```
+
+`check --scope user` verifies the user-scope projection in `~/.claude`/`~/.codex`
+against the `~/.agconf` store lockfile — the same integrity guarantees (modified,
+missing, and orphaned managed files) applied to the per-machine install rather
+than a repo. See [Distribution Scopes](DISTRIBUTION_SCOPES.md).
 
 ### Output Format
 

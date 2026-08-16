@@ -44,6 +44,10 @@ export interface SharedSyncOptions {
   expandChanges?: boolean;
   /** Working directory to resolve the target git root from (defaults to process.cwd()). For testing. */
   cwd?: string;
+  /** Distribution scope: "repo" (default) writes into the repo; "user" projects into ~/.claude, ~/.codex via the ~/.agconf store. */
+  scope?: string;
+  /** Home directory override for `--scope user` (defaults to os.homedir()). For testing. */
+  home?: string;
 }
 
 export interface CommandContext {
@@ -56,6 +60,17 @@ export interface ResolvedVersion {
   version: string | undefined; // The semantic version if ref is a release tag (e.g., "1.2.0")
   isRelease: boolean; // Whether this is a release version
   releaseInfo: ReleaseInfo | null; // Full release info if fetched
+}
+
+/**
+ * Reject an unknown `--scope` (exit 1) so a typo like `--scope usr` never falls
+ * through to a repo sync/check. Shared by `sync` and `check`.
+ */
+export function validateScope(scope: string | undefined): void {
+  if (scope !== undefined && scope !== "repo" && scope !== "user") {
+    createLogger().error(`Invalid --scope "${scope}". Use "repo" (default) or "user".`);
+    process.exit(1);
+  }
 }
 
 export async function parseAndValidateTargets(
@@ -189,6 +204,12 @@ export async function resolveVersion(
 export async function resolveSource(
   options: SharedSyncOptions,
   resolvedVersion: ResolvedVersion,
+  /**
+   * When true, a resolution failure THROWS instead of calling `process.exit(1)`.
+   * The unattended auto-sync path sets this so its best-effort/exit-0 catch can
+   * record the error to state + log rather than the process dying uncatchably.
+   */
+  throwOnError = false,
 ): Promise<{ resolvedSource: ResolvedSource; tempDir: string | null; repository: string }> {
   const logger = createLogger();
   let resolvedSource: ResolvedSource;
@@ -233,8 +254,9 @@ Example .agconf.yaml:
     return { resolvedSource, tempDir, repository };
   } catch (error) {
     spinner.fail("Failed to resolve source");
-    logger.error(error instanceof Error ? error.message : String(error));
     if (tempDir) await removeTempDir(tempDir);
+    if (throwOnError) throw error instanceof Error ? error : new Error(String(error));
+    logger.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
   }
 }

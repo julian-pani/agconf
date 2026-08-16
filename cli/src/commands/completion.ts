@@ -30,11 +30,29 @@ const COMMANDS = {
       "--pinned",
       "--summary-file",
       "--expand-changes",
+      "--scope",
     ],
   },
   check: {
     description: "Check if managed files have been modified",
-    options: ["-q", "--quiet", "--debug", "--hook"],
+    options: ["-q", "--quiet", "--debug", "--hook", "--scope"],
+  },
+  "session-check": {
+    description: "Cross-scope duplication + integrity check (SessionStart hook)",
+    options: ["--install-hook", "-q", "--quiet"],
+  },
+  autosync: {
+    description: "Auto-refresh the per-user store (runs at session start)",
+    options: [
+      "--install",
+      "--uninstall",
+      "--enable",
+      "--disable",
+      "--force",
+      "--trigger",
+      "-q",
+      "--quiet",
+    ],
   },
   compile: {
     description: "Compile installable plugins + marketplace from canonical content",

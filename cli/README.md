@@ -21,8 +21,11 @@ Full documentation available on GitHub: https://github.com/julian-pani/agconf
 |---------|-------------|---------|
 | `init` | Initialize repo from a canonical source | `agconf init --source org/standards` |
 | `sync` | Sync content from canonical repo (fetches latest by default) | `agconf sync` or `agconf sync --pinned` |
-| `check` | Verify managed files are unchanged (in a canonical repo, verifies compiled plugin freshness) | `agconf check` |
+| `check` | Verify managed files are unchanged (`--scope user` checks the per-user projection; in a canonical repo, verifies compiled plugin freshness) | `agconf check` or `agconf check --scope user` |
 | `compile` | Compile installable Claude Code / Codex plugins + marketplace from canonical content | `agconf compile` or `agconf compile --check` |
+| `sync --scope user` | Project the company instructions once per machine into `~/.claude`/`~/.codex` (git-tracked `~/.agconf` store) | `agconf sync --scope user --source org/standards` |
+| `autosync` | Keep the per-user store fresh automatically (runs at session start; opt-in) | `agconf autosync --install` |
+| `session-check` | Advisory cross-scope duplication + integrity check (SessionStart hook) | `agconf session-check --install-hook` |
 | `propose` | Propose local changes to managed content back to the canonical repo (opens a PR) | `agconf propose` |
 | `propose --new [path]` | Propose new (unmanaged) skills/rules/agents upstream; optional path filters discovery | `agconf propose --new .claude/skills/my-skill` |
 | `upgrade-cli` | Upgrade the CLI to latest version (auto-detects package manager) | `agconf upgrade-cli` |

@@ -1,0 +1,121 @@
+import { execFileSync } from "node:child_process";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { sessionCheckCommand } from "../../src/commands/session-check.js";
+import { writeLockfile } from "../../src/core/lockfile.js";
+
+const localSource = { type: "local" as const, path: "/canonical" };
+
+describe("session-check command", () => {
+  let home: string;
+  let repo: string;
+  let consoleLogSpy: ReturnType<typeof vi.spyOn>;
+  let mockExit: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(async () => {
+    home = await fs.mkdtemp(path.join(os.tmpdir(), "agconf-scc-home-"));
+    repo = await fs.mkdtemp(path.join(os.tmpdir(), "agconf-scc-repo-"));
+    consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit called");
+    }) as () => never);
+  });
+
+  afterEach(async () => {
+    consoleLogSpy.mockRestore();
+    mockExit.mockRestore();
+    await fs.rm(home, { recursive: true, force: true });
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  it("installs the SessionStart hook with --install-hook", async () => {
+    await sessionCheckCommand({ installHook: true, home });
+    const settings = JSON.parse(
+      await fs.readFile(path.join(home, ".claude", "settings.json"), "utf-8"),
+    );
+    expect(settings.hooks.SessionStart[0].hooks[0].command).toContain("session-check");
+    expect(mockExit).not.toHaveBeenCalled();
+  });
+
+  it("stays silent (and never exits) when user scope is not synced", async () => {
+    await sessionCheckCommand({ cwd: repo, home });
+    expect(consoleLogSpy).not.toHaveBeenCalled();
+    expect(mockExit).not.toHaveBeenCalled();
+  });
+
+  it("warns when the same content is managed in both repo and user scope", async () => {
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    await writeLockfile(repo, {
+      source: localSource,
+      globalBlockContent: "CANON",
+      skills: [],
+      targets: ["claude"],
+      markerPrefix: "agconf",
+    });
+    await writeLockfile(home, {
+      source: localSource,
+      globalBlockContent: "CANON",
+      skills: [],
+      targets: ["claude"],
+      markerPrefix: "agconf",
+    });
+    // Opt into auto-sync (its config file is the install marker), so the
+    // background trigger fires.
+    await fs.writeFile(path.join(home, ".agconf", "config.yaml"), "autosync:\n  enabled: true\n");
+
+    // Inject a no-op spawn so the background auto-sync doesn't launch a real process.
+    const autosyncSpawn = vi.fn();
+    await sessionCheckCommand({ cwd: repo, home, autosyncSpawn });
+
+    const output = consoleLogSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(output).toContain("more than one scope");
+    expect(output).toContain("instructions");
+    expect(mockExit).not.toHaveBeenCalled(); // advisory: always exit 0
+    // Auto-sync is installed + enabled, so a background refresh is triggered.
+    expect(autosyncSpawn).toHaveBeenCalledTimes(1);
+  });
+
+  it("nudges the developer to restart when the probe reports the store is behind", async () => {
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    await writeLockfile(home, {
+      source: { type: "github", repository: "o/r", commit_sha: "abc123", ref: "v1.0.0" },
+      globalBlockContent: "CANON",
+      skills: [],
+      targets: ["claude"],
+      markerPrefix: "agconf",
+      pinnedVersion: "1.0.0",
+    });
+    await fs.writeFile(path.join(home, ".agconf", "config.yaml"), "autosync:\n  enabled: true\n");
+
+    const autosyncSpawn = vi.fn();
+    await sessionCheckCommand({
+      cwd: repo,
+      home,
+      autosyncSpawn,
+      probeLatest: async () => "1.1.0", // canonical is ahead
+    });
+
+    const output = consoleLogSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(output).toContain("1.0.0 → 1.1.0");
+    expect(output).toContain("restart");
+    expect(autosyncSpawn).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not trigger background auto-sync when it is not installed", async () => {
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    await writeLockfile(home, {
+      source: localSource,
+      globalBlockContent: "CANON",
+      skills: [],
+      targets: ["claude"],
+      markerPrefix: "agconf",
+    });
+    // No ~/.agconf/config.yaml — user has synced but never ran `autosync --install`.
+    const autosyncSpawn = vi.fn();
+    await sessionCheckCommand({ cwd: repo, home, autosyncSpawn });
+    expect(autosyncSpawn).not.toHaveBeenCalled();
+    expect(mockExit).not.toHaveBeenCalled();
+  });
+});

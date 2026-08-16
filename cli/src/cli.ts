@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import pc from "picocolors";
+import { autosyncCommand } from "./commands/autosync.js";
 import { canonicalInitCommand } from "./commands/canonical.js";
 import { checkCommand } from "./commands/check.js";
 import { compileCommand } from "./commands/compile.js";
@@ -7,6 +8,7 @@ import { handleCompletion, installCompletion, uninstallCompletion } from "./comm
 import { configGetCommand, configSetCommand, configShowCommand } from "./commands/config.js";
 import { initCommand } from "./commands/init.js";
 import { proposeCommand } from "./commands/propose.js";
+import { sessionCheckCommand } from "./commands/session-check.js";
 import { syncCommand } from "./commands/sync.js";
 import { upgradeCliCommand } from "./commands/upgrade-cli.js";
 import { checkCliVersionMismatch, getCliVersion } from "./core/lockfile.js";
@@ -101,6 +103,10 @@ export function createCli(): Command {
     .option("-t, --target <targets...>", "Target platforms (claude, codex)")
     .option("--summary-file <path>", "Write sync summary to file (markdown, for CI)")
     .option("--expand-changes", "Show all items in output (default: first 5)")
+    .option(
+      "--scope <scope>",
+      "Distribution scope: 'repo' (default) or 'user' (project into ~/.claude, ~/.codex via the ~/.agconf store)",
+    )
     .action(
       async (options: {
         source?: string;
@@ -112,6 +118,7 @@ export function createCli(): Command {
         target?: string[];
         summaryFile?: string;
         expandChanges?: boolean;
+        scope?: string;
       }) => {
         await syncCommand(options);
       },
@@ -126,9 +133,50 @@ export function createCli(): Command {
       "--hook",
       "Pre-commit mode: branch-aware exit (block on master/main, warn on feature branches)",
     )
-    .action(async (options: { quiet?: boolean; debug?: boolean; hook?: boolean }) => {
-      await checkCommand(options);
+    .option("--scope <scope>", "Check scope: 'repo' (default) or 'user' (~/.claude, ~/.codex)")
+    .action(
+      async (options: { quiet?: boolean; debug?: boolean; hook?: boolean; scope?: string }) => {
+        await checkCommand(options);
+      },
+    );
+
+  program
+    .command("session-check")
+    .description(
+      "Advisory cross-scope duplication + user-scope integrity check (for a SessionStart hook)",
+    )
+    .option(
+      "--install-hook",
+      "Install this as a Claude Code SessionStart hook in ~/.claude/settings.json",
+    )
+    .option("-q, --quiet", "Minimal output")
+    .action(async (options: { installHook?: boolean; quiet?: boolean }) => {
+      await sessionCheckCommand(options);
     });
+
+  program
+    .command("autosync")
+    .description("Refresh the per-user store when behind canonical (runs at session start)")
+    .option("--install", "Install the SessionStart hook and enable auto-sync")
+    .option("--uninstall", "Disable auto-sync (leaves the shared SessionStart hook in place)")
+    .option("--enable", "Enable auto-sync (ensures the SessionStart hook is installed)")
+    .option("--disable", "Disable auto-sync")
+    .option("--force", "Bypass the throttle window (manual runs)")
+    .option("--trigger <trigger>", "Label for the log line: startup | manual")
+    .option("-q, --quiet", "Minimal output")
+    .action(
+      async (options: {
+        install?: boolean;
+        uninstall?: boolean;
+        enable?: boolean;
+        disable?: boolean;
+        force?: boolean;
+        trigger?: string;
+        quiet?: boolean;
+      }) => {
+        await autosyncCommand(options);
+      },
+    );
 
   program
     .command("compile")

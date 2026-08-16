@@ -37,6 +37,20 @@ describe("check command", () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
+  describe("scope validation", () => {
+    it("rejects an unknown --scope instead of silently checking the repo", async () => {
+      const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      await expect(checkCommand({ scope: "usr", cwd: tempDir })).rejects.toThrow(
+        "process.exit called",
+      );
+      expect(mockExit).toHaveBeenCalledWith(1);
+      expect(errSpy.mock.calls.map((c) => c.join(" ")).join("\n")).toContain(
+        'Invalid --scope "usr"',
+      );
+      errSpy.mockRestore();
+    });
+  });
+
   describe("when not synced", () => {
     it("should exit cleanly with message when no lockfile exists", async () => {
       await checkCommand({ cwd: tempDir });
