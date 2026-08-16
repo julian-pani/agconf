@@ -214,6 +214,10 @@ export function createCli(): Command {
       "--new [path]",
       "Propose new (unmanaged) skills/rules/agents; optionally restrict to a path",
     )
+    .option(
+      "--override",
+      "Local wins: resolve conflicts with canonical by taking your local copy instead of aborting",
+    )
     .option("-y, --yes", "Non-interactive mode")
     .action(
       async (options: {
@@ -222,6 +226,7 @@ export function createCli(): Command {
         message?: string;
         files?: string[];
         new?: string | boolean;
+        override?: boolean;
         yes?: boolean;
       }) => {
         await proposeCommand(options);

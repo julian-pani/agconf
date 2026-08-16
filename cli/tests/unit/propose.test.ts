@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addManagedMetadata } from "../../src/core/managed-content.js";
+import { buildAgentsMd } from "../../src/core/markers.js";
 import {
   applyProposedChanges,
   detectNewContent,
@@ -12,6 +13,7 @@ import {
   type ProposedChange,
   slugifyTitle,
 } from "../../src/core/propose.js";
+import { StaleBaseError } from "../../src/core/propose-merge.js";
 
 describe("propose", () => {
   describe("slugifyTitle", () => {
@@ -975,6 +977,541 @@ description: Reviews code.
     it("throws when no lockfile is present", async () => {
       await writeDownstreamSkill("x", validSkill("x"));
       await expect(detectNewContent({ cwd: downstreamDir })).rejects.toThrow("No lockfile");
+    });
+  });
+
+  /**
+   * Reconciliation against canonical HEAD. Each test builds real git history:
+   * canonical is committed at a base commit, the downstream copy is "synced"
+   * from that commit (managed metadata + `commit_sha` in the lockfile), and
+   * canonical may then advance — so propose has a genuine three-way situation.
+   */
+  describe("detectProposedChanges against a moving canonical", () => {
+    let tempDir: string;
+    let downstreamDir: string;
+    let canonicalDir: string;
+
+    const SKILL_BASE = `---
+name: demo
+description: Demo skill.
+---
+
+# Demo
+
+## Section A
+
+Alpha original.
+
+## Section B
+
+Beta original.
+`;
+
+    beforeEach(async () => {
+      tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "agconf-propose-rebase-"));
+      downstreamDir = path.join(tempDir, "downstream");
+      canonicalDir = path.join(tempDir, "canonical");
+      await fs.mkdir(downstreamDir, { recursive: true });
+      await fs.mkdir(canonicalDir, { recursive: true });
+      execSync("git init", { cwd: canonicalDir, stdio: "ignore" });
+      execSync("git config user.email t@t.com", { cwd: canonicalDir, stdio: "ignore" });
+      execSync("git config user.name Test", { cwd: canonicalDir, stdio: "ignore" });
+    });
+
+    afterEach(async () => {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    });
+
+    /** Commit everything in canonical and return the resulting SHA. */
+    function commitCanonical(message: string): string {
+      execSync(`git add -A && git commit -m ${message}`, { cwd: canonicalDir, stdio: "ignore" });
+      return execSync("git rev-parse HEAD", { cwd: canonicalDir }).toString().trim();
+    }
+
+    async function writeCanonicalFile(relPath: string, content: string): Promise<void> {
+      const full = path.join(canonicalDir, relPath);
+      await fs.mkdir(path.dirname(full), { recursive: true });
+      await fs.writeFile(full, content, "utf-8");
+    }
+
+    async function writeDownstreamFile(relPath: string, content: string): Promise<void> {
+      const full = path.join(downstreamDir, relPath);
+      await fs.mkdir(path.dirname(full), { recursive: true });
+      await fs.writeFile(full, content, "utf-8");
+    }
+
+    /** Point the lockfile at canonical, optionally pinning the synced commit. */
+    async function writeLockfile(commitSha?: string): Promise<void> {
+      const lockfile = {
+        version: "1.0.0",
+        synced_at: new Date().toISOString(),
+        source: { type: "local" as const, path: canonicalDir, commit_sha: commitSha },
+        content: {
+          agents_md: { global_block_hash: "sha256:abc", merged: true },
+          skills: ["demo"],
+          targets: ["claude"],
+        },
+      };
+      await fs.mkdir(path.join(downstreamDir, ".agconf"), { recursive: true });
+      await fs.writeFile(
+        path.join(downstreamDir, ".agconf", "lockfile.json"),
+        JSON.stringify(lockfile, null, 2),
+        "utf-8",
+      );
+    }
+
+    /**
+     * Canonical at `SKILL_BASE`, downstream synced from that commit with the
+     * local body edited as described by `localBody`.
+     */
+    async function setupSyncedSkill(localBody: string, pinCommit = true): Promise<string> {
+      await writeCanonicalFile("skills/demo/SKILL.md", SKILL_BASE);
+      const baseSha = commitCanonical("base");
+      await writeDownstreamFile(
+        ".claude/skills/demo/SKILL.md",
+        addManagedMetadata(SKILL_BASE).replace(
+          "Alpha original.",
+          localBody === SKILL_BASE ? "Alpha original." : localBody,
+        ),
+      );
+      await writeLockfile(pinCommit ? baseSha : undefined);
+      return baseSha;
+    }
+
+    function skillContent(result: { changes: ProposedChange[] }): string {
+      const change = result.changes.find((c) => c.canonicalPath === "skills/demo/SKILL.md");
+      if (!change) throw new Error("SKILL.md was not proposed");
+      return typeof change.content === "string" ? change.content : change.content.toString("utf-8");
+    }
+
+    it("proposes the local copy verbatim when canonical has not moved", async () => {
+      await setupSyncedSkill("Alpha LOCAL.");
+
+      const result = await detectProposedChanges({ cwd: downstreamDir });
+
+      expect(result.changes.map((c) => c.canonicalPath)).toEqual(["skills/demo/SKILL.md"]);
+      expect(skillContent(result)).toContain("Alpha LOCAL.");
+      expect(result.changes[0]?.rebased).toBeFalsy();
+    });
+
+    it("merges local edits onto canonical changes that touch a different region", async () => {
+      await setupSyncedSkill("Alpha LOCAL.");
+      // Canonical moves on, editing the *other* section.
+      await writeCanonicalFile(
+        "skills/demo/SKILL.md",
+        SKILL_BASE.replace("Beta original.", "Beta UPSTREAM."),
+      );
+      commitCanonical("upstream");
+
+      const result = await detectProposedChanges({ cwd: downstreamDir });
+
+      const content = skillContent(result);
+      expect(content).toContain("Alpha LOCAL.");
+      // The upstream edit survives — this is the revert the merge prevents.
+      expect(content).toContain("Beta UPSTREAM.");
+      expect(content).not.toContain("Beta original.");
+      expect(result.changes[0]?.rebased).toBe(true);
+    });
+
+    it("aborts when local edits overlap canonical changes", async () => {
+      await setupSyncedSkill("Alpha LOCAL.");
+      await writeCanonicalFile(
+        "skills/demo/SKILL.md",
+        SKILL_BASE.replace("Alpha original.", "Alpha UPSTREAM."),
+      );
+      commitCanonical("upstream");
+
+      await expect(detectProposedChanges({ cwd: downstreamDir })).rejects.toThrow(StaleBaseError);
+    });
+
+    it("names the conflicting file and reason on the error", async () => {
+      await setupSyncedSkill("Alpha LOCAL.");
+      await writeCanonicalFile(
+        "skills/demo/SKILL.md",
+        SKILL_BASE.replace("Alpha original.", "Alpha UPSTREAM."),
+      );
+      commitCanonical("upstream");
+
+      const error = await detectProposedChanges({ cwd: downstreamDir }).catch((e) => e);
+
+      expect(error).toBeInstanceOf(StaleBaseError);
+      expect(error.conflicts).toHaveLength(1);
+      expect(error.conflicts[0].downstreamPath).toBe(".claude/skills/demo/SKILL.md");
+      expect(error.conflicts[0].canonicalPath).toBe("skills/demo/SKILL.md");
+      expect(error.conflicts[0].reason).toContain("overlap");
+    });
+
+    it("--override ships the local copy and discards the canonical change", async () => {
+      await setupSyncedSkill("Alpha LOCAL.");
+      await writeCanonicalFile(
+        "skills/demo/SKILL.md",
+        SKILL_BASE.replace("Alpha original.", "Alpha UPSTREAM."),
+      );
+      commitCanonical("upstream");
+
+      const result = await detectProposedChanges({ cwd: downstreamDir, override: true });
+
+      expect(skillContent(result)).toContain("Alpha LOCAL.");
+      expect(result.changes[0]?.rebased).toBeFalsy();
+    });
+
+    it("drops a file whose local edit already matches canonical HEAD", async () => {
+      await setupSyncedSkill("Alpha CONVERGED.");
+      await writeCanonicalFile(
+        "skills/demo/SKILL.md",
+        SKILL_BASE.replace("Alpha original.", "Alpha CONVERGED."),
+      );
+      commitCanonical("upstream");
+
+      const result = await detectProposedChanges({ cwd: downstreamDir });
+
+      expect(result.changes).toEqual([]);
+    });
+
+    it("--override still merges a file that does not conflict", async () => {
+      // Forcing one file must not revert canonical's work in the others, so
+      // reconciliation keeps running under --override.
+      await setupSyncedSkill("Alpha LOCAL.");
+      await writeCanonicalFile(
+        "skills/demo/SKILL.md",
+        SKILL_BASE.replace("Beta original.", "Beta UPSTREAM."),
+      );
+      commitCanonical("upstream");
+
+      const result = await detectProposedChanges({ cwd: downstreamDir, override: true });
+
+      const content = skillContent(result);
+      expect(content).toContain("Alpha LOCAL.");
+      expect(content).toContain("Beta UPSTREAM.");
+      expect(result.changes[0]?.rebased).toBe(true);
+    });
+
+    it("--override still drops a file the local repo never touched", async () => {
+      await writeCanonicalFile("skills/demo/SKILL.md", SKILL_BASE);
+      await writeCanonicalFile("skills/demo/references/template.txt", "line one\n");
+      const baseSha = commitCanonical("base");
+      await writeDownstreamFile(".claude/skills/demo/SKILL.md", addManagedMetadata(SKILL_BASE));
+      await writeDownstreamFile(".claude/skills/demo/references/template.txt", "line one\n");
+      await writeLockfile(baseSha);
+      await writeCanonicalFile("skills/demo/references/template.txt", "line one UPSTREAM\n");
+      commitCanonical("upstream");
+
+      const result = await detectProposedChanges({ cwd: downstreamDir, override: true });
+
+      expect(result.changes).toEqual([]);
+      expect(result.dropped).toContain(".claude/skills/demo/references/template.txt");
+    });
+
+    it("reports dropped files so they are not silently invisible", async () => {
+      await setupSyncedSkill("Alpha LOCAL.");
+      await writeCanonicalFile(
+        "skills/demo/SKILL.md",
+        SKILL_BASE.replace("Alpha original.", "Alpha LOCAL."),
+      );
+      commitCanonical("upstream");
+
+      const result = await detectProposedChanges({ cwd: downstreamDir });
+
+      expect(result.changes).toEqual([]);
+      expect(result.dropped).toEqual([".claude/skills/demo/SKILL.md"]);
+    });
+
+    it("records the synced base commit on the result", async () => {
+      const baseSha = await setupSyncedSkill("Alpha LOCAL.");
+
+      const result = await detectProposedChanges({ cwd: downstreamDir });
+
+      expect(result.baseSha).toBe(baseSha);
+    });
+
+    describe("without a resolvable merge base", () => {
+      it("aborts when the embedded hash shows canonical moved", async () => {
+        await setupSyncedSkill("Alpha LOCAL.", false);
+        await writeCanonicalFile(
+          "skills/demo/SKILL.md",
+          SKILL_BASE.replace("Beta original.", "Beta UPSTREAM."),
+        );
+        commitCanonical("upstream");
+
+        const error = await detectProposedChanges({ cwd: downstreamDir }).catch((e) => e);
+
+        expect(error).toBeInstanceOf(StaleBaseError);
+        expect(error.conflicts[0].reason).toContain("merge base is unavailable");
+      });
+
+      it("proposes normally when canonical still matches the sync", async () => {
+        await setupSyncedSkill("Alpha LOCAL.", false);
+
+        const result = await detectProposedChanges({ cwd: downstreamDir });
+
+        expect(skillContent(result)).toContain("Alpha LOCAL.");
+      });
+    });
+
+    /**
+     * `normalizeCanonical` and `readSyncedHash` both branch on content type —
+     * rules/agents strip frontmatter metadata, the AGENTS.md global block trims
+     * and uses a different hash function. Each branch needs its own end-to-end
+     * case or a regression there would be silent.
+     */
+    describe("non-skill content types", () => {
+      const RULE_BASE = `---
+title: API auth
+---
+
+# API Auth
+
+## Tokens
+
+Token guidance original.
+
+## Rotation
+
+Rotation guidance original.
+`;
+
+      const AGENT_BASE = `---
+name: reviewer
+description: Reviews code.
+---
+
+# Reviewer
+
+## Scope
+
+Scope original.
+
+## Output
+
+Output original.
+`;
+
+      const GLOBAL_BASE = `# Engineering Standards
+
+## Testing
+
+Testing original.
+
+## Style
+
+Style original.
+`;
+
+      it("merges a rule edited on both sides in different places", async () => {
+        await writeCanonicalFile("rules/security/auth.md", RULE_BASE);
+        const baseSha = commitCanonical("base");
+        await writeDownstreamFile(
+          ".claude/rules/security/auth.md",
+          addManagedMetadata(RULE_BASE).replace(
+            "Token guidance original.",
+            "Token guidance LOCAL.",
+          ),
+        );
+        await writeLockfile(baseSha);
+        await writeCanonicalFile(
+          "rules/security/auth.md",
+          RULE_BASE.replace("Rotation guidance original.", "Rotation guidance UPSTREAM."),
+        );
+        commitCanonical("upstream");
+
+        const result = await detectProposedChanges({ cwd: downstreamDir });
+
+        expect(result.changes.map((c) => c.canonicalPath)).toEqual(["rules/security/auth.md"]);
+        expect(result.changes[0]?.rebased).toBe(true);
+        expect(String(result.changes[0]?.content)).toContain("Token guidance LOCAL.");
+        expect(String(result.changes[0]?.content)).toContain("Rotation guidance UPSTREAM.");
+      });
+
+      it("aborts on an overlapping rule edit", async () => {
+        await writeCanonicalFile("rules/security/auth.md", RULE_BASE);
+        const baseSha = commitCanonical("base");
+        await writeDownstreamFile(
+          ".claude/rules/security/auth.md",
+          addManagedMetadata(RULE_BASE).replace(
+            "Token guidance original.",
+            "Token guidance LOCAL.",
+          ),
+        );
+        await writeLockfile(baseSha);
+        await writeCanonicalFile(
+          "rules/security/auth.md",
+          RULE_BASE.replace("Token guidance original.", "Token guidance UPSTREAM."),
+        );
+        commitCanonical("upstream");
+
+        await expect(detectProposedChanges({ cwd: downstreamDir })).rejects.toThrow(StaleBaseError);
+      });
+
+      it("merges an agent edited on both sides in different places", async () => {
+        await writeCanonicalFile("agents/reviewer.md", AGENT_BASE);
+        const baseSha = commitCanonical("base");
+        await writeDownstreamFile(
+          ".claude/agents/reviewer.md",
+          addManagedMetadata(AGENT_BASE).replace("Scope original.", "Scope LOCAL."),
+        );
+        await writeLockfile(baseSha);
+        await writeCanonicalFile(
+          "agents/reviewer.md",
+          AGENT_BASE.replace("Output original.", "Output UPSTREAM."),
+        );
+        commitCanonical("upstream");
+
+        const result = await detectProposedChanges({ cwd: downstreamDir });
+
+        expect(result.changes.map((c) => c.canonicalPath)).toEqual(["agents/reviewer.md"]);
+        expect(result.changes[0]?.rebased).toBe(true);
+        expect(String(result.changes[0]?.content)).toContain("Scope LOCAL.");
+        expect(String(result.changes[0]?.content)).toContain("Output UPSTREAM.");
+      });
+
+      it("merges the AGENTS.md global block across both sides", async () => {
+        await writeCanonicalFile("instructions/AGENTS.md", GLOBAL_BASE);
+        const baseSha = commitCanonical("base");
+        // A downstream AGENTS.md whose global block was synced from GLOBAL_BASE
+        // and then locally edited.
+        await writeDownstreamFile(
+          "AGENTS.md",
+          `${buildAgentsMd(GLOBAL_BASE, "Repo-specific notes.", {})}\n`.replace(
+            "Testing original.",
+            "Testing LOCAL.",
+          ),
+        );
+        await writeLockfile(baseSha);
+        await writeCanonicalFile(
+          "instructions/AGENTS.md",
+          GLOBAL_BASE.replace("Style original.", "Style UPSTREAM."),
+        );
+        commitCanonical("upstream");
+
+        const result = await detectProposedChanges({ cwd: downstreamDir });
+
+        expect(result.changes.map((c) => c.canonicalPath)).toEqual(["instructions/AGENTS.md"]);
+        expect(result.changes[0]?.rebased).toBe(true);
+        const content = String(result.changes[0]?.content);
+        expect(content).toContain("Testing LOCAL.");
+        expect(content).toContain("Style UPSTREAM.");
+        // Repo-specific content never leaves the downstream repo.
+        expect(content).not.toContain("Repo-specific notes.");
+      });
+
+      it("drops the global block when only canonical changed it", async () => {
+        await writeCanonicalFile("instructions/AGENTS.md", GLOBAL_BASE);
+        const baseSha = commitCanonical("base");
+        await writeDownstreamFile(
+          "AGENTS.md",
+          `${buildAgentsMd(GLOBAL_BASE, "Repo-specific notes.", {})}\n`,
+        );
+        await writeLockfile(baseSha);
+        await writeCanonicalFile(
+          "instructions/AGENTS.md",
+          GLOBAL_BASE.replace("Style original.", "Style UPSTREAM."),
+        );
+        commitCanonical("upstream");
+
+        const result = await detectProposedChanges({ cwd: downstreamDir });
+
+        expect(result.changes).toEqual([]);
+      });
+    });
+
+    describe("skill assets", () => {
+      const ASSET = "line one\nline two\nline three\n";
+
+      /** Canonical skill + asset, downstream synced from it and untouched. */
+      async function setupSyncedAsset(): Promise<string> {
+        await writeCanonicalFile("skills/demo/SKILL.md", SKILL_BASE);
+        await writeCanonicalFile("skills/demo/references/template.txt", ASSET);
+        const baseSha = commitCanonical("base");
+        await writeDownstreamFile(".claude/skills/demo/SKILL.md", addManagedMetadata(SKILL_BASE));
+        await writeDownstreamFile(".claude/skills/demo/references/template.txt", ASSET);
+        await writeLockfile(baseSha);
+        return baseSha;
+      }
+
+      it("does not propose an untouched asset that canonical has since changed", async () => {
+        // The reported bug in asset form: the local copy differs from HEAD only
+        // because canonical moved, so proposing it would revert the upstream edit.
+        await setupSyncedAsset();
+        await writeCanonicalFile(
+          "skills/demo/references/template.txt",
+          ASSET.replace("line two", "line two UPSTREAM"),
+        );
+        commitCanonical("upstream");
+
+        const result = await detectProposedChanges({ cwd: downstreamDir });
+
+        expect(result.changes).toEqual([]);
+      });
+
+      it("merges an asset edited on both sides in different places", async () => {
+        await setupSyncedAsset();
+        await writeDownstreamFile(
+          ".claude/skills/demo/references/template.txt",
+          ASSET.replace("line one", "line one LOCAL"),
+        );
+        await writeCanonicalFile(
+          "skills/demo/references/template.txt",
+          ASSET.replace("line three", "line three UPSTREAM"),
+        );
+        commitCanonical("upstream");
+
+        const result = await detectProposedChanges({ cwd: downstreamDir });
+
+        expect(result.changes).toHaveLength(1);
+        const change = result.changes[0];
+        expect(change?.canonicalPath).toBe("skills/demo/references/template.txt");
+        expect(change?.rebased).toBe(true);
+        const merged =
+          typeof change?.content === "string" ? change.content : change?.content.toString("utf-8");
+        expect(merged).toContain("line one LOCAL");
+        expect(merged).toContain("line three UPSTREAM");
+      });
+
+      it("aborts when an asset was edited on both sides in the same place", async () => {
+        await setupSyncedAsset();
+        await writeDownstreamFile(
+          ".claude/skills/demo/references/template.txt",
+          ASSET.replace("line two", "line two LOCAL"),
+        );
+        await writeCanonicalFile(
+          "skills/demo/references/template.txt",
+          ASSET.replace("line two", "line two UPSTREAM"),
+        );
+        commitCanonical("upstream");
+
+        await expect(detectProposedChanges({ cwd: downstreamDir })).rejects.toThrow(StaleBaseError);
+      });
+
+      it("ignores a conflicting asset that --files excludes", async () => {
+        await setupSyncedAsset();
+        await writeDownstreamFile(
+          ".claude/skills/demo/references/template.txt",
+          ASSET.replace("line two", "line two LOCAL"),
+        );
+        await writeCanonicalFile(
+          "skills/demo/references/template.txt",
+          ASSET.replace("line two", "line two UPSTREAM"),
+        );
+        commitCanonical("upstream");
+        // A file the filter keeps, so the propose has something to ship.
+        await writeDownstreamFile(".claude/skills/demo/scripts/new.sh", "echo new\n");
+
+        const result = await detectProposedChanges({
+          cwd: downstreamDir,
+          files: ["scripts/new\\.sh$"],
+        });
+
+        expect(result.changes.map((c) => c.canonicalPath)).toEqual(["skills/demo/scripts/new.sh"]);
+      });
+
+      it("still proposes an asset that only exists downstream", async () => {
+        await setupSyncedAsset();
+        await writeDownstreamFile(".claude/skills/demo/scripts/new.sh", "echo new\n");
+
+        const result = await detectProposedChanges({ cwd: downstreamDir });
+
+        expect(result.changes.map((c) => c.canonicalPath)).toEqual(["skills/demo/scripts/new.sh"]);
+      });
     });
   });
 });

@@ -10,6 +10,7 @@ import {
   type NewContentCandidate,
   type ProposeResult,
 } from "../core/propose.js";
+import { StaleBaseError } from "../core/propose-merge.js";
 import { formatSourceString } from "../core/source.js";
 
 export interface ProposeCommandOptions {
@@ -23,6 +24,8 @@ export interface ProposeCommandOptions {
    * `true` discovers everything; a string restricts discovery to that path.
    */
   new?: string | boolean | undefined;
+  /** Resolve conflicts with canonical by taking the local copy instead of aborting. */
+  override?: boolean | undefined;
   cwd?: string | undefined;
 }
 
@@ -46,7 +49,9 @@ export async function proposeCommand(options: ProposeCommandOptions = {}): Promi
   // Show what will be proposed.
   prompts.log.info(isNew ? "New files to propose:" : "Modified files:");
   for (const change of result.changes) {
-    console.log(`  ${change.downstreamPath} ${pc.dim(`→ ${change.canonicalPath}`)}`);
+    // A merged file ships reconciled content, not what's on disk downstream.
+    const merged = change.rebased ? pc.yellow(" (merged onto canonical HEAD)") : "";
+    console.log(`  ${change.downstreamPath} ${pc.dim(`→ ${change.canonicalPath}`)}${merged}`);
   }
 
   console.log();
@@ -73,8 +78,18 @@ async function buildManagedProposeResult(
 
   let result: ProposeResult;
   try {
-    result = await detectProposedChanges({ cwd: targetDir, files: options.files });
+    result = await detectProposedChanges({
+      cwd: targetDir,
+      files: options.files,
+      override: options.override,
+    });
   } catch (error) {
+    if (error instanceof StaleBaseError) {
+      spinner.stop("Canonical has moved on");
+      reportStaleBase(error);
+      prompts.outro("Propose cancelled");
+      process.exit(1);
+    }
     spinner.stop("Failed to detect changes");
     prompts.log.error(String(error));
     prompts.outro("Propose cancelled");
@@ -83,13 +98,59 @@ async function buildManagedProposeResult(
 
   if (result.changes.length === 0) {
     spinner.stop("No changes detected");
+    reportDropped(result);
     prompts.log.info("No modified managed files found. Nothing to propose.");
     prompts.outro("Done");
     return null;
   }
 
+  reportDropped(result);
+
   spinner.stop(`Found ${result.changes.length} modified file(s)`);
   return result;
+}
+
+/**
+ * Note files that were reconciled away. Without this, a local copy that only
+ * looked modified because canonical moved would vanish from the proposal with
+ * no explanation.
+ */
+function reportDropped(result: ProposeResult): void {
+  const dropped = result.dropped ?? [];
+  if (dropped.length === 0) return;
+
+  prompts.log.info(`${dropped.length} file(s) already up to date with canonical — not proposed:`);
+  for (const filePath of dropped) {
+    console.log(`  ${pc.dim(filePath)}`);
+  }
+}
+
+/**
+ * Explain a stale-base abort: which files couldn't be rebased onto canonical
+ * HEAD, why, and the two ways forward.
+ */
+function reportStaleBase(error: StaleBaseError): void {
+  prompts.log.error(
+    "Canonical has changed since your last sync, and these files could not be merged cleanly:",
+  );
+  console.log();
+  for (const conflict of error.conflicts) {
+    console.log(`  ${conflict.downstreamPath}`);
+    console.log(`    ${pc.dim(conflict.reason)}`);
+  }
+  console.log();
+  prompts.log.info(
+    "To resolve: commit or stash these files, run `agconf sync` to take canonical's version, then re-apply your edits and propose again.",
+  );
+  // sync's overwrite guard exempts managed files — canonical owns them — so it
+  // replaces the local copy outright. Saying "just sync" without this would
+  // send the user to lose the very edits they are trying to propose.
+  prompts.log.warn(
+    "`agconf sync` overwrites your local copy of managed files, so save your work first.",
+  );
+  prompts.log.warn(
+    "Or pass --override to take your local copy for these files — this discards the canonical changes listed above. Files that merge cleanly are still merged.",
+  );
 }
 
 /**
@@ -102,6 +163,13 @@ async function buildNewProposeResult(
   options: ProposeCommandOptions,
   spinner: Spinner,
 ): Promise<ProposeResult | null> {
+  if (options.override) {
+    // New content has no canonical counterpart, so there is nothing to override.
+    prompts.log.warn(
+      "--override has no effect with --new; new content never overwrites canonical.",
+    );
+  }
+
   spinner.start("Discovering new content...");
 
   let detect: DetectNewContentResult;

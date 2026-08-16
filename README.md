@@ -278,6 +278,39 @@ agconf propose --dry-run
 
 Once a proposed item is merged into canonical, the next `agconf sync` adopts your local copy as managed automatically — no need to re-run `propose --new`.
 
+#### Rebasing onto canonical
+
+Your local copy was synced from a particular canonical commit, and canonical may
+have moved since. Rather than overwriting whatever is upstream now, `propose`
+reconciles every file against that sync-time base:
+
+- **Canonical untouched** — your local copy is proposed as-is.
+- **Both sides changed, different regions** — the two are merged and the merged
+  result is proposed. The PR body and the file list mark it as merged onto
+  canonical HEAD, since it is not what your working tree holds.
+- **Both sides changed, overlapping** — the propose is aborted, listing the
+  conflicting files. To resolve: commit or stash them, `agconf sync` to take
+  canonical's version, then re-apply your edits and propose again. (Sync
+  **overwrites** managed files — canonical owns them — so save your work first.)
+- **Only canonical changed** — nothing is proposed for that file, and it's
+  reported as already up to date. Without this, a stale local copy would silently
+  revert the upstream change.
+
+Three narrower cases also abort: canonical **deleted** the file after your sync,
+canonical **added** a different file at the same path, and **binary** content
+that changed on both sides (binary can't be merged textually).
+
+Nothing is proposed piecemeal: if any file conflicts the whole propose stops, so
+a PR never looks complete while quietly dropping part of your change. Pass
+`--override` to resolve those conflicts by taking your local copy — note this
+discards canonical's version *of the conflicting files only*; files that merge
+cleanly are still merged, and files you never touched are still left alone.
+
+When the sync-time commit can't be resolved — a local canonical outside git, a
+force-push, a sync from another ref — there is no base to merge against. In that
+case propose falls back to the hash each managed file recorded at sync time: if
+it proves canonical has moved, the propose aborts rather than guessing.
+
 ### `agconf upgrade-cli`
 
 Upgrade the CLI itself to the latest version. The command automatically detects which package manager was used to install agconf (npm, pnpm, yarn, or bun) and uses it for the upgrade.

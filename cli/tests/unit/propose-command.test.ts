@@ -307,4 +307,60 @@ ORIGINAL body.
     expect(mockExit).not.toHaveBeenCalled();
     expect(output()).toContain("/tmp/agconf-clone");
   });
+
+  /**
+   * Same fixture as above, but canonical is pinned in the lockfile and then
+   * advances with an edit that overlaps the local one — so detection raises
+   * StaleBaseError and the command has to explain it.
+   */
+  async function setupConflictingCanonical(): Promise<void> {
+    await setupModifiedManagedSkill();
+    const sha = execSync("git rev-parse HEAD", { cwd: canonicalDir }).toString().trim();
+
+    const lockfilePath = path.join(downstreamDir, ".agconf", "lockfile.json");
+    const lockfile = JSON.parse(await fs.readFile(lockfilePath, "utf-8"));
+    lockfile.source.commit_sha = sha;
+    await fs.writeFile(lockfilePath, JSON.stringify(lockfile, null, 2), "utf-8");
+
+    await fs.writeFile(
+      path.join(canonicalDir, "skills", "my-skill", "SKILL.md"),
+      SKILL_BODY.replace("ORIGINAL body.", "UPSTREAM body."),
+      "utf-8",
+    );
+    execSync("git add -A && git commit -m upstream", { cwd: canonicalDir, stdio: "ignore" });
+  }
+
+  it("exits and explains when canonical moved under a conflicting edit", async () => {
+    await setupConflictingCanonical();
+    const applySpy = vi.spyOn(proposeCore, "applyProposedChanges");
+
+    await expect(proposeCommand({ cwd: downstreamDir, yes: true, title: "x" })).rejects.toThrow(
+      "process.exit called",
+    );
+
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(applySpy).not.toHaveBeenCalled();
+    const text = output();
+    expect(text).toContain(".claude/skills/my-skill/SKILL.md");
+    expect(text).toContain("agconf sync");
+    expect(text).toContain("--override");
+  });
+
+  it("forwards --override so a conflicting proposal goes through anyway", async () => {
+    await setupConflictingCanonical();
+    const applySpy = vi.spyOn(proposeCore, "applyProposedChanges").mockResolvedValue({
+      cloneDir: canonicalDir,
+      branch: "propose/x",
+      pushed: true,
+    });
+
+    await expect(
+      proposeCommand({ cwd: downstreamDir, yes: true, title: "x", override: true }),
+    ).resolves.toBeUndefined();
+
+    expect(mockExit).not.toHaveBeenCalled();
+    const proposed = applySpy.mock.calls[0]?.[0];
+    expect(proposed?.changes.map((c) => c.canonicalPath)).toEqual(["skills/my-skill/SKILL.md"]);
+    expect(String(proposed?.changes[0]?.content)).toContain("TAMPERED body.");
+  });
 });
