@@ -1,7 +1,7 @@
 import * as os from "node:os";
 import pc from "picocolors";
 import { getSyncStatus } from "../core/sync.js";
-import { checkUserScope, getUserPaths, syncUserScope } from "../core/user-scope.js";
+import { checkUserScope, getUserPaths, StoreBusyError, syncUserScope } from "../core/user-scope.js";
 import { removeTempDir } from "../utils/fs.js";
 import { createLogger } from "../utils/logger.js";
 import {
@@ -62,11 +62,20 @@ export async function syncUserScopeCommand(options: UserScopeSyncOptions): Promi
   const { resolvedSource, tempDir } = await resolveSource(optionsWithSource, resolvedVersion);
 
   try {
-    const result = await syncUserScope(resolvedSource, {
-      targets,
-      homeDir,
-      ...(resolvedVersion.version ? { pinnedVersion: resolvedVersion.version } : {}),
-    });
+    let result: Awaited<ReturnType<typeof syncUserScope>>;
+    try {
+      result = await syncUserScope(resolvedSource, {
+        targets,
+        homeDir,
+        ...(resolvedVersion.version ? { pinnedVersion: resolvedVersion.version } : {}),
+      });
+    } catch (err) {
+      if (err instanceof StoreBusyError) {
+        logger.error(`${err.message} — try again in a moment.`);
+        return;
+      }
+      throw err;
+    }
 
     console.log();
     console.log(pc.bold("agconf sync --scope user"));
@@ -83,11 +92,28 @@ export async function syncUserScopeCommand(options: UserScopeSyncOptions): Promi
     if (result.userMdCreated) {
       console.log(pc.dim(`  scaffolded ${getUserPaths(homeDir).userMdPath} (your personal layer)`));
     }
+    // Content summary, so the skills/agents/rules written into ~/.claude, ~/.codex
+    // aren't invisible (only the instruction files show above).
+    for (const [label, n] of [
+      ["skills", result.skills.length],
+      ["agents", result.agents.length],
+      ["rules", result.rules.length],
+    ] as const) {
+      if (n > 0) console.log(pc.dim(`  ${label}: ${n} synced`));
+    }
+    const removed = [
+      result.removed.skills.length ? `${result.removed.skills.length} skill(s)` : "",
+      result.removed.rules.length ? `${result.removed.rules.length} rule(s)` : "",
+      result.removed.agents.length ? `${result.removed.agents.length} agent(s)` : "",
+    ].filter(Boolean);
+    if (removed.length > 0) {
+      console.log(pc.yellow(`  removed (dropped from canonical): ${removed.join(", ")}`));
+    }
     if (result.contentBackups.length > 0) {
       console.log();
       console.log(
         pc.dim(
-          `  backed up ${result.contentBackups.length} conflicting file(s) to ${getUserPaths(homeDir).backupsDir} before overwriting`,
+          `  backed up ${result.contentBackups.length} of your own file(s) to ${getUserPaths(homeDir).backupsDir} before overwriting`,
         ),
       );
     }

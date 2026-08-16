@@ -31,7 +31,7 @@ import * as path from "node:path";
 import { promisify } from "node:util";
 import fg from "fast-glob";
 import { toMetadataPrefix } from "../utils/prefix.js";
-import { readLockfile, writeLockfile } from "./lockfile.js";
+import { readLockfileSafe, writeLockfile } from "./lockfile.js";
 import {
   checkAgentFiles,
   checkCodexAgentFiles,
@@ -58,12 +58,11 @@ import {
   findOrphanedAgents,
   findOrphanedRules,
   findOrphanedSkills,
-  type SyncConflict,
   syncAgents,
   syncRules,
   syncSkillsToTarget,
 } from "./sync.js";
-import { getTargetConfig, type Target } from "./targets.js";
+import { getSkillsDir, getTargetConfig, type Target } from "./targets.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -139,14 +138,16 @@ async function pathExists(p: string): Promise<boolean> {
   }
 }
 
-/** Top-level skill directory names in the canonical skills dir. */
+/**
+ * Top-level skill directory names in the canonical skills dir. A missing dir
+ * yields `[]` (fast-glob does not throw on a nonexistent cwd); a real read error
+ * propagates rather than being swallowed — the same fail-safe stance as repo
+ * scope, so a transient error can never masquerade as "0 skills" and trigger
+ * orphan cleanup that deletes every managed skill.
+ */
 async function discoverSkillNames(skillsPath: string): Promise<string[]> {
-  try {
-    const dirs = await fg("*/", { cwd: skillsPath, onlyDirectories: true, deep: 1 });
-    return dirs.map((d) => d.replace(/\/$/, "")).sort();
-  } catch {
-    return [];
-  }
+  const dirs = await fg("*/", { cwd: skillsPath, onlyDirectories: true, deep: 1 });
+  return dirs.map((d) => d.replace(/\/$/, "")).sort();
 }
 
 /**
@@ -205,30 +206,32 @@ async function backupFile(
 }
 
 /**
- * Copy each conflicting skill/rule/agent (a `SyncConflict.path` relative to the
- * home directory — a file or, for skills, a directory) into the timestamped
- * backup set before the projection overwrites it. Unlike repo scope — which
- * aborts on a divergent unmanaged file unless `--override` — user scope runs
- * unattended (session-start / cron), so it never aborts: it preserves the
- * original in the git-tracked store, then proceeds (INV-4: no destructive write
- * without a backup). Best-effort per file; a copy failure never blocks the sync.
+ * Copy each given home-relative path (a file or, for skills, a directory) into
+ * the timestamped backup set before a projection overwrites it or orphan cleanup
+ * deletes it. Used for three destructive cases at user scope: the developer's own
+ * divergent *unmanaged* content, a *managed* file they edited locally, and files
+ * about to be orphan-deleted. Unlike repo scope — which aborts on a divergent
+ * unmanaged file unless `--override` — user scope runs unattended, so it never
+ * aborts: it preserves the original in the git-tracked store, then proceeds
+ * (INV-4: no destructive write without a backup). Best-effort and deduped; a
+ * missing/unreadable source is skipped, never blocking the sync.
  */
-async function backupConflicts(
+async function backupPaths(
   backupsDir: string,
   homeDir: string,
-  conflicts: SyncConflict[],
+  relPaths: string[],
   stamp: string,
 ): Promise<string[]> {
   const backedUp: string[] = [];
-  for (const conflict of conflicts) {
-    const src = path.join(homeDir, conflict.path);
-    const dest = path.join(backupsDir, stamp, conflict.path);
+  for (const relPath of [...new Set(relPaths)]) {
+    const src = path.join(homeDir, relPath);
+    const dest = path.join(backupsDir, stamp, relPath);
     try {
       await fs.mkdir(path.dirname(dest), { recursive: true });
       await fs.cp(src, dest, { recursive: true });
       backedUp.push(dest);
     } catch {
-      // Best-effort: an unreadable source must not break the projection.
+      // Best-effort: a missing/unreadable source must not break the sync.
     }
   }
   return backedUp;
@@ -243,6 +246,7 @@ const STORE_GITIGNORE = `# agconf store — machine-local artifacts (do not vers
 backups/
 logs/
 autosync-state.json
+.lock
 `;
 
 /** Write the store's .gitignore once (idempotent; leaves an edited one alone). */
@@ -250,6 +254,53 @@ async function ensureStoreGitignore(storeDir: string): Promise<void> {
   const gitignorePath = path.join(storeDir, ".gitignore");
   if (await pathExists(gitignorePath)) return;
   await fs.writeFile(gitignorePath, STORE_GITIGNORE, "utf-8");
+}
+
+/** A user-scope sync could not start because another one holds the store lock. */
+export class StoreBusyError extends Error {
+  constructor() {
+    super("Another agconf user-scope sync is already running");
+    this.name = "StoreBusyError";
+  }
+}
+
+/** How long a held lock is considered stale (a crashed run) and may be stolen. */
+const LOCK_STALE_MS = 10 * 60_000;
+
+interface StoreLock {
+  release: () => Promise<void>;
+}
+
+/**
+ * Acquire an exclusive advisory lock on the store so the two unattended triggers
+ * (session-start + a scheduled run) and a manual sync can never mutate the
+ * harness files / lockfile / git store concurrently. Uses an atomic O_EXCL
+ * create; a lock older than {@link LOCK_STALE_MS} (a crashed holder) is stolen.
+ * Returns null if a live lock is held. `nowMs` is injectable for tests.
+ */
+async function acquireStoreLock(storeDir: string, nowMs: number): Promise<StoreLock | null> {
+  const lockPath = path.join(storeDir, ".lock");
+  await fs.mkdir(storeDir, { recursive: true });
+  const release = async () => {
+    await fs.rm(lockPath, { force: true });
+  };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fh = await fs.open(lockPath, "wx"); // O_CREAT | O_EXCL — atomic
+      await fh.write(String(nowMs));
+      await fh.close();
+      return { release };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      const heldMs = Number((await fs.readFile(lockPath, "utf-8").catch(() => "")) || "0");
+      if (!heldMs || nowMs - heldMs > LOCK_STALE_MS) {
+        await fs.rm(lockPath, { force: true }); // stale — steal it, then retry once
+        continue;
+      }
+      return null; // held by a live run
+    }
+  }
+  return null;
 }
 
 /** Keep only the most recent MAX_BACKUPS timestamped backup directories. */
@@ -345,10 +396,30 @@ export interface UserSyncOptions {
 }
 
 /**
- * Project the canonical global block into the developer's per-user harness files
- * and record the result in the `~/.agconf` store.
+ * Project the canonical company content into the developer's per-user harness
+ * files and record the result in the `~/.agconf` store. Serialized by an advisory
+ * store lock so the unattended triggers (session-start + a scheduled run) and a
+ * manual sync can never mutate the harness files / lockfile / git store
+ * concurrently. Throws {@link StoreBusyError} if another run holds the lock.
  */
 export async function syncUserScope(
+  source: ResolvedSource,
+  options: UserSyncOptions,
+): Promise<UserSyncResult> {
+  const homeDir = options.homeDir ?? os.homedir();
+  const { storeDir } = getUserPaths(homeDir);
+  const parsedNow = Date.parse(options.now ?? "");
+  const nowMs = Number.isNaN(parsedNow) ? Date.now() : parsedNow;
+  const lock = await acquireStoreLock(storeDir, nowMs);
+  if (!lock) throw new StoreBusyError();
+  try {
+    return await syncUserScopeLocked(source, options);
+  } finally {
+    await lock.release();
+  }
+}
+
+async function syncUserScopeLocked(
   source: ResolvedSource,
   options: UserSyncOptions,
 ): Promise<UserSyncResult> {
@@ -360,7 +431,10 @@ export async function syncUserScope(
   const canonical = (await fs.readFile(source.agentsMdPath, "utf-8")).trim();
   const metadataPrefix = toMetadataPrefix(markerPrefix);
   // Previous user lockfile — its content lists drive orphan cleanup after sync.
-  const previous = (await readLockfile(homeDir))?.lockfile;
+  // A corrupt store lockfile reads as "none" so the sync self-heals (rewrites it)
+  // instead of throwing, and orphan cleanup sees an empty previous set (deletes
+  // nothing) rather than misfiring.
+  const previous = (await readLockfileSafe(homeDir))?.lockfile;
 
   await fs.mkdir(paths.storeDir, { recursive: true });
   await ensureStoreGitignore(paths.storeDir);
@@ -374,8 +448,15 @@ export async function syncUserScope(
     const created = existing === null;
     const existingContent = existing ?? "";
 
+    // Back up the instruction file if its managed block drifted / is unmanaged,
+    // or (Codex) if the rules section embedded in the same file drifted — since
+    // the rules projection below would otherwise overwrite that edit unbacked.
+    const rulesSectionDrift =
+      target === "codex" &&
+      parseRulesSection(existingContent, { prefix: markerPrefix }).hasMarkers &&
+      hasRulesSectionChanges(existingContent, { prefix: markerPrefix });
     let backedUp: string | undefined;
-    if (!created && needsBackup(existingContent, markerPrefix)) {
+    if (!created && (needsBackup(existingContent, markerPrefix) || rulesSectionDrift)) {
       backedUp = await backupFile(paths.backupsDir, target, filePath, existingContent, stamp);
     }
 
@@ -391,11 +472,13 @@ export async function syncUserScope(
     files.push({ target, path: filePath, created, changed, ...(backedUp ? { backedUp } : {}) });
   }
 
-  // Content projection (skills/agents/rules). Guard first: back up any of the
-  // developer's own divergent, unmanaged skill/rule/agent files before the
-  // projection overwrites them. Managed and byte-identical files are left alone
-  // (canonical owns them / nothing is lost); only true conflicts are copied out.
+  // Content projection (skills/agents/rules). Guard first: back up anything the
+  // projection would overwrite that carries the developer's own work — a
+  // divergent *unmanaged* file (from the collision guard) OR a *managed* file
+  // they edited locally (drift, from the check helpers). Byte-identical managed
+  // files are left alone (canonical owns them; nothing is lost). INV-4.
   const skills = await discoverSkillNames(source.skillsPath);
+  const metaOpt = { metadataPrefix };
   const collisions = await detectUnmanagedCollisions(
     homeDir,
     source,
@@ -404,14 +487,29 @@ export async function syncUserScope(
     metadataPrefix,
     Boolean(source.agentsPath),
   );
-  const contentBackups = await backupConflicts(
+  const driftedManaged: string[] = [];
+  for (const s of await checkSkillFiles(homeDir, options.targets, metaOpt)) {
+    if (s.isManaged && s.hasChanges) driftedManaged.push(path.dirname(s.path)); // the skill dir
+  }
+  for (const r of await checkRuleFiles(homeDir, options.targets, metaOpt)) {
+    if (r.isManaged && r.hasChanges) driftedManaged.push(r.path);
+  }
+  if (options.targets.includes("claude")) {
+    for (const a of await checkAgentFiles(homeDir, metaOpt)) {
+      if (a.isManaged && a.hasChanges) driftedManaged.push(a.path);
+    }
+  }
+  if (options.targets.includes("codex")) {
+    for (const a of await checkCodexAgentFiles(homeDir, metaOpt)) {
+      if (a.isManaged && a.hasChanges) driftedManaged.push(a.path);
+    }
+  }
+  const contentBackups = await backupPaths(
     paths.backupsDir,
     homeDir,
-    collisions.conflicts,
+    [...collisions.conflicts.map((c) => c.path), ...driftedManaged],
     stamp,
   );
-
-  await rotateBackups(paths.backupsDir);
 
   // Skills → user dirs. The per-target skill sync writes to
   // `<homeDir>/<config.skillsDir>` — i.e. ~/.claude/skills and ~/.agents/skills.
@@ -485,28 +583,49 @@ export async function syncUserScope(
   const prevSkills = previous?.content.skills ?? [];
   const prevRules = previous?.content.rules?.files ?? [];
   const prevAgents = previous?.content.agents?.files ?? [];
+  const orphanSkills = findOrphanedSkills(prevSkills, skills);
+  const orphanRules = findOrphanedRules(prevRules, rules);
+  const orphanAgents = findOrphanedAgents(prevAgents, agents);
+
+  // Back up every orphaned managed file before deleting it (INV-4). Per-target
+  // paths that don't exist on disk are skipped by backupPaths.
+  const orphanRelPaths: string[] = [];
+  for (const name of orphanSkills) {
+    for (const t of options.targets) orphanRelPaths.push(path.join(getSkillsDir(t), name));
+  }
+  for (const rp of orphanRules) orphanRelPaths.push(path.join(".claude", "rules", rp));
+  for (const ap of orphanAgents) {
+    orphanRelPaths.push(path.join(".claude", "agents", ap));
+    orphanRelPaths.push(path.join(".codex", "agents", ap.replace(/\.md$/, ".toml")));
+  }
+  await backupPaths(paths.backupsDir, homeDir, orphanRelPaths, stamp);
+
   const orphanOpt = { metadataPrefix };
   const removedSkills = await deleteOrphanedSkills(
     homeDir,
-    findOrphanedSkills(prevSkills, skills),
+    orphanSkills,
     options.targets,
     prevSkills,
     orphanOpt,
   );
   const removedRules = await deleteOrphanedRules(
     homeDir,
-    findOrphanedRules(prevRules, rules),
+    orphanRules,
     options.targets,
     prevRules,
     orphanOpt,
   );
   const removedAgents = await deleteOrphanedAgents(
     homeDir,
-    findOrphanedAgents(prevAgents, agents),
+    orphanAgents,
     options.targets,
     prevAgents,
     orphanOpt,
   );
+
+  // Rotate once, after all of this run's backups (instruction + content + orphan)
+  // have landed in the same timestamped set.
+  await rotateBackups(paths.backupsDir);
 
   const committed = await commitStore(paths.storeDir, `agconf: user-scope sync ${stamp}`);
 
@@ -548,7 +667,7 @@ export interface UserCheckResult {
  */
 export async function checkUserScope(options: { homeDir?: string }): Promise<UserCheckResult> {
   const homeDir = options.homeDir ?? os.homedir();
-  const lock = await readLockfile(homeDir);
+  const lock = await readLockfileSafe(homeDir);
   if (!lock) {
     return { hasLockfile: false, modified: [], missing: [], ghosts: [], ok: true };
   }

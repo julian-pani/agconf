@@ -44,6 +44,12 @@ describe("syncCommand", () => {
     expect(errorOutput()).toContain("Cannot use --pinned with --local");
   });
 
+  it("rejects an unknown --scope instead of silently repo-syncing", async () => {
+    await expect(syncCommand({ scope: "usr" })).rejects.toThrow("process.exit called");
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(errorOutput()).toContain('Invalid --scope "usr"');
+  });
+
   it("resolves the target from options.cwd and errors when it is not a git repo", async () => {
     const nonGitDir = await fs.mkdtemp(path.join(os.tmpdir(), "agconf-sync-cmd-"));
     try {

@@ -8,6 +8,7 @@ import {
   checkUserScope,
   getUserPaths,
   projectGlobalBlock,
+  StoreBusyError,
   syncUserScope,
 } from "../../src/core/user-scope.js";
 
@@ -189,6 +190,46 @@ describe("user-scope", () => {
       expect(result.hasLockfile).toBe(false);
       expect(result.ok).toBe(true);
     });
+
+    it("refuses to run while another sync holds the store lock", async () => {
+      const source = await resolveLocalSource({ path: canonical });
+      const storeDir = getUserPaths(home).storeDir;
+      await fs.mkdir(storeDir, { recursive: true });
+      // A fresh lock held by a "running" sync.
+      await fs.writeFile(path.join(storeDir, ".lock"), String(Date.now()));
+
+      await expect(syncUserScope(source, { targets: ["claude"], homeDir: home })).rejects.toThrow(
+        StoreBusyError,
+      );
+    });
+
+    it("steals a stale store lock and proceeds", async () => {
+      const source = await resolveLocalSource({ path: canonical });
+      const storeDir = getUserPaths(home).storeDir;
+      await fs.mkdir(storeDir, { recursive: true });
+      await fs.writeFile(path.join(storeDir, ".lock"), "1"); // ancient → stale
+
+      const result = await syncUserScope(source, { targets: ["claude"], homeDir: home });
+      expect(result.files.length).toBeGreaterThan(0);
+      // Lock released after the run.
+      expect(await exists(path.join(storeDir, ".lock"))).toBe(false);
+    });
+
+    it("degrades gracefully on a corrupt store lockfile and self-heals", async () => {
+      const source = await resolveLocalSource({ path: canonical });
+      await syncUserScope(source, { targets: ["claude"], homeDir: home });
+
+      // Corrupt the store lockfile.
+      await fs.writeFile(path.join(getUserPaths(home).storeDir, "lockfile.json"), "{ not json");
+
+      // check does not throw; it reports not-synced rather than crashing.
+      expect((await checkUserScope({ homeDir: home })).hasLockfile).toBe(false);
+
+      // A subsequent sync rewrites a valid lockfile (self-heal).
+      const result = await syncUserScope(source, { targets: ["claude"], homeDir: home });
+      expect(result.files.length).toBeGreaterThan(0);
+      expect((await checkUserScope({ homeDir: home })).hasLockfile).toBe(true);
+    });
   });
 
   describe("content types (skills / agents / rules)", () => {
@@ -353,6 +394,53 @@ describe("user-scope", () => {
         false,
       );
       expect(await exists(path.join(home, ".agents", "skills", "my-skill", "SKILL.md"))).toBe(
+        false,
+      );
+    });
+
+    it("backs up a locally-edited managed skill before re-projecting over it", async () => {
+      const source = await resolveLocalSource({ path: canonical });
+      await syncUserScope(source, { targets: ["claude"], homeDir: home });
+
+      // Edit the managed skill locally (keep its agconf metadata so it stays managed).
+      const skillMd = path.join(home, ".claude", "skills", "my-skill", "SKILL.md");
+      await fs.appendFile(skillMd, "\nMY LOCAL EDIT\n");
+
+      const result = await syncUserScope(source, {
+        targets: ["claude"],
+        homeDir: home,
+        now: "2026-09-01T00:00:00.000Z",
+      });
+
+      // The edit was backed up before canonical overwrote it (INV-4).
+      const backedUp = result.contentBackups.find((p) => p.includes("my-skill"));
+      expect(backedUp).toBeTruthy();
+      expect(await fs.readFile(path.join(backedUp as string, "SKILL.md"), "utf-8")).toContain(
+        "MY LOCAL EDIT",
+      );
+      // Canonical won on disk.
+      expect(await fs.readFile(skillMd, "utf-8")).not.toContain("MY LOCAL EDIT");
+    });
+
+    it("backs up an orphaned skill before deleting it", async () => {
+      let source = await resolveLocalSource({ path: canonical });
+      await syncUserScope(source, { targets: ["claude"], homeDir: home });
+
+      await fs.rm(path.join(canonical, "skills", "my-skill"), { recursive: true, force: true });
+      source = await resolveLocalSource({ path: canonical });
+      await syncUserScope(source, {
+        targets: ["claude"],
+        homeDir: home,
+        now: "2026-09-02T00:00:00.000Z",
+      });
+
+      // The orphan was copied into the timestamped backup set before deletion.
+      const stampDir = path.join(getUserPaths(home).backupsDir, "2026-09-02T00-00-00-000Z");
+      expect(await exists(path.join(stampDir, ".claude", "skills", "my-skill", "SKILL.md"))).toBe(
+        true,
+      );
+      // ...and it's gone from the harness dir.
+      expect(await exists(path.join(home, ".claude", "skills", "my-skill", "SKILL.md"))).toBe(
         false,
       );
     });

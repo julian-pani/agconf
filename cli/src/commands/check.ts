@@ -83,6 +83,12 @@ export interface ModifiedFileInfo {
  * are found, 0 otherwise.
  */
 export async function checkCommand(options: CheckOptions = {}): Promise<void> {
+  // Reject an unknown --scope rather than silently checking the repo instead.
+  if (options.scope !== undefined && options.scope !== "repo" && options.scope !== "user") {
+    console.error(pc.red(`Invalid --scope "${options.scope}". Use "repo" (default) or "user".`));
+    process.exit(1);
+  }
+
   // User scope: verify ~/.claude, ~/.codex against the ~/.agconf store lockfile.
   if (options.scope === "user") {
     const problems = await checkUserScopeCommand({ home: options.home, quiet: options.quiet });

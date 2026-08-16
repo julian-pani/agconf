@@ -98,9 +98,27 @@ export async function writeLockfile(
   };
 
   await fs.mkdir(path.dirname(lockfilePath), { recursive: true });
-  await fs.writeFile(lockfilePath, `${JSON.stringify(lockfile, null, 2)}\n`, "utf-8");
+  // Write atomically (temp + rename) so a crash or a concurrent writer can never
+  // leave a half-written, unparseable lockfile on disk.
+  const tmpPath = `${lockfilePath}.${process.pid}.tmp`;
+  await fs.writeFile(tmpPath, `${JSON.stringify(lockfile, null, 2)}\n`, "utf-8");
+  await fs.rename(tmpPath, lockfilePath);
 
   return lockfile;
+}
+
+/**
+ * Like {@link readLockfile} but treats a corrupt/invalid lockfile the same as a
+ * missing one (returns null) instead of throwing. Used by the unattended
+ * user-scope / autosync paths so a torn lockfile self-heals on the next sync
+ * rather than permanently bricking the feature or crashing `check`.
+ */
+export async function readLockfileSafe(targetDir: string): Promise<ReadLockfileResult | null> {
+  try {
+    return await readLockfile(targetDir);
+  } catch {
+    return null;
+  }
 }
 
 export function hashContent(content: string): string {

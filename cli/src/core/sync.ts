@@ -15,7 +15,7 @@ import {
   emitCodexAgentToml,
   validateAgentFrontmatter,
 } from "./agents.js";
-import { readLockfile, writeLockfile } from "./lockfile.js";
+import { readLockfileSafe, writeLockfile } from "./lockfile.js";
 import {
   addManagedMetadata,
   codexAgentHasManualChanges,
@@ -991,7 +991,9 @@ export interface SyncStatus {
 }
 
 export async function getSyncStatus(targetDir: string): Promise<SyncStatus> {
-  const result = await readLockfile(targetDir);
+  // Safe read: a corrupt/torn lockfile degrades to "not synced" (so `sync`
+  // rebuilds it and `check` reports cleanly) instead of throwing.
+  const result = await readLockfileSafe(targetDir);
   const agentsMdPath = path.join(targetDir, "AGENTS.md");
   // Skills can live under either target's location (.claude/skills for Claude,
   // .agents/skills for Codex), so treat the repo as "has skills" if either exists.
