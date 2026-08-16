@@ -27,14 +27,34 @@ vi.mock("node:fs", async (importOriginal) => {
   };
 });
 
+// Mock tabtab's internal installer (used to write the shell config entry)
+vi.mock("tabtab/lib/installer.js", () => ({
+  default: { install: vi.fn() },
+}));
+
+// Stub @clack/prompts so install/uninstall flows print nothing and `confirm` is controllable
+vi.mock("@clack/prompts", () => ({
+  intro: vi.fn(),
+  outro: vi.fn(),
+  confirm: vi.fn(),
+  isCancel: vi.fn(() => false),
+  log: { info: vi.fn(), warn: vi.fn(), success: vi.fn(), error: vi.fn() },
+}));
+
 // Import mocked modules
 import fs from "node:fs";
+import * as prompts from "@clack/prompts";
 import tabtab from "tabtab";
+// @ts-expect-error - tabtab internal module not typed
+import tabtabInstaller from "tabtab/lib/installer.js";
 import {
   detectShell,
   getShellConfigFile,
   handleCompletion,
+  installCompletion,
   isCompletionInstalled,
+  promptCompletionInstall,
+  uninstallCompletion,
 } from "../../src/commands/completion.js";
 
 describe("completion", () => {
@@ -452,6 +472,170 @@ describe("completion", () => {
       });
 
       expect(isCompletionInstalled()).toBe(false);
+    });
+  });
+
+  // ─── Install / uninstall flows ────────────────────────────────────────────
+
+  describe("installCompletion", () => {
+    let mockExit: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
+        throw new Error("process.exit called");
+      }) as () => never);
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      // Nothing installed by default.
+      vi.mocked(fs.existsSync).mockReturnValue(false);
+    });
+
+    afterEach(() => {
+      mockExit.mockRestore();
+    });
+
+    const installer = () => vi.mocked(tabtabInstaller.install);
+
+    it("does nothing when the shell cannot be detected", async () => {
+      delete process.env.SHELL;
+
+      await installCompletion();
+
+      expect(prompts.log.warn).toHaveBeenCalledWith(expect.stringContaining("Could not detect"));
+      expect(installer()).not.toHaveBeenCalled();
+    });
+
+    it("is a no-op when completions are already installed", async () => {
+      process.env.SHELL = "/bin/zsh";
+      vi.mocked(fs.existsSync).mockReturnValue(true); // completion file present
+
+      await installCompletion();
+
+      expect(prompts.log.success).toHaveBeenCalledWith(
+        expect.stringContaining("already installed"),
+      );
+      expect(installer()).not.toHaveBeenCalled();
+    });
+
+    it("installs into the detected shell's config file", async () => {
+      process.env.SHELL = "/bin/fish";
+      installer().mockResolvedValue(undefined);
+
+      await installCompletion();
+
+      expect(installer()).toHaveBeenCalledWith({
+        name: "agconf",
+        completer: "agconf",
+        location: path.join(os.homedir(), ".config", "fish", "config.fish"),
+      });
+      expect(prompts.log.success).toHaveBeenCalledWith(expect.stringContaining("installed for"));
+      expect(mockExit).not.toHaveBeenCalled();
+    });
+
+    it("exits 1 when the installer fails", async () => {
+      process.env.SHELL = "/bin/zsh";
+      installer().mockRejectedValue(new Error("EACCES"));
+
+      await expect(installCompletion()).rejects.toThrow("process.exit called");
+
+      expect(prompts.log.error).toHaveBeenCalledWith(expect.stringContaining("EACCES"));
+      expect(mockExit).toHaveBeenCalledWith(1);
+    });
+  });
+
+  describe("uninstallCompletion", () => {
+    let mockExit: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
+        throw new Error("process.exit called");
+      }) as () => never);
+      vi.spyOn(console, "log").mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      mockExit.mockRestore();
+    });
+
+    it("uninstalls by CLI name", async () => {
+      vi.mocked(tabtab.uninstall).mockResolvedValue(undefined);
+
+      await uninstallCompletion();
+
+      expect(tabtab.uninstall).toHaveBeenCalledWith({ name: "agconf" });
+      expect(prompts.log.success).toHaveBeenCalledWith(expect.stringContaining("uninstalled"));
+      expect(mockExit).not.toHaveBeenCalled();
+    });
+
+    it("exits 1 when uninstall fails", async () => {
+      vi.mocked(tabtab.uninstall).mockRejectedValue(new Error("no such file"));
+
+      await expect(uninstallCompletion()).rejects.toThrow("process.exit called");
+
+      expect(prompts.log.error).toHaveBeenCalledWith(expect.stringContaining("no such file"));
+      expect(mockExit).toHaveBeenCalledWith(1);
+    });
+  });
+
+  describe("promptCompletionInstall", () => {
+    const installer = () => vi.mocked(tabtabInstaller.install);
+
+    beforeEach(() => {
+      vi.mocked(fs.existsSync).mockReturnValue(false);
+      // `mockReturnValue` survives clearAllMocks, so restore the default.
+      vi.mocked(prompts.isCancel).mockReturnValue(false);
+      process.env.SHELL = "/bin/zsh";
+    });
+
+    it("does not prompt when completions are already installed", async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+
+      expect(await promptCompletionInstall()).toBe(false);
+      expect(prompts.confirm).not.toHaveBeenCalled();
+    });
+
+    it("does not prompt when the shell is unknown", async () => {
+      process.env.SHELL = "/bin/sh";
+
+      expect(await promptCompletionInstall()).toBe(false);
+      expect(prompts.confirm).not.toHaveBeenCalled();
+    });
+
+    it("returns false and hints at the manual command when declined", async () => {
+      vi.mocked(prompts.confirm).mockResolvedValue(false as never);
+
+      expect(await promptCompletionInstall()).toBe(false);
+      expect(installer()).not.toHaveBeenCalled();
+      expect(prompts.log.info).toHaveBeenCalledWith(
+        expect.stringContaining("agconf completion install"),
+      );
+    });
+
+    it("returns false when the prompt is cancelled", async () => {
+      vi.mocked(prompts.confirm).mockResolvedValue(true as never);
+      vi.mocked(prompts.isCancel).mockReturnValue(true);
+
+      expect(await promptCompletionInstall()).toBe(false);
+      expect(installer()).not.toHaveBeenCalled();
+    });
+
+    it("installs and returns true when accepted", async () => {
+      vi.mocked(prompts.confirm).mockResolvedValue(true as never);
+      installer().mockResolvedValue(undefined);
+
+      expect(await promptCompletionInstall()).toBe(true);
+      expect(installer()).toHaveBeenCalledWith({
+        name: "agconf",
+        completer: "agconf",
+        location: path.join(os.homedir(), ".zshrc"),
+      });
+    });
+
+    it("warns and returns false (never throws) when the install fails", async () => {
+      vi.mocked(prompts.confirm).mockResolvedValue(true as never);
+      installer().mockRejectedValue(new Error("EACCES"));
+
+      expect(await promptCompletionInstall()).toBe(false);
+      expect(prompts.log.warn).toHaveBeenCalledWith(expect.stringContaining("EACCES"));
     });
   });
 });

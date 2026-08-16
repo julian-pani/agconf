@@ -1,7 +1,18 @@
 import { execSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
-import { getCliVersion, hashContent } from "../../src/core/lockfile.js";
+import * as fsp from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  checkCliVersionMismatch,
+  getCliVersion,
+  getLockfilePath,
+  hashContent,
+  readLockfile,
+  readLockfileSafe,
+  writeLockfile,
+} from "../../src/core/lockfile.js";
 import { checkSchemaCompatibility, SUPPORTED_SCHEMA_VERSION } from "../../src/core/schema.js";
 import { CURRENT_LOCKFILE_VERSION, LockfileSchema } from "../../src/schemas/lockfile.js";
 
@@ -184,6 +195,13 @@ describe("lockfile", () => {
       expect(result.error).toContain("requires a newer CLI");
     });
 
+    it("should treat a truncated version as having a zero minor (no crash)", () => {
+      // A hand-edited "1" must degrade to 1.0.0-compatible, not throw.
+      const result = checkSchemaCompatibility("1");
+      expect(result.compatible).toBe(true);
+      expect(result.warning).toBeUndefined();
+    });
+
     it("should return incompatible for older major version", () => {
       const result = checkSchemaCompatibility("0.9.0");
       expect(result.compatible).toBe(false);
@@ -211,6 +229,130 @@ describe("lockfile", () => {
     it("should produce sha256 prefixed hashes", () => {
       const hash = hashContent("test");
       expect(hash).toMatch(/^sha256:[a-f0-9]{12}$/);
+    });
+  });
+
+  describe("read / write round trip", () => {
+    let dir: string;
+
+    beforeEach(async () => {
+      dir = await fsp.mkdtemp(path.join(os.tmpdir(), "agconf-lockfile-"));
+    });
+    afterEach(async () => {
+      await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    const localSource = { type: "local" as const, path: "/canonical" };
+
+    it("returns null (not an error) when no lockfile exists", async () => {
+      expect(await readLockfile(dir)).toBeNull();
+      expect(await readLockfileSafe(dir)).toBeNull();
+    });
+
+    it("writes and reads back the lockfile, creating .agconf as needed", async () => {
+      const written = await writeLockfile(dir, {
+        source: localSource,
+        globalBlockContent: "GLOBAL",
+        skills: ["alpha"],
+        targets: ["claude", "codex"],
+        pinnedVersion: "1.2.0",
+        markerPrefix: "acme",
+        rules: { files: ["security/api.md"], content_hash: "sha256:aaaaaaaaaaaa" },
+        agents: { files: ["reviewer.md"], content_hash: "sha256:bbbbbbbbbbbb" },
+      });
+
+      expect(written.content.agents_md.global_block_hash).toBe(hashContent("GLOBAL"));
+
+      const read = await readLockfile(dir);
+      expect(read?.lockfile).toEqual(written);
+      expect(read?.schemaCompatibility.compatible).toBe(true);
+      // No temp artifact is left behind by the atomic write.
+      const entries = await fsp.readdir(path.join(dir, ".agconf"));
+      expect(entries).toEqual(["lockfile.json"]);
+    });
+
+    it("defaults targets to ['claude'] when not specified", async () => {
+      const written = await writeLockfile(dir, {
+        source: localSource,
+        globalBlockContent: "GLOBAL",
+        skills: [],
+      });
+      expect(written.content.targets).toEqual(["claude"]);
+      expect(written.pinned_version).toBeUndefined();
+    });
+
+    it("throws on a corrupt lockfile, but readLockfileSafe degrades to null", async () => {
+      await fsp.mkdir(path.join(dir, ".agconf"), { recursive: true });
+      await fsp.writeFile(getLockfilePath(dir), "{ not json", "utf-8");
+
+      await expect(readLockfile(dir)).rejects.toThrow();
+      expect(await readLockfileSafe(dir)).toBeNull();
+    });
+
+    it("throws on a schema-invalid lockfile, but readLockfileSafe degrades to null", async () => {
+      await fsp.mkdir(path.join(dir, ".agconf"), { recursive: true });
+      // Valid JSON, invalid shape (missing `content`).
+      await fsp.writeFile(
+        getLockfilePath(dir),
+        JSON.stringify({ version: "1.0.0", synced_at: new Date().toISOString(), source: {} }),
+        "utf-8",
+      );
+
+      await expect(readLockfile(dir)).rejects.toThrow();
+      expect(await readLockfileSafe(dir)).toBeNull();
+    });
+  });
+
+  describe("checkCliVersionMismatch", () => {
+    let dir: string;
+
+    beforeEach(async () => {
+      dir = await fsp.mkdtemp(path.join(os.tmpdir(), "agconf-climismatch-"));
+    });
+    afterEach(async () => {
+      await fsp.rm(dir, { recursive: true, force: true });
+    });
+
+    /** Write a lockfile with an arbitrary `cli_version` (writeLockfile always stamps its own). */
+    const seed = async (cliVersion?: string) => {
+      const lockfile: Record<string, unknown> = {
+        version: "1.0.0",
+        synced_at: new Date().toISOString(),
+        source: { type: "local", path: "/canonical" },
+        content: {
+          agents_md: { global_block_hash: "sha256:abc123def456", merged: true },
+          skills: [],
+        },
+      };
+      if (cliVersion !== undefined) lockfile.cli_version = cliVersion;
+      await fsp.mkdir(path.join(dir, ".agconf"), { recursive: true });
+      await fsp.writeFile(getLockfilePath(dir), JSON.stringify(lockfile), "utf-8");
+    };
+
+    it("returns null when there is no lockfile (first sync)", async () => {
+      expect(await checkCliVersionMismatch(dir)).toBeNull();
+    });
+
+    it("returns null when the lockfile records no CLI version", async () => {
+      await seed();
+      expect(await checkCliVersionMismatch(dir)).toBeNull();
+    });
+
+    it("returns null when the versions are equal", async () => {
+      await seed(getCliVersion());
+      expect(await checkCliVersionMismatch(dir)).toBeNull();
+    });
+
+    it("reports a mismatch when the lockfile was synced with a newer CLI", async () => {
+      // Under test getCliVersion() is the "0.0.0" dev fallback, so any real
+      // version is newer. Each of major/minor/patch must be enough on its own.
+      for (const newer of ["1.0.0", "0.1.0", "0.0.1"]) {
+        await seed(newer);
+        expect(await checkCliVersionMismatch(dir)).toEqual({
+          currentVersion: getCliVersion(),
+          lockfileVersion: newer,
+        });
+      }
     });
   });
 

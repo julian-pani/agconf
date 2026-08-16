@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { simpleGit } from "simple-git";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  getCurrentBranch,
   getGitHooksDir,
   getGitOrganization,
   getGitProjectName,
@@ -160,6 +161,68 @@ describe("git utilities", () => {
       const result = await getGitHooksDir(worktreeDir);
       expect(result).not.toBeNull();
       expect(await fs.realpath(result as string)).toBe(path.join(realTempDir, ".git", "hooks"));
+    });
+
+    it("returns null when .git is a file without a gitdir pointer", async () => {
+      await fs.writeFile(path.join(tempDir, ".git"), "this is not a gitdir pointer\n", "utf-8");
+
+      expect(await getGitHooksDir(tempDir)).toBeNull();
+    });
+
+    it("falls back to the worktree gitdir when there is no commondir (older git)", async () => {
+      // A gitdir pointer to a real directory that has no `commondir` file.
+      const gitDir = path.join(tempDir, "fake-gitdir");
+      await fs.mkdir(gitDir, { recursive: true });
+      await fs.writeFile(path.join(tempDir, ".git"), `gitdir: ${gitDir}\n`, "utf-8");
+
+      const result = await getGitHooksDir(tempDir);
+      expect(result).toBe(path.join(gitDir, "hooks"));
+    });
+
+    it("resolves a relative gitdir pointer against the worktree", async () => {
+      const gitDir = path.join(tempDir, "nested", "gitdir");
+      await fs.mkdir(gitDir, { recursive: true });
+      await fs.writeFile(path.join(gitDir, "commondir"), "../../shared/.git\n", "utf-8");
+      await fs.writeFile(path.join(tempDir, ".git"), "gitdir: ./nested/gitdir\n", "utf-8");
+
+      const result = await getGitHooksDir(tempDir);
+      expect(result).toBe(path.join(tempDir, "shared", ".git", "hooks"));
+    });
+  });
+
+  describe("getCurrentBranch", () => {
+    it("returns null outside a git repository", async () => {
+      expect(await getCurrentBranch(tempDir)).toBeNull();
+      expect(await getCurrentBranch("/non/existent/path")).toBeNull();
+    });
+
+    it("returns null for a repo with no commits yet", async () => {
+      // `git rev-parse --abbrev-ref HEAD` fails on an unborn HEAD.
+      await simpleGit(tempDir).init();
+      expect(await getCurrentBranch(tempDir)).toBeNull();
+    });
+
+    it("returns the checked-out branch name", async () => {
+      const git = simpleGit(tempDir);
+      await git.init();
+      await git.addConfig("user.email", "test@example.com", false, "local");
+      await git.addConfig("user.name", "Test", false, "local");
+      await git.raw(["commit", "--allow-empty", "-m", "init"]);
+      await git.raw(["checkout", "-B", "feature/thing"]);
+
+      expect(await getCurrentBranch(tempDir)).toBe("feature/thing");
+    });
+
+    it("returns null on a detached HEAD", async () => {
+      const git = simpleGit(tempDir);
+      await git.init();
+      await git.addConfig("user.email", "test@example.com", false, "local");
+      await git.addConfig("user.name", "Test", false, "local");
+      await git.raw(["commit", "--allow-empty", "-m", "init"]);
+      const sha = (await git.revparse(["HEAD"])).trim();
+      await git.raw(["checkout", "--detach", sha]);
+
+      expect(await getCurrentBranch(tempDir)).toBeNull();
     });
   });
 
