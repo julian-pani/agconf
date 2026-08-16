@@ -70,6 +70,7 @@ const COMMANDS = {
       "--files",
       "--new",
       "--override",
+      "--scope",
       "-y",
       "--yes",
     ],

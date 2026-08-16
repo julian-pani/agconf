@@ -278,6 +278,11 @@ export async function checkUserScopeCommand(options: UserScopeCheckOptions): Pro
     for (const m of result.modified) console.log(`  ${pc.yellow("modified")} ${m.path}`);
     for (const m of result.missing) console.log(`  ${pc.yellow("missing ")} ${m.path}`);
     for (const g of result.ghosts) console.log(`  ${pc.yellow("orphaned")} ${g.path}`);
+    // Offer propose before sync: sync overwrites managed files, so pointing only
+    // at it would send the developer to discard the very edits they just made.
+    if (result.modified.length > 0) {
+      console.log(pc.dim("To send your edits to canonical: `agconf propose --scope user`."));
+    }
     console.log(pc.dim("Run `agconf sync --scope user` to restore company standards."));
     console.log();
   }

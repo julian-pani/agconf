@@ -7,6 +7,7 @@ import { addManagedMetadata } from "../../src/core/managed-content.js";
 import { buildAgentsMd } from "../../src/core/markers.js";
 import {
   applyProposedChanges,
+  DivergentInstructionsError,
   detectNewContent,
   detectProposedChanges,
   generateBranchName,
@@ -14,6 +15,9 @@ import {
   slugifyTitle,
 } from "../../src/core/propose.js";
 import { StaleBaseError } from "../../src/core/propose-merge.js";
+import { resolveLocalSource } from "../../src/core/source.js";
+import type { Target } from "../../src/core/targets.js";
+import { syncUserScope } from "../../src/core/user-scope.js";
 
 describe("propose", () => {
   describe("slugifyTitle", () => {
@@ -1570,6 +1574,294 @@ Style original.
         const result = await detectProposedChanges({ cwd: downstreamDir });
 
         expect(result.changes.map((c) => c.canonicalPath)).toEqual(["skills/demo/scripts/new.sh"]);
+      });
+    });
+  });
+
+  // ===========================================================================
+  // User scope (`--scope user`)
+  // ===========================================================================
+  // The local copy is the per-user projection under the home dir rather than a
+  // synced repo. Setup goes through the real `syncUserScope` so these exercise
+  // the actual on-disk layout (`~/.claude/CLAUDE.md`, `~/.agents/skills`, the
+  // `~/.agconf` store) instead of a hand-rolled approximation.
+  describe("detectProposedChanges (--scope user)", () => {
+    let home: string;
+    let canonicalDir: string;
+
+    const CANONICAL_INSTRUCTIONS = "# Company Standards\n\nAlways write tests.";
+    const SKILL_BODY = `---
+name: example
+description: An example skill.
+---
+
+Body line.
+`;
+    const RULE_BODY = `---
+title: Auth
+---
+
+# Auth
+
+Use OAuth.
+`;
+
+    function gitInit(dir: string, message = "init"): void {
+      execSync("git init", { cwd: dir, stdio: "ignore" });
+      execSync("git config user.email t@t.com", { cwd: dir, stdio: "ignore" });
+      execSync("git config user.name Test", { cwd: dir, stdio: "ignore" });
+      execSync(`git add -A && git commit -m ${message} --allow-empty`, {
+        cwd: dir,
+        stdio: "ignore",
+      });
+    }
+
+    /** Project canonical into `home` exactly as `sync --scope user` would. */
+    async function syncHome(targets: Target[] = ["claude", "codex"]): Promise<void> {
+      const source = await resolveLocalSource({ path: canonicalDir });
+      await syncUserScope(source, { targets, homeDir: home });
+    }
+
+    /** Rewrite part of a projected file, simulating a local edit at user scope. */
+    async function editHomeFile(relPath: string, from: string, to: string): Promise<void> {
+      const full = path.join(home, relPath);
+      const content = await fs.readFile(full, "utf-8");
+      await fs.writeFile(full, content.replace(from, to), "utf-8");
+    }
+
+    beforeEach(async () => {
+      home = await fs.mkdtemp(path.join(os.tmpdir(), "agconf-propose-home-"));
+      canonicalDir = await fs.mkdtemp(path.join(os.tmpdir(), "agconf-propose-ucanon-"));
+
+      await fs.mkdir(path.join(canonicalDir, "instructions"), { recursive: true });
+      await fs.mkdir(path.join(canonicalDir, "skills", "example"), { recursive: true });
+      await fs.mkdir(path.join(canonicalDir, "rules"), { recursive: true });
+      await fs.writeFile(
+        path.join(canonicalDir, "agconf.yaml"),
+        `version: "1.0.0"
+meta:
+  name: test-canonical
+content:
+  instructions: instructions/AGENTS.md
+  skills_dir: skills
+  rules_dir: rules
+targets:
+  - claude
+  - codex
+`,
+        "utf-8",
+      );
+      await fs.writeFile(
+        path.join(canonicalDir, "instructions", "AGENTS.md"),
+        CANONICAL_INSTRUCTIONS,
+        "utf-8",
+      );
+      await fs.writeFile(
+        path.join(canonicalDir, "skills", "example", "SKILL.md"),
+        SKILL_BODY,
+        "utf-8",
+      );
+      await fs.writeFile(path.join(canonicalDir, "rules", "auth.md"), RULE_BODY, "utf-8");
+      gitInit(canonicalDir);
+    });
+
+    afterEach(async () => {
+      await fs.rm(home, { recursive: true, force: true });
+      await fs.rm(canonicalDir, { recursive: true, force: true });
+    });
+
+    it("proposes an edited global block from the per-user instructions file", async () => {
+      await syncHome(["claude"]);
+      await editHomeFile(
+        ".claude/CLAUDE.md",
+        "Always write tests.",
+        "Always write tests and docs.",
+      );
+
+      const result = await detectProposedChanges({ scope: "user", home });
+
+      expect(result.changes).toHaveLength(1);
+      expect(result.changes[0]?.downstreamPath).toBe(".claude/CLAUDE.md");
+      expect(result.changes[0]?.canonicalPath).toBe("instructions/AGENTS.md");
+      expect(result.changes[0]?.type).toBe("agents-md-global");
+      expect(result.changes[0]?.content).toContain("Always write tests and docs.");
+    });
+
+    it("does not propose the personal layer that sits outside the managed block", async () => {
+      await syncHome(["claude"]);
+      await editHomeFile(
+        ".claude/CLAUDE.md",
+        "Always write tests.",
+        "Always write tests and docs.",
+      );
+      // The personal-layer line lives below the block and is the developer's own.
+      const claudeMd = path.join(home, ".claude", "CLAUDE.md");
+      await fs.writeFile(
+        `${claudeMd}`,
+        `${await fs.readFile(claudeMd, "utf-8")}\nMy private preference.\n`,
+        "utf-8",
+      );
+
+      const result = await detectProposedChanges({ scope: "user", home });
+
+      expect(String(result.changes[0]?.content)).not.toContain("My private preference.");
+      expect(String(result.changes[0]?.content)).not.toContain("USER.md");
+    });
+
+    it("proposes edited user-scope skills and rules to their canonical paths", async () => {
+      await syncHome(["claude"]);
+      await editHomeFile(
+        ".claude/skills/example/SKILL.md",
+        "Body line.",
+        "Body line, improved locally.",
+      );
+      await editHomeFile(".claude/rules/auth.md", "Use OAuth.", "Use OAuth 2.1.");
+
+      const result = await detectProposedChanges({ scope: "user", home });
+
+      expect(result.changes.map((c) => c.canonicalPath).sort()).toEqual([
+        "rules/auth.md",
+        "skills/example/SKILL.md",
+      ]);
+    });
+
+    it("maps an edited Codex user skill (~/.agents/skills) to the canonical skills dir", async () => {
+      await syncHome(["codex"]);
+      await editHomeFile(
+        ".agents/skills/example/SKILL.md",
+        "Body line.",
+        "Body line, improved locally.",
+      );
+
+      const result = await detectProposedChanges({ scope: "user", home });
+
+      const skill = result.changes.find((c) => c.type === "skill");
+      expect(skill?.downstreamPath).toBe(".agents/skills/example/SKILL.md");
+      expect(skill?.canonicalPath).toBe("skills/example/SKILL.md");
+    });
+
+    it("collapses an identical block edit made in both harness files to one change", async () => {
+      await syncHome(["claude", "codex"]);
+      for (const file of [".claude/CLAUDE.md", ".codex/AGENTS.md"]) {
+        await editHomeFile(file, "Always write tests.", "Always write tests and docs.");
+      }
+
+      const result = await detectProposedChanges({ scope: "user", home });
+
+      // Claude wins as the proposal source; the Codex copy carried the same edit.
+      expect(result.changes.map((c) => c.downstreamPath)).toEqual([".claude/CLAUDE.md"]);
+      expect(result.dropped).toContain(".codex/AGENTS.md");
+    });
+
+    it("refuses when the two harness files drifted apart, instead of shipping one", async () => {
+      await syncHome(["claude", "codex"]);
+      await editHomeFile(".claude/CLAUDE.md", "Always write tests.", "Claude-only edit.");
+      await editHomeFile(".codex/AGENTS.md", "Always write tests.", "Codex-only edit.");
+
+      await expect(detectProposedChanges({ scope: "user", home })).rejects.toThrow(
+        DivergentInstructionsError,
+      );
+    });
+
+    it("lets --files select one side of a divergence", async () => {
+      await syncHome(["claude", "codex"]);
+      await editHomeFile(".claude/CLAUDE.md", "Always write tests.", "Claude-only edit.");
+      await editHomeFile(".codex/AGENTS.md", "Always write tests.", "Codex-only edit.");
+
+      const result = await detectProposedChanges({
+        scope: "user",
+        home,
+        files: ["^\\.claude/CLAUDE\\.md$"],
+      });
+
+      expect(result.changes.map((c) => c.downstreamPath)).toEqual([".claude/CLAUDE.md"]);
+      expect(String(result.changes[0]?.content)).toContain("Claude-only edit.");
+    });
+
+    it("reports the store as the origin, not the home dir's own git repo", async () => {
+      // The dotfiles case: ~ is itself a git repo, which must not be reported as
+      // the origin of a company-standards proposal.
+      gitInit(home, "dotfiles");
+      await syncHome(["claude"]);
+      await editHomeFile(
+        ".claude/CLAUDE.md",
+        "Always write tests.",
+        "Always write tests and docs.",
+      );
+
+      const result = await detectProposedChanges({ scope: "user", home });
+
+      expect(result.downstream.scope).toBe("user");
+      expect(result.downstream.repoName).toBeUndefined();
+      // The ~/.agconf store's HEAD, not the dotfiles repo's.
+      const storeHead = execSync("git rev-parse HEAD", {
+        cwd: path.join(home, ".agconf"),
+        encoding: "utf-8",
+      }).trim();
+      expect(result.downstream.commitSha).toBe(storeHead);
+    });
+
+    it("reconciles against the store lockfile's commit_sha (drops an upstream-only change)", async () => {
+      await syncHome(["claude"]);
+      // Canonical moves on; the local copy was never touched.
+      await fs.writeFile(
+        path.join(canonicalDir, "rules", "auth.md"),
+        RULE_BODY.replace("Use OAuth.", "Use OAuth, upstream edit."),
+        "utf-8",
+      );
+      execSync("git add -A && git commit -m upstream", { cwd: canonicalDir, stdio: "ignore" });
+      // A local edit elsewhere, so detection has something to ship.
+      await editHomeFile(
+        ".claude/skills/example/SKILL.md",
+        "Body line.",
+        "Body line, improved locally.",
+      );
+
+      const result = await detectProposedChanges({ scope: "user", home });
+
+      expect(result.changes.map((c) => c.canonicalPath)).toEqual(["skills/example/SKILL.md"]);
+      expect(result.baseSha).toBeTruthy();
+    });
+
+    it("errors with a user-scope hint when there is no store lockfile", async () => {
+      await expect(detectProposedChanges({ scope: "user", home })).rejects.toThrow(
+        /sync --scope user/,
+      );
+    });
+
+    describe("detectNewContent (--scope user)", () => {
+      /** A private skill the developer authored — never company content. */
+      async function writePersonalSkill(name: string): Promise<void> {
+        const dir = path.join(home, ".claude", "skills", name);
+        await fs.mkdir(dir, { recursive: true });
+        await fs.writeFile(
+          path.join(dir, "SKILL.md"),
+          `---\nname: ${name}\ndescription: Private notes.\n---\n\nSecret stuff.\n`,
+          "utf-8",
+        );
+      }
+
+      it("refuses a blanket scan of the developer's personal harness dirs", async () => {
+        await syncHome(["claude"]);
+        await writePersonalSkill("my-personal-skill");
+
+        await expect(detectNewContent({ scope: "user", home })).rejects.toThrow(/requires a path/i);
+      });
+
+      it("proposes only the explicitly selected item", async () => {
+        await syncHome(["claude"]);
+        await writePersonalSkill("my-personal-skill");
+        await writePersonalSkill("team-skill");
+
+        const result = await detectNewContent({
+          scope: "user",
+          home,
+          path: ".claude/skills/team-skill",
+        });
+
+        expect(result.candidates.map((c) => c.name)).toEqual(["team-skill"]);
+        expect(result.candidates[0]?.canonicalPath).toBe("skills/team-skill");
+        expect(result.autoSelect).toBe(true);
       });
     });
   });

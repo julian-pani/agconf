@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   getSkillsDir,
   getTargetConfig,
+  getUserInstructionsFile,
   isValidTarget,
   parseTargets,
   SUPPORTED_TARGETS,
@@ -171,6 +172,7 @@ describe("getTargetConfig", () => {
       dir: ".claude",
       skillsDir: ".claude/skills",
       instructionsFile: "CLAUDE.md",
+      userInstructionsFile: ".claude/CLAUDE.md",
     });
   });
 
@@ -180,6 +182,7 @@ describe("getTargetConfig", () => {
       dir: ".codex",
       skillsDir: ".agents/skills",
       instructionsFile: null,
+      userInstructionsFile: ".codex/AGENTS.md",
     });
   });
 
@@ -232,6 +235,32 @@ describe("getSkillsDir", () => {
 
   it("falls back to a dot-target skills dir for unknown targets", () => {
     expect(getSkillsDir("future")).toBe(".future/skills");
+  });
+});
+
+// =============================================================================
+// getUserInstructionsFile tests
+// =============================================================================
+
+describe("getUserInstructionsFile", () => {
+  it("returns the per-user Claude memory file", () => {
+    expect(getUserInstructionsFile("claude")).toBe(".claude/CLAUDE.md");
+  });
+
+  it("returns the per-user Codex instructions file", () => {
+    expect(getUserInstructionsFile("codex")).toBe(".codex/AGENTS.md");
+  });
+
+  it("is distinct from the repo-scope instructions file (root AGENTS.md)", () => {
+    // The whole reason propose needs a scope-aware resolver: at user scope the
+    // global block is NOT in <dir>/AGENTS.md.
+    for (const target of SUPPORTED_TARGETS) {
+      expect(getUserInstructionsFile(target)).not.toBe("AGENTS.md");
+    }
+  });
+
+  it("falls back to a dot-target AGENTS.md for unknown targets", () => {
+    expect(getUserInstructionsFile("future")).toBe(".future/AGENTS.md");
   });
 });
 
