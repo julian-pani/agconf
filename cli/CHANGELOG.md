@@ -1,3 +1,9 @@
+## [0.22.2](https://github.com/julian-pani/agconf/compare/v0.22.1...v0.22.2) (2026-08-16)
+
+### Bug Fixes
+
+* **propose:** dedupe skill names before asset diffing ([a276f3f](https://github.com/julian-pani/agconf/commit/a276f3f61bf5df97b4486f7a9521123193fc20ab))
+
 ## [0.22.1](https://github.com/julian-pani/agconf/compare/v0.22.0...v0.22.1) (2026-08-16)
 
 ### Bug Fixes
