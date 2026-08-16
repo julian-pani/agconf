@@ -116,7 +116,7 @@ GitHub Actions workflows are created automatically to keep downstream repos in s
 | `autosync` | Keep the per-user store fresh automatically (runs at session start; opt-in) |
 | `session-check` | Advisory cross-scope duplication + integrity check, run at session start |
 | `compile` | Compile installable Claude Code / Codex plugins + marketplace from canonical content (canonical repos) |
-| `propose` | Propose local changes (or new skills/rules/agents via `--new`) back to canonical as a PR — **repo scope only** |
+| `propose` | Propose local changes (or new skills/rules/agents via `--new`) back to canonical as a PR (`--scope user` proposes from the per-user projection) |
 | `upgrade-cli` | Upgrade the CLI to latest version (auto-detects package manager) |
 | `canonical init` | Scaffold a new canonical repository |
 | `config` | Manage global CLI configuration |
@@ -203,12 +203,12 @@ agconf autosync               # run once now (throttled; --force to bypass)
 agconf autosync --disable     # turn off (or --uninstall); --enable to turn back on
 ```
 
-**What user scope doesn't do (yet).** `agconf propose` is repo scope only, so
-edits you make to the projected files in `~/.claude` can't be sent back to
-canonical from there — propose them from a repo that syncs the same content.
-Generated CI workflows and the pre-commit hook are also repo-only (there's no
-repo and no commit to gate), and MCP servers are delivered via plugins rather
-than user scope. See the
+**Sending changes back.** Edits you make to the projected files can be proposed
+to canonical with [`agconf propose --scope user`](#proposing-from-user-scope).
+
+**What user scope doesn't do.** Generated CI workflows and the pre-commit hook
+are repo-only (there's no repo and no commit to gate), and MCP servers are
+delivered via plugins rather than user scope. See the
 [feature × mode matrix](cli/docs/DISTRIBUTION_SCOPES.md#16-feature--mode-matrix)
 and the [gap list](cli/docs/DISTRIBUTION_SCOPES.md#17-known-gaps).
 
@@ -292,7 +292,23 @@ agconf propose --dry-run
 
 Once a proposed item is merged into canonical, the next `agconf sync` adopts your local copy as managed automatically — no need to re-run `propose --new`.
 
-`propose` works from a **synced repo** (it reads that repo's `.agconf/lockfile.json`). It has no `--scope user`, so changes made to the per-user projection in `~/.claude` / `~/.codex` can't be proposed from there — see [§17.1](cli/docs/DISTRIBUTION_SCOPES.md#171-propose-at-user-scope-the-gap).
+#### Proposing from user scope
+
+If your copy of the company content lives in `~/.claude` / `~/.codex` (see [user scope](#user-scope---scope-user)) rather than in a repo, propose from there:
+
+```bash
+# Edits you made to the projected skills, rules, agents, or the company block
+agconf propose --scope user
+
+# New content you authored — a path is required at user scope
+agconf propose --scope user --new ~/.claude/skills/my-new-skill
+```
+
+It reads the `~/.agconf` store lockfile and behaves exactly like the repo flow, with three user-scope specifics:
+
+- **`--new` requires a path.** `~/.claude` also holds your *personal* skills, agents and rules; agconf will not offer them to the company repo wholesale.
+- **The company block exists once per harness** (`~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`). An identical edit in both is proposed once; if they've drifted apart, propose stops and asks you to reconcile (or pick one with `--files`).
+- **Your personal layer is never proposed.** `~/.agconf/USER.md` and anything outside the managed block stay local.
 
 #### Rebasing onto canonical
 

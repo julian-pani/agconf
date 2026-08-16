@@ -14,6 +14,12 @@ export interface TargetConfig {
   skillsDir: string;
   /** Instructions file name if target needs one (only Claude uses this) */
   instructionsFile: string | null;
+  /**
+   * File carrying this target's *user-scope* instructions, relative to the home
+   * directory. At repo scope the global block lives in the root `AGENTS.md`; at
+   * user scope each harness reads its own per-user file instead.
+   */
+  userInstructionsFile: string;
 }
 
 export const TARGET_CONFIGS: Record<Target, TargetConfig> = {
@@ -21,11 +27,13 @@ export const TARGET_CONFIGS: Record<Target, TargetConfig> = {
     dir: ".claude",
     skillsDir: ".claude/skills",
     instructionsFile: "CLAUDE.md",
+    userInstructionsFile: ".claude/CLAUDE.md",
   },
   codex: {
     dir: ".codex",
     skillsDir: ".agents/skills",
     instructionsFile: null, // Codex reads AGENTS.md directly
+    userInstructionsFile: ".codex/AGENTS.md",
   },
 };
 
@@ -66,4 +74,17 @@ export function getTargetConfig(target: Target): TargetConfig {
  */
 export function getSkillsDir(target: string): string {
   return isValidTarget(target) ? TARGET_CONFIGS[target].skillsDir : `.${target}/skills`;
+}
+
+/**
+ * Resolve a target's user-scope instructions file, relative to the home dir.
+ *
+ * Loose `string` for the same reason as {@link getSkillsDir} — callers work with
+ * the untyped `targets` arrays read from lockfiles. Unknown targets fall back to
+ * the conventional `.{target}/AGENTS.md`.
+ */
+export function getUserInstructionsFile(target: string): string {
+  return isValidTarget(target)
+    ? TARGET_CONFIGS[target].userInstructionsFile
+    : `.${target}/AGENTS.md`;
 }

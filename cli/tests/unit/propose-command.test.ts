@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { proposeCommand } from "../../src/commands/propose.js";
 import { addManagedMetadata } from "../../src/core/managed-content.js";
 import * as proposeCore from "../../src/core/propose.js";
+import { resolveLocalSource } from "../../src/core/source.js";
+import { syncUserScope } from "../../src/core/user-scope.js";
 
 /**
  * Command-level orchestration tests for `propose --new`. Covers the non-apply
@@ -362,5 +364,129 @@ ORIGINAL body.
     const proposed = applySpy.mock.calls[0]?.[0];
     expect(proposed?.changes.map((c) => c.canonicalPath)).toEqual(["skills/my-skill/SKILL.md"]);
     expect(String(proposed?.changes[0]?.content)).toContain("TAMPERED body.");
+  });
+});
+
+describe("proposeCommand --scope", () => {
+  let home: string;
+  let canonicalDir: string;
+  let mockExit: ReturnType<typeof vi.spyOn>;
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  let stdoutSpy: ReturnType<typeof vi.spyOn>;
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+
+  const CANONICAL_INSTRUCTIONS = "# Company Standards\n\nAlways write tests.";
+
+  beforeEach(async () => {
+    home = await fs.mkdtemp(path.join(os.tmpdir(), "agconf-propose-scope-home-"));
+    canonicalDir = await fs.mkdtemp(path.join(os.tmpdir(), "agconf-propose-scope-canon-"));
+
+    await fs.mkdir(path.join(canonicalDir, "instructions"), { recursive: true });
+    await fs.mkdir(path.join(canonicalDir, "skills"), { recursive: true });
+    await fs.writeFile(
+      path.join(canonicalDir, "instructions", "AGENTS.md"),
+      CANONICAL_INSTRUCTIONS,
+      "utf-8",
+    );
+    execSync("git init", { cwd: canonicalDir, stdio: "ignore" });
+    execSync("git config user.email t@t.com", { cwd: canonicalDir, stdio: "ignore" });
+    execSync("git config user.name T", { cwd: canonicalDir, stdio: "ignore" });
+    execSync("git add -A && git commit -m init", { cwd: canonicalDir, stdio: "ignore" });
+
+    mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit called");
+    }) as () => never);
+    logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await fs.rm(home, { recursive: true, force: true });
+    await fs.rm(canonicalDir, { recursive: true, force: true });
+  });
+
+  const output = () =>
+    [
+      ...logSpy.mock.calls.map((c) => c.join(" ")),
+      ...stdoutSpy.mock.calls.map((c) => String(c[0])),
+      ...errorSpy.mock.calls.map((c) => c.join(" ")),
+    ].join("\n");
+
+  /** Project canonical into `home` exactly as `sync --scope user` would. */
+  async function syncHome(): Promise<void> {
+    const source = await resolveLocalSource({ path: canonicalDir });
+    await syncUserScope(source, { targets: ["claude"], homeDir: home });
+  }
+
+  it("rejects an unknown --scope instead of falling back to the repo", async () => {
+    await expect(proposeCommand({ scope: "usr", home })).rejects.toThrow("process.exit called");
+    expect(mockExit).toHaveBeenCalledWith(1);
+  });
+
+  it("detects user-scope changes and reports them in dry-run", async () => {
+    await syncHome();
+    const claudeMd = path.join(home, ".claude", "CLAUDE.md");
+    await fs.writeFile(
+      claudeMd,
+      (await fs.readFile(claudeMd, "utf-8")).replace(
+        "Always write tests.",
+        "Always write tests and docs.",
+      ),
+      "utf-8",
+    );
+    const applySpy = vi.spyOn(proposeCore, "applyProposedChanges");
+
+    await expect(proposeCommand({ scope: "user", home, dryRun: true })).resolves.toBeUndefined();
+
+    expect(mockExit).not.toHaveBeenCalled();
+    expect(applySpy).not.toHaveBeenCalled();
+    const text = output();
+    expect(text).toContain("--scope user");
+    expect(text).toContain(".claude/CLAUDE.md");
+    expect(text).toContain("instructions/AGENTS.md");
+  });
+
+  it("exits 1 with guidance when --new is used at user scope without a path", async () => {
+    await syncHome();
+
+    await expect(proposeCommand({ scope: "user", home, new: true })).rejects.toThrow(
+      "process.exit called",
+    );
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(output()).toContain("requires a path");
+  });
+
+  it("exits 1 and explains when the two harness files drifted apart", async () => {
+    const source = await resolveLocalSource({ path: canonicalDir });
+    await syncUserScope(source, { targets: ["claude", "codex"], homeDir: home });
+    for (const [rel, edit] of [
+      [".claude/CLAUDE.md", "Claude-only edit."],
+      [".codex/AGENTS.md", "Codex-only edit."],
+    ] as const) {
+      const full = path.join(home, rel);
+      await fs.writeFile(
+        full,
+        (await fs.readFile(full, "utf-8")).replace("Always write tests.", edit),
+        "utf-8",
+      );
+    }
+
+    await expect(proposeCommand({ scope: "user", home })).rejects.toThrow("process.exit called");
+    expect(mockExit).toHaveBeenCalledWith(1);
+    const text = output();
+    expect(text).toContain(".claude/CLAUDE.md");
+    expect(text).toContain(".codex/AGENTS.md");
+    expect(text).toContain("--files");
+  });
+
+  it("reports nothing to propose when the user-scope projection is untouched", async () => {
+    await syncHome();
+
+    await expect(proposeCommand({ scope: "user", home })).resolves.toBeUndefined();
+
+    expect(mockExit).not.toHaveBeenCalled();
+    expect(output()).toContain("No modified managed files found");
   });
 });

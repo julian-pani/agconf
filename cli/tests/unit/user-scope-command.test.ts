@@ -95,6 +95,20 @@ describe("user-scope commands", () => {
     expect(await checkUserScopeCommand({ home })).toBe(true);
   });
 
+  it("offers propose alongside sync when the drift is a local edit", async () => {
+    await syncUserScopeCommand({ scope: "user", local: canonical, home, target: ["claude"] });
+    const claudeFile = path.join(home, ".claude", "CLAUDE.md");
+    const content = await fs.readFile(claudeFile, "utf-8");
+    await fs.writeFile(claudeFile, content.replace("Be excellent.", "My edit."), "utf-8");
+
+    expect(await checkUserScopeCommand({ home })).toBe(true);
+
+    // Pointing only at sync would tell the developer to discard the edit.
+    const out = consoleLogSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(out).toContain("propose --scope user");
+    expect(out).toContain("sync --scope user");
+  });
+
   describe("probeUserScopeFreshness", () => {
     const seedGithubStore = (pinnedVersion: string) =>
       writeLockfile(home, {

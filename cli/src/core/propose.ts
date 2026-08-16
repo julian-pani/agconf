@@ -1,5 +1,6 @@
 import { exec } from "node:child_process";
 import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 import { promisify } from "node:util";
 import fg from "fast-glob";
@@ -37,9 +38,61 @@ import {
   StaleBaseError,
   verifyBaseCommit,
 } from "./propose-merge.js";
-import { getSkillsDir } from "./targets.js";
+import { getSkillsDir, getUserInstructionsFile } from "./targets.js";
+import { getUserPaths } from "./user-scope.js";
 
 const execAsync = promisify(exec);
+
+/**
+ * Where the local copy being proposed lives: a synced repo (`repo`, the
+ * default) or the per-user projection under the home dir (`user`).
+ *
+ * User scope works because every per-user path is exactly
+ * `<homeDir>/<the repo-scope relative path>` — the same trick `user-scope.ts`
+ * uses to reuse the repo-scope sync functions. So detection, canonical path
+ * mapping and the three-way rebase are shared verbatim; only the target dir,
+ * the instructions file(s), and the PR provenance differ.
+ */
+export type ProposeScope = "repo" | "user";
+
+/** Where to look for the local copy, per scope. */
+function resolveProposeDir(options: {
+  scope?: ProposeScope | undefined;
+  cwd?: string | undefined;
+  home?: string | undefined;
+}): string {
+  if (options.scope === "user") return options.home ?? os.homedir();
+  return options.cwd ?? process.cwd();
+}
+
+/**
+ * Files carrying the global block, relative to the target dir.
+ *
+ * Repo scope has exactly one (the root `AGENTS.md`). User scope projects the
+ * same block into each harness's own per-user file, so every synced target
+ * contributes one — Claude first, making it the preferred proposal source when
+ * both copies changed identically.
+ */
+function instructionsFilesForScope(scope: ProposeScope, targets: string[]): string[] {
+  if (scope !== "user") return ["AGENTS.md"];
+  const claudeFirst = [...targets].sort((a, b) => Number(b === "claude") - Number(a === "claude"));
+  return [...new Set(claudeFirst.map(getUserInstructionsFile))];
+}
+
+/**
+ * Raised when the same company block drifted *differently* in two per-user
+ * harness files, so there is no single edit to propose. Shipping one silently
+ * would drop the other — the same silent-loss failure `StaleBaseError` guards
+ * against upstream.
+ */
+export class DivergentInstructionsError extends Error {
+  constructor(public readonly paths: string[]) {
+    super(
+      `Your instructions block was edited differently in ${paths.length} files (${paths.join(", ")}) — propose one of them with --files`,
+    );
+    this.name = "DivergentInstructionsError";
+  }
+}
 
 /**
  * A single proposed change mapped from downstream to canonical.
@@ -66,9 +119,13 @@ export interface ProposedChange {
 }
 
 export interface ProposeOptions {
-  /** Working directory (default: process.cwd()) */
+  /** Working directory (default: process.cwd()). Repo scope only. */
   cwd?: string | undefined;
-  /** Only propose specific files (glob patterns relative to cwd) */
+  /** Distribution scope of the local copy (default: "repo"). */
+  scope?: ProposeScope | undefined;
+  /** Home directory for `scope: "user"` (default: os.homedir()). For testability. */
+  home?: string | undefined;
+  /** Only propose specific files (glob patterns relative to the target dir) */
   files?: string[] | undefined;
   /**
    * Resolve conflicts by taking the local copy instead of aborting.
@@ -78,11 +135,13 @@ export interface ProposeOptions {
   override?: boolean | undefined;
 }
 
-/** Context about the downstream repo where changes originated */
+/** Context about where the proposed changes originated */
 export interface DownstreamContext {
-  /** Repository name (basename of git root) */
+  /** Scope the changes came from (default: "repo"). */
+  scope?: ProposeScope | undefined;
+  /** Repository name (basename of git root). Repo scope only. */
   repoName?: string | undefined;
-  /** Current commit SHA */
+  /** Current commit SHA — the repo's HEAD, or the `~/.agconf` store's at user scope */
   commitSha?: string | undefined;
   /** Git author name */
   authorName?: string | undefined;
@@ -157,11 +216,16 @@ function resolveCanonicalDirs(config: CanonicalRepoConfig | undefined): Canonica
  * `ProposeResult.canonicalCloneDir` so `applyProposedChanges` can reuse it.
  */
 export async function detectProposedChanges(options: ProposeOptions = {}): Promise<ProposeResult> {
-  const targetDir = options.cwd ?? process.cwd();
+  const scope: ProposeScope = options.scope ?? "repo";
+  const targetDir = resolveProposeDir(options);
 
   const lockfileResult = await readLockfile(targetDir);
   if (!lockfileResult) {
-    throw new Error("No lockfile found. Run 'agconf init' first.");
+    throw new Error(
+      scope === "user"
+        ? "Not synced at user scope. Run 'agconf sync --scope user' first."
+        : "No lockfile found. Run 'agconf init' first.",
+    );
   }
 
   const { lockfile } = lockfileResult;
@@ -169,9 +233,10 @@ export async function detectProposedChanges(options: ProposeOptions = {}): Promi
   const markerPrefix = lockfile.content.marker_prefix;
   const source = lockfile.source;
 
-  const checkOptions: CheckManagedFilesOptions = markerPrefix
-    ? { markerPrefix, metadataPrefix: markerPrefix }
-    : {};
+  const checkOptions: CheckManagedFilesOptions = {
+    ...(markerPrefix ? { markerPrefix, metadataPrefix: markerPrefix } : {}),
+    instructionsFiles: instructionsFilesForScope(scope, targets),
+  };
 
   const allFiles = await checkAllManagedFiles(targetDir, targets, checkOptions);
 
@@ -185,11 +250,22 @@ export async function detectProposedChanges(options: ProposeOptions = {}): Promi
   const matchesFilter = (relPath: string): boolean =>
     filterRegexes.length === 0 || filterRegexes.some((re) => re.test(relPath));
 
-  const filesToPropose = allFiles.filter((f) => {
+  const preFilter = allFiles.filter((f) => {
     if (!f.hasChanges) return false;
     if (f.type === "skill" && f.contentChanged === false) return false;
     return matchesFilter(f.path);
   });
+
+  // User scope projects one global block per target, so an edit to the shared
+  // company block surfaces once per harness file. Collapse them to a single
+  // proposal (or refuse, if they drifted apart).
+  const instructionsDropped: string[] = [];
+  const filesToPropose = await collapseInstructionFiles(
+    targetDir,
+    preFilter,
+    markerPrefix,
+    instructionsDropped,
+  );
 
   // Non-SKILL.md files inside managed skill dirs are diffed against canonical.
   // Deduped: checkAllManagedFiles reports a skill once per target it is synced
@@ -231,7 +307,7 @@ export async function detectProposedChanges(options: ProposeOptions = {}): Promi
 
   const changes: ProposedChange[] = [];
   const conflicts: ProposeConflict[] = [];
-  const dropped: string[] = [];
+  const dropped: string[] = [...instructionsDropped];
 
   for (const file of filesToPropose) {
     const change = await buildProposedChange(targetDir, file, markerPrefix, dirs);
@@ -270,8 +346,8 @@ export async function detectProposedChanges(options: ProposeOptions = {}): Promi
     throw new StaleBaseError(conflicts);
   }
 
-  // Gather downstream context
-  const downstream = await getDownstreamContext(targetDir);
+  // Gather originating context
+  const downstream = await getOriginContext(scope, targetDir);
 
   return {
     changes,
@@ -282,6 +358,47 @@ export async function detectProposedChanges(options: ProposeOptions = {}): Promi
     baseSha: source.commit_sha,
     dropped,
   };
+}
+
+/**
+ * Reduce the modified instruction files to at most one proposable entry.
+ *
+ * At repo scope there is only ever one, so this is a pass-through. At user scope
+ * the same company block is projected into every target's per-user file, so
+ * editing it shows up once per harness. Identical edits collapse to the first
+ * file (Claude, per `instructionsFilesForScope`) and the rest are reported as
+ * dropped; differing edits raise {@link DivergentInstructionsError} rather than
+ * silently shipping one and discarding the other.
+ *
+ * `--files` is applied before this runs, so a user who really does want one
+ * specific copy can select it and bypass the divergence check.
+ */
+async function collapseInstructionFiles(
+  targetDir: string,
+  files: ManagedFileCheckResult[],
+  markerPrefix: string | undefined,
+  dropped: string[],
+): Promise<ManagedFileCheckResult[]> {
+  const instructions = files.filter((f) => f.type === "agents");
+  if (instructions.length <= 1) return files;
+
+  const markerOptions = markerPrefix ? { prefix: markerPrefix } : {};
+  const blocks = await Promise.all(
+    instructions.map(async (f) => {
+      const content = await fs.readFile(path.join(targetDir, f.path), "utf-8");
+      const parsed = parseAgentsMd(content, markerOptions);
+      return parsed.globalBlock ? stripMetadataComments(parsed.globalBlock) : null;
+    }),
+  );
+
+  const [first, ...rest] = blocks;
+  if (rest.some((b) => b !== first)) {
+    throw new DivergentInstructionsError(instructions.map((f) => f.path));
+  }
+
+  const [keep, ...redundant] = instructions;
+  dropped.push(...redundant.map((f) => f.path));
+  return files.filter((f) => f.type !== "agents" || f === keep);
 }
 
 /** Everything reconciliation needs to compare a change against canonical. */
@@ -694,11 +811,25 @@ export interface NewContentCandidate {
 }
 
 interface DetectNewContentOptions {
-  /** Working directory (default: process.cwd()) */
+  /** Working directory (default: process.cwd()). Repo scope only. */
   cwd?: string | undefined;
-  /** Restrict discovery to this path (relative to cwd or absolute) within a managed dir */
+  /** Distribution scope of the local copy (default: "repo"). */
+  scope?: ProposeScope | undefined;
+  /** Home directory for `scope: "user"` (default: os.homedir()). For testability. */
+  home?: string | undefined;
+  /** Restrict discovery to this path (relative to the target dir or absolute) within a managed dir */
   path?: string | undefined;
 }
+
+/**
+ * At user scope the managed dirs are the developer's *personal* ones
+ * (`~/.claude/skills` holds their own skills alongside the company's), so a
+ * blanket scan would offer private content up to the company repo. Repo scope
+ * has no such mixing: `.claude/skills` in a synced repo is project content.
+ */
+const USER_SCOPE_NEW_REQUIRES_PATH =
+  "`--new` at user scope requires a path (e.g. `agconf propose --new --scope user ~/.claude/skills/my-skill`) — " +
+  "~/.claude also holds your personal skills, agents and rules, which must not be proposed to canonical wholesale.";
 
 /**
  * Local content that already exists in canonical AND is byte-identical to it
@@ -769,11 +900,21 @@ interface RawNewCandidate {
 export async function detectNewContent(
   options: DetectNewContentOptions = {},
 ): Promise<DetectNewContentResult> {
-  const targetDir = options.cwd ?? process.cwd();
+  const scope: ProposeScope = options.scope ?? "repo";
+  const targetDir = resolveProposeDir(options);
+
+  // Refuse a blanket sweep of the developer's personal harness dirs.
+  if (scope === "user" && !options.path) {
+    throw new Error(USER_SCOPE_NEW_REQUIRES_PATH);
+  }
 
   const lockfileResult = await readLockfile(targetDir);
   if (!lockfileResult) {
-    throw new Error("No lockfile found. Run 'agconf init' first.");
+    throw new Error(
+      scope === "user"
+        ? "Not synced at user scope. Run 'agconf sync --scope user' first."
+        : "No lockfile found. Run 'agconf init' first.",
+    );
   }
 
   const { lockfile } = lockfileResult;
@@ -782,7 +923,7 @@ export async function detectNewContent(
   const source = lockfile.source;
   const metaOpts: MetaOpts = markerPrefix ? { metadataPrefix: markerPrefix } : {};
 
-  const downstream = await getDownstreamContext(targetDir);
+  const downstream = await getOriginContext(scope, targetDir);
 
   // Pass 1: discover unmanaged local candidates (no canonical access yet).
   let raws = await discoverRawNewCandidates(targetDir, targets, metaOpts);
@@ -1242,12 +1383,31 @@ export function generateBranchName(title: string): string {
 }
 
 /**
- * Gather context about the downstream repository.
+ * Gather context about where the proposal came from.
+ *
+ * At user scope the target dir is the developer's *home* directory, so running
+ * git there is wrong: usually it isn't a repo at all, and for anyone whose `~`
+ * is a dotfiles repo it would report that repo's name and HEAD as the origin of
+ * a company-standards proposal. The `~/.agconf` store is the honest answer —
+ * it's the git repo that actually tracks the projected content.
  */
-async function getDownstreamContext(targetDir: string): Promise<DownstreamContext> {
+async function getOriginContext(
+  scope: ProposeScope,
+  targetDir: string,
+): Promise<DownstreamContext> {
+  if (scope === "user") {
+    // The store dir's basename (".agconf") says nothing useful — the scope does.
+    const { repoName: _ignored, ...ctx } = await readGitContext(getUserPaths(targetDir).storeDir);
+    return { scope, ...ctx };
+  }
+  return { scope, ...(await readGitContext(targetDir)) };
+}
+
+/** Best-effort repo name / HEAD / author for a directory. Missing info is fine. */
+async function readGitContext(dir: string): Promise<DownstreamContext> {
   const ctx: DownstreamContext = {};
   try {
-    const git: SimpleGit = simpleGit(targetDir);
+    const git: SimpleGit = simpleGit(dir);
     const isRepo = await git.checkIsRepo();
     if (!isRepo) return ctx;
 
@@ -1288,11 +1448,20 @@ function buildPrBody(result: ProposeResult, options: ApplyOptions): string {
   }
 
   lines.push("", "## Origin", "");
-  if (downstream.repoName) {
-    lines.push(`- **Repository:** ${downstream.repoName}`);
-  }
-  if (downstream.commitSha) {
-    lines.push(`- **Commit:** ${downstream.commitSha.slice(0, 12)}`);
+  if (downstream.scope === "user") {
+    // No repo to name: these edits were made to the per-user projection, and
+    // the ~/.agconf store is the git repo that tracks it.
+    lines.push("- **Scope:** user (`~/.claude`, `~/.codex` via the `~/.agconf` store)");
+    if (downstream.commitSha) {
+      lines.push(`- **Store commit:** ${downstream.commitSha.slice(0, 12)}`);
+    }
+  } else {
+    if (downstream.repoName) {
+      lines.push(`- **Repository:** ${downstream.repoName}`);
+    }
+    if (downstream.commitSha) {
+      lines.push(`- **Commit:** ${downstream.commitSha.slice(0, 12)}`);
+    }
   }
   if (result.baseSha) {
     lines.push(`- **Synced from canonical:** ${result.baseSha.slice(0, 12)}`);

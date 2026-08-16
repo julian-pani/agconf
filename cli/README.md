@@ -27,8 +27,9 @@ Full documentation available on GitHub: https://github.com/julian-pani/agconf
 | `sync --scope user` | Project the company instructions once per machine into `~/.claude`/`~/.codex` (git-tracked `~/.agconf` store) | `agconf sync --scope user --source org/standards` |
 | `autosync` | Keep the per-user store fresh automatically (runs at session start; opt-in) | `agconf autosync --install` |
 | `session-check` | Advisory cross-scope duplication + integrity check (SessionStart hook) | `agconf session-check --install-hook` |
-| `propose` | Propose local changes to managed content back to the canonical repo (opens a PR), rebased onto canonical HEAD. Repo scope only — no `--scope user` | `agconf propose` |
-| `propose --new [path]` | Propose new (unmanaged) skills/rules/agents upstream; optional path filters discovery | `agconf propose --new .claude/skills/my-skill` |
+| `propose` | Propose local changes to managed content back to the canonical repo (opens a PR), rebased onto canonical HEAD | `agconf propose` |
+| `propose --scope user` | Propose edits made to the per-user projection (`~/.claude`, `~/.codex`) instead of a repo | `agconf propose --scope user` |
+| `propose --new [path]` | Propose new (unmanaged) skills/rules/agents upstream; optional path filters discovery (**required** at user scope) | `agconf propose --new .claude/skills/my-skill` |
 | `propose --override` | Resolve conflicts with canonical by taking the local copy instead of aborting | `agconf propose --override` |
 | `upgrade-cli` | Upgrade the CLI to latest version (auto-detects package manager) | `agconf upgrade-cli` |
 | `canonical init` | Scaffold a new canonical repository | `agconf canonical init` |

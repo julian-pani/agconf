@@ -62,18 +62,12 @@ import {
   syncRules,
   syncSkillsToTarget,
 } from "./sync.js";
-import { getSkillsDir, getTargetConfig, type Target } from "./targets.js";
+import { getSkillsDir, getTargetConfig, getUserInstructionsFile, type Target } from "./targets.js";
 
 const execFileAsync = promisify(execFile);
 
 /** How many timestamped backup directories to retain in the store. */
 const MAX_BACKUPS = 10;
-
-/** Per-user harness instruction file, relative to the home directory. */
-const USER_INSTRUCTION_FILE: Record<Target, string> = {
-  claude: path.join(".claude", "CLAUDE.md"),
-  codex: path.join(".codex", "AGENTS.md"),
-};
 
 /**
  * Personal-layer reference appended once beneath the company block on first
@@ -118,7 +112,7 @@ export function getUserPaths(homeDir: string = os.homedir()): UserPaths {
 
 /** Absolute path of a target's per-user instruction file. */
 export function getUserInstructionFile(homeDir: string, target: Target): string {
-  return path.join(homeDir, USER_INSTRUCTION_FILE[target]);
+  return path.join(homeDir, getUserInstructionsFile(target));
 }
 
 async function readIfExists(filePath: string): Promise<string | null> {

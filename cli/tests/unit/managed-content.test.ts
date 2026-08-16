@@ -4,6 +4,8 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   addManagedMetadata,
+  checkAgentsMd,
+  checkAllManagedFiles,
   computeAssetsHash,
   computeContentHash,
   hasManualChanges,
@@ -12,6 +14,7 @@ import {
   parseFrontmatter,
   stripManagedMetadata,
 } from "../../src/core/managed-content.js";
+import { buildAgentsMd } from "../../src/core/markers.js";
 
 const SAMPLE_SKILL = `---
 name: test-skill
@@ -420,6 +423,84 @@ More content here.
       // No assetsHash → not tracking asset modifications
       const skillContent = addManagedMetadata(SAMPLE_SKILL);
       expect(await hasModifiedAssets(skillContent, tempDir, ["SKILL.md"])).toBe(false);
+    });
+  });
+
+  // The global block lives in the root AGENTS.md at repo scope, but in each
+  // harness's own file at user scope (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md).
+  describe("instructions file location", () => {
+    let tempDir: string;
+
+    const withBlock = (body: string) => buildAgentsMd(body, null, {});
+
+    beforeEach(async () => {
+      tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "agconf-instructions-"));
+    });
+
+    afterEach(async () => {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    });
+
+    it("defaults to the root AGENTS.md", async () => {
+      await fs.writeFile(path.join(tempDir, "AGENTS.md"), withBlock("Canonical."), "utf-8");
+
+      const result = await checkAgentsMd(tempDir);
+
+      expect(result?.path).toBe("AGENTS.md");
+      expect(result?.isManaged).toBe(true);
+      expect(result?.hasChanges).toBe(false);
+    });
+
+    it("reads a per-user instructions file and reports its path", async () => {
+      await fs.mkdir(path.join(tempDir, ".claude"), { recursive: true });
+      await fs.writeFile(
+        path.join(tempDir, ".claude", "CLAUDE.md"),
+        withBlock("Canonical."),
+        "utf-8",
+      );
+
+      // Not found at the default location...
+      expect(await checkAgentsMd(tempDir)).toBeNull();
+      // ...but found when pointed at the per-user file.
+      const result = await checkAgentsMd(tempDir, {}, ".claude/CLAUDE.md");
+      expect(result?.path).toBe(".claude/CLAUDE.md");
+      expect(result?.isManaged).toBe(true);
+    });
+
+    it("detects drift in a per-user instructions file", async () => {
+      await fs.mkdir(path.join(tempDir, ".claude"), { recursive: true });
+      await fs.writeFile(
+        path.join(tempDir, ".claude", "CLAUDE.md"),
+        withBlock("Canonical.").replace("Canonical.", "Edited locally."),
+        "utf-8",
+      );
+
+      const result = await checkAgentsMd(tempDir, {}, ".claude/CLAUDE.md");
+      expect(result?.hasChanges).toBe(true);
+    });
+
+    it("checkAllManagedFiles inspects every configured instructions file", async () => {
+      await fs.mkdir(path.join(tempDir, ".claude"), { recursive: true });
+      await fs.mkdir(path.join(tempDir, ".codex"), { recursive: true });
+      await fs.writeFile(
+        path.join(tempDir, ".claude", "CLAUDE.md"),
+        withBlock("Canonical."),
+        "utf-8",
+      );
+      await fs.writeFile(
+        path.join(tempDir, ".codex", "AGENTS.md"),
+        withBlock("Canonical."),
+        "utf-8",
+      );
+
+      const results = await checkAllManagedFiles(tempDir, ["claude", "codex"], {
+        instructionsFiles: [".claude/CLAUDE.md", ".codex/AGENTS.md"],
+      });
+
+      expect(results.filter((r) => r.type === "agents").map((r) => r.path)).toEqual([
+        ".claude/CLAUDE.md",
+        ".codex/AGENTS.md",
+      ]);
     });
   });
 });

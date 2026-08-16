@@ -5,13 +5,16 @@ import {
   type ApplyResult,
   applyProposedChanges,
   type DetectNewContentResult,
+  DivergentInstructionsError,
   detectNewContent,
   detectProposedChanges,
   type NewContentCandidate,
   type ProposeResult,
+  type ProposeScope,
 } from "../core/propose.js";
 import { StaleBaseError } from "../core/propose-merge.js";
 import { formatSourceString } from "../core/source.js";
+import { validateScope } from "./shared.js";
 
 export interface ProposeCommandOptions {
   dryRun?: boolean | undefined;
@@ -27,22 +30,41 @@ export interface ProposeCommandOptions {
   /** Resolve conflicts with canonical by taking the local copy instead of aborting. */
   override?: boolean | undefined;
   cwd?: string | undefined;
+  /** Distribution scope of the local copy: "repo" (default) or "user". */
+  scope?: string | undefined;
+  /** Home directory override for `--scope user` (defaults to os.homedir()). For testing. */
+  home?: string | undefined;
 }
 
 type Spinner = ReturnType<typeof prompts.spinner>;
 
+/** Scope-specific options threaded into both detectors. */
+interface ScopeOptions {
+  scope: ProposeScope;
+  cwd?: string | undefined;
+  home?: string | undefined;
+}
+
 export async function proposeCommand(options: ProposeCommandOptions = {}): Promise<void> {
-  const targetDir = options.cwd ?? process.cwd();
+  // Reject an unknown --scope rather than silently proposing from the repo.
+  validateScope(options.scope);
+
+  const scope: ProposeScope = options.scope === "user" ? "user" : "repo";
+  const scopeOptions: ScopeOptions = {
+    scope,
+    ...(scope === "repo" ? { cwd: options.cwd ?? process.cwd() } : {}),
+    ...(options.home !== undefined ? { home: options.home } : {}),
+  };
   const isNew = options.new !== undefined && options.new !== false;
 
   console.log();
-  prompts.intro(pc.bold("agconf propose"));
+  prompts.intro(pc.bold(scope === "user" ? "agconf propose --scope user" : "agconf propose"));
 
   const spinner = prompts.spinner();
 
   const result = isNew
-    ? await buildNewProposeResult(targetDir, options, spinner)
-    : await buildManagedProposeResult(targetDir, options, spinner);
+    ? await buildNewProposeResult(scopeOptions, options, spinner)
+    : await buildManagedProposeResult(scopeOptions, options, spinner);
 
   if (!result) return; // messaging + outro already handled
 
@@ -70,7 +92,7 @@ export async function proposeCommand(options: ProposeCommandOptions = {}): Promi
  * outro) when detection fails or there is nothing to propose.
  */
 async function buildManagedProposeResult(
-  targetDir: string,
+  scopeOptions: ScopeOptions,
   options: ProposeCommandOptions,
   spinner: Spinner,
 ): Promise<ProposeResult | null> {
@@ -79,7 +101,7 @@ async function buildManagedProposeResult(
   let result: ProposeResult;
   try {
     result = await detectProposedChanges({
-      cwd: targetDir,
+      ...scopeOptions,
       files: options.files,
       override: options.override,
     });
@@ -87,6 +109,12 @@ async function buildManagedProposeResult(
     if (error instanceof StaleBaseError) {
       spinner.stop("Canonical has moved on");
       reportStaleBase(error);
+      prompts.outro("Propose cancelled");
+      process.exit(1);
+    }
+    if (error instanceof DivergentInstructionsError) {
+      spinner.stop("Instruction files disagree");
+      reportDivergentInstructions(error);
       prompts.outro("Propose cancelled");
       process.exit(1);
     }
@@ -126,6 +154,25 @@ function reportDropped(result: ProposeResult): void {
 }
 
 /**
+ * Explain a divergent-instructions abort (user scope): the same company block
+ * was edited differently in two harness files, so there is no single edit to
+ * propose.
+ */
+function reportDivergentInstructions(error: DivergentInstructionsError): void {
+  prompts.log.error(
+    "Your instructions block was edited differently in more than one file, so there is no single change to propose:",
+  );
+  console.log();
+  for (const filePath of error.paths) {
+    console.log(`  ${filePath}`);
+  }
+  console.log();
+  prompts.log.info(
+    "To resolve: make the copies match, or select one with --files (e.g. --files '\\.claude/CLAUDE\\.md').",
+  );
+}
+
+/**
  * Explain a stale-base abort: which files couldn't be rebased onto canonical
  * HEAD, why, and the two ways forward.
  */
@@ -159,7 +206,7 @@ function reportStaleBase(error: StaleBaseError): void {
  * outro) when nothing is found or the user cancels.
  */
 async function buildNewProposeResult(
-  targetDir: string,
+  scopeOptions: ScopeOptions,
   options: ProposeCommandOptions,
   spinner: Spinner,
 ): Promise<ProposeResult | null> {
@@ -175,7 +222,7 @@ async function buildNewProposeResult(
   let detect: DetectNewContentResult;
   try {
     detect = await detectNewContent({
-      cwd: targetDir,
+      ...scopeOptions,
       path: typeof options.new === "string" ? options.new : undefined,
     });
   } catch (error) {

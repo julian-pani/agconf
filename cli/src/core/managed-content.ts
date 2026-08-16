@@ -776,13 +776,26 @@ export async function checkCodexAgentFiles(
 }
 
 /**
- * Check AGENTS.md for manual modifications.
+ * Default instructions file, relative to the target dir. Repo scope keeps the
+ * global block in the root AGENTS.md; user scope passes its own per-target file
+ * (see {@link CheckManagedFilesOptions.instructionsFiles}).
+ */
+const DEFAULT_INSTRUCTIONS_FILE = "AGENTS.md";
+
+/**
+ * Check the instructions file's global block for manual modifications.
+ *
+ * `instructionsFile` is relative to `targetDir` and defaults to the root
+ * `AGENTS.md`; user scope passes `.claude/CLAUDE.md` / `.codex/AGENTS.md`, which
+ * carry the same markers and metadata. The returned `path` is whichever file was
+ * inspected, so callers can read it back without re-deriving the location.
  */
 export async function checkAgentsMd(
   targetDir: string,
   options: MarkerOptions = {},
+  instructionsFile: string = DEFAULT_INSTRUCTIONS_FILE,
 ): Promise<ManagedFileCheckResult | null> {
-  const agentsMdPath = path.join(targetDir, "AGENTS.md");
+  const agentsMdPath = path.join(targetDir, instructionsFile);
 
   try {
     const content = await fs.readFile(agentsMdPath, "utf-8");
@@ -806,7 +819,7 @@ export async function checkAgentsMd(
     }
 
     const result: ManagedFileCheckResult = {
-      path: "AGENTS.md",
+      path: instructionsFile,
       type: "agents",
       isManaged: managed,
       hasChanges,
@@ -826,10 +839,18 @@ export interface CheckManagedFilesOptions {
   markerPrefix?: string;
   /** Metadata prefix for skill files (default: "agconf") */
   metadataPrefix?: string;
+  /**
+   * Files carrying the global block / rules section, relative to `targetDir`.
+   * Defaults to the root `AGENTS.md` (repo scope). User scope passes one entry
+   * per target (`.claude/CLAUDE.md`, `.codex/AGENTS.md`), where the same block
+   * is projected into each harness's own per-user file.
+   */
+  instructionsFiles?: string[];
 }
 
 /**
- * Check all managed files (skills, rules, and AGENTS.md) for modifications.
+ * Check all managed files (skills, rules, and the instructions file(s)) for
+ * modifications.
  */
 export async function checkAllManagedFiles(
   targetDir: string,
@@ -839,17 +860,25 @@ export async function checkAllManagedFiles(
   const results: ManagedFileCheckResult[] = [];
   const markerOptions = options.markerPrefix ? { prefix: options.markerPrefix } : {};
   const metadataOptions = options.metadataPrefix ? { metadataPrefix: options.metadataPrefix } : {};
+  const instructionsFiles = options.instructionsFiles ?? [DEFAULT_INSTRUCTIONS_FILE];
 
-  // Check AGENTS.md global block
-  const agentsMdResult = await checkAgentsMd(targetDir, markerOptions);
-  if (agentsMdResult) {
-    results.push(agentsMdResult);
-  }
+  for (const instructionsFile of instructionsFiles) {
+    // Check the global block
+    const agentsMdResult = await checkAgentsMd(targetDir, markerOptions, instructionsFile);
+    if (agentsMdResult) {
+      results.push(agentsMdResult);
+    }
 
-  // Check AGENTS.md rules section (for Codex target where rules are concatenated)
-  const rulesSectionResult = await checkAgentsMdRulesSection(targetDir, markerOptions);
-  if (rulesSectionResult) {
-    results.push(rulesSectionResult);
+    // Check the rules section (for Codex, where rules are concatenated into the
+    // same file as the global block)
+    const rulesSectionResult = await checkAgentsMdRulesSection(
+      targetDir,
+      markerOptions,
+      instructionsFile,
+    );
+    if (rulesSectionResult) {
+      results.push(rulesSectionResult);
+    }
   }
 
   // Check skill files
@@ -924,8 +953,9 @@ export async function checkAllManagedFiles(
 export async function checkAgentsMdRulesSection(
   targetDir: string,
   options: MarkerOptions = {},
+  instructionsFile: string = DEFAULT_INSTRUCTIONS_FILE,
 ): Promise<ManagedFileCheckResult | null> {
-  const agentsMdPath = path.join(targetDir, "AGENTS.md");
+  const agentsMdPath = path.join(targetDir, instructionsFile);
 
   try {
     const content = await fs.readFile(agentsMdPath, "utf-8");
@@ -938,7 +968,7 @@ export async function checkAgentsMdRulesSection(
     const hasChanges = hasRulesSectionChanges(content, options);
 
     return {
-      path: "AGENTS.md",
+      path: instructionsFile,
       type: "rules-section",
       isManaged: true,
       hasChanges,

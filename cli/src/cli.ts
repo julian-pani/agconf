@@ -218,6 +218,10 @@ export function createCli(): Command {
       "--override",
       "Local wins: resolve conflicts with canonical by taking your local copy instead of aborting",
     )
+    .option(
+      "--scope <scope>",
+      "Where the local copy lives: 'repo' (default) or 'user' (the ~/.claude, ~/.codex projection)",
+    )
     .option("-y, --yes", "Non-interactive mode")
     .action(
       async (options: {
@@ -227,6 +231,7 @@ export function createCli(): Command {
         files?: string[];
         new?: string | boolean;
         override?: boolean;
+        scope?: string;
         yes?: boolean;
       }) => {
         await proposeCommand(options);

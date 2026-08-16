@@ -298,8 +298,8 @@ async function checkDownstream(
     if (!file.hasChanges) continue;
 
     if (file.type === "agents") {
-      // Get hash info for AGENTS.md
-      const agentsMdPath = path.join(targetDir, "AGENTS.md");
+      // Get hash info for the instructions file (AGENTS.md at repo scope)
+      const agentsMdPath = path.join(targetDir, file.path);
       const content = await fs.readFile(agentsMdPath, "utf-8");
       const parsed = parseAgentsMd(content, markerPrefix ? { prefix: markerPrefix } : undefined);
 
@@ -309,7 +309,7 @@ async function checkDownstream(
         const currentHash = computeGlobalBlockHash(contentWithoutMeta);
 
         modifiedFiles.push({
-          path: "AGENTS.md",
+          path: file.path,
           type: "agents",
           expectedHash: metadata.contentHash ?? "unknown",
           currentHash,
@@ -386,7 +386,7 @@ async function checkDownstream(
       modifiedFiles.push(ruleInfo);
     } else if (file.type === "rules-section") {
       // Get hash info for rules section in AGENTS.md (Codex target)
-      const agentsMdPath = path.join(targetDir, "AGENTS.md");
+      const agentsMdPath = path.join(targetDir, file.path);
       const content = await fs.readFile(agentsMdPath, "utf-8");
       const parsed = parseRulesSection(
         content,
@@ -399,7 +399,7 @@ async function checkDownstream(
         const currentHash = computeRulesSectionHash(contentWithoutMeta);
 
         modifiedFiles.push({
-          path: "AGENTS.md",
+          path: file.path,
           type: "rules-section",
           expectedHash: metadata.contentHash ?? "unknown",
           currentHash,
