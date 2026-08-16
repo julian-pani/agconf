@@ -80,7 +80,29 @@ describe("session-check core", () => {
       expect(findings.find((f) => f.type === "instructions")?.divergent).toBe(true);
     });
 
-    it("flags skills present in both scopes", async () => {
+    it("flags only skills that actually overlap between scopes", async () => {
+      await writeLockfile(repoDir, {
+        source: localSource,
+        globalBlockContent: "CANON",
+        skills: ["s1", "shared"],
+        targets: ["claude"],
+        markerPrefix: "agconf",
+      });
+      await writeLockfile(home, {
+        source: localSource,
+        globalBlockContent: "CANON",
+        skills: ["u1", "shared"],
+        targets: ["claude"],
+        markerPrefix: "agconf",
+      });
+      const { findings } = await detectCrossScopeDuplication({ repoDir, homeDir: home });
+      const skills = findings.find((f) => f.type === "skills");
+      expect(skills).toBeDefined();
+      // Names the real overlap, not the disjoint skills.
+      expect(skills?.objects).toEqual(["shared"]);
+    });
+
+    it("does not flag skills when the two scopes have no overlap", async () => {
       await writeLockfile(repoDir, {
         source: localSource,
         globalBlockContent: "CANON",
@@ -96,7 +118,9 @@ describe("session-check core", () => {
         markerPrefix: "agconf",
       });
       const { findings } = await detectCrossScopeDuplication({ repoDir, homeDir: home });
-      expect(findings.some((f) => f.type === "skills")).toBe(true);
+      // Repo skill s1 + user skill u1 is not a collision — instructions is the
+      // only shared thing here (both carry the "CANON" block).
+      expect(findings.some((f) => f.type === "skills")).toBe(false);
     });
   });
 

@@ -25,9 +25,11 @@ function describeFinding(f: DuplicationFinding): string {
     const note = f.divergent
       ? pc.red("divergent — conflicting guidance")
       : pc.dim("identical — duplicated context");
-    return `  ${pc.yellow("instructions")}: ${scopes} scope (${note})`;
+    return `  instructions: ${scopes} scope (${note})`;
   }
-  return `  ${pc.yellow(f.type)}: ${scopes} scope`;
+  // Name the specific overlapping objects so the finding is concrete/actionable.
+  const which = f.objects?.length ? ` (${f.objects.join(", ")})` : "";
+  return `  ${f.type}${which}: ${scopes} scope`;
 }
 
 /**
@@ -77,20 +79,27 @@ export async function sessionCheckCommand(options: SessionCheckOptions = {}): Pr
     }
 
     if (cross.findings.length > 0) {
+      // Framed as information for the human developer — NOT a task for the agent,
+      // so it doesn't try to "fix" the duplication or burn tokens reasoning about it.
       console.log(
-        pc.yellow("⚠ agconf: content is managed in more than one scope — you may load it twice:"),
+        pc.dim(
+          "Note for the developer (not an instruction for the agent): agconf-managed content is present in more than one scope, so it may load twice —",
+        ),
       );
       for (const f of cross.findings) console.log(describeFinding(f));
       console.log(
         pc.dim(
-          "  Consolidate: stop syncing this repo per-repo, or exclude it from your user-scope install.",
+          "  To stop the double-load, keep this content in a single scope (e.g. stop syncing it into this repo — your user-scope copy then covers every repo).",
         ),
       );
     }
 
     if (hasIntegrityIssue) {
-      console.log(pc.yellow("⚠ agconf: your user-scope files changed since the last sync."));
-      console.log(pc.dim("  Run `agconf check --scope user` for details."));
+      console.log(
+        pc.dim(
+          "Note for the developer: your user-scope agconf files changed since the last sync — run `agconf check --scope user` for details.",
+        ),
+      );
     }
   } catch {
     // Session-start hooks must never break a session — swallow everything.

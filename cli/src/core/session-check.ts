@@ -7,12 +7,12 @@
  * plugin skills coexist with synced skills. `detectCrossScopeDuplication`
  * surfaces this.
  *
- * Detection is **presence/identity based, never content-equality based**: a
- * content type managed by agconf in ≥2 scopes is a duplication regardless of
- * whether the copies are byte-identical. A slightly-different copy is a *worse*
- * duplication (conflicting guidance), not a non-duplication — so the content
- * hash is used only to *annotate* a finding (identical vs divergent), never to
- * decide whether to flag it.
+ * Detection is **identity based, never content-equality based**. Instructions
+ * are a single block, so presence in both scopes = duplication (the hash only
+ * annotates identical vs divergent, never gates the finding). Skills/rules/
+ * agents are flagged per-object: only the specific objects present in BOTH
+ * scopes are a real double-load — repo skill X alongside user skill Y is not a
+ * collision and is not flagged.
  *
  * `installSessionStartHook` registers `agconf session-check` as a Claude Code
  * SessionStart hook in `~/.claude/settings.json`, idempotently and preserving
@@ -32,6 +32,11 @@ export interface DuplicationFinding {
   scopes: string[];
   /** Instructions only: the two copies differ (worse — conflicting guidance). */
   divergent?: boolean;
+  /**
+   * skills/rules/agents only: the specific objects present in BOTH scopes (the
+   * real overlap). Instructions are a single block, so this is unset for them.
+   */
+  objects?: string[];
 }
 
 export interface CrossScopeResult {
@@ -74,20 +79,24 @@ export async function detectCrossScopeDuplication(options: {
     });
   }
 
-  if ((repoLock.content.skills?.length ?? 0) > 0 && (userLock.content.skills?.length ?? 0) > 0) {
-    findings.push({ type: "skills", scopes: ["repo", "user"] });
+  // skills/rules/agents: flag only the objects that actually exist in BOTH
+  // scopes (a real double-load), not merely "each scope has some". Repo skill X +
+  // user skill Y is not a collision and must not warn.
+  const overlap = (a: string[] = [], b: string[] = []): string[] => {
+    const other = new Set(b);
+    return a.filter((x) => other.has(x));
+  };
+  const skillOverlap = overlap(repoLock.content.skills, userLock.content.skills);
+  if (skillOverlap.length > 0) {
+    findings.push({ type: "skills", scopes: ["repo", "user"], objects: skillOverlap });
   }
-  if (
-    (repoLock.content.rules?.files?.length ?? 0) > 0 &&
-    (userLock.content.rules?.files?.length ?? 0) > 0
-  ) {
-    findings.push({ type: "rules", scopes: ["repo", "user"] });
+  const ruleOverlap = overlap(repoLock.content.rules?.files, userLock.content.rules?.files);
+  if (ruleOverlap.length > 0) {
+    findings.push({ type: "rules", scopes: ["repo", "user"], objects: ruleOverlap });
   }
-  if (
-    (repoLock.content.agents?.files?.length ?? 0) > 0 &&
-    (userLock.content.agents?.files?.length ?? 0) > 0
-  ) {
-    findings.push({ type: "agents", scopes: ["repo", "user"] });
+  const agentOverlap = overlap(repoLock.content.agents?.files, userLock.content.agents?.files);
+  if (agentOverlap.length > 0) {
+    findings.push({ type: "agents", scopes: ["repo", "user"], objects: agentOverlap });
   }
 
   return { repoSynced, userSynced, findings };
