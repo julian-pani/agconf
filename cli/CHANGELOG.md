@@ -1,3 +1,9 @@
+## [0.22.1](https://github.com/julian-pani/agconf/compare/v0.22.0...v0.22.1) (2026-08-16)
+
+### Bug Fixes
+
+* **security:** redact embedded git token from clone error messages ([e5a54d9](https://github.com/julian-pani/agconf/commit/e5a54d97e84e6892e9973e58cde142dbca859da2))
+
 ## [0.22.0](https://github.com/julian-pani/agconf/compare/v0.21.0...v0.22.0) (2026-08-16)
 
 ### Features
