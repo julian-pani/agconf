@@ -1,3 +1,9 @@
+## [0.24.0](https://github.com/julian-pani/agconf/compare/v0.23.0...v0.24.0) (2026-08-16)
+
+### Features
+
+* **session-check:** install SessionStart hook for Codex too ([569b4bd](https://github.com/julian-pani/agconf/commit/569b4bd4c155a2c4e72c6bf538b59f2707cab441)), closes [openai/codex#17532](https://github.com/openai/codex/issues/17532)
+
 ## [0.23.0](https://github.com/julian-pani/agconf/compare/v0.22.2...v0.23.0) (2026-08-16)
 
 ### Features
