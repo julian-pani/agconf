@@ -174,7 +174,8 @@ export function projectGlobalBlock(
   const personal = opts.personalLine ? `${opts.personalLine}\n\n` : "";
   const header = `${block}\n\n${personal}`.replace(/\n{3,}/g, "\n\n");
   const rest = existing.trim() ? `${existing.trim()}\n` : "";
-  return `${header}${rest}`.trimEnd() + "\n";
+  const body = `${header}${rest}`.trimEnd();
+  return `${body}\n`;
 }
 
 /** Whether a to-be-overwritten file should be backed up first: it exists and is
