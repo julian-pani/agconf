@@ -493,6 +493,15 @@ function collapseByCanonicalPath(candidates: Candidate[]): {
 
   for (const candidate of candidates) {
     const { canonicalPath } = candidate.change;
+
+    // Checked before `kept`, which no longer holds this path: a third copy of an
+    // already-divergent file must join the record, not re-enter `kept`.
+    const record = divergent.get(canonicalPath);
+    if (record) {
+      record.downstreamPaths.push(candidate.change.downstreamPath);
+      continue;
+    }
+
     const existing = kept.get(canonicalPath);
     if (!existing) {
       kept.set(canonicalPath, candidate);
@@ -503,23 +512,17 @@ function collapseByCanonicalPath(candidates: Candidate[]): {
       continue; // Same content — the extra copy adds nothing.
     }
 
-    const record = divergent.get(canonicalPath);
-    if (record) {
-      record.downstreamPaths.push(candidate.change.downstreamPath);
-      continue;
-    }
+    // Evict the path from `kept` as well as recording the divergence, so a
+    // half-collapsed entry can never reach the apply step — `unique` is safe to
+    // use even by a caller that chooses to report divergences without aborting.
+    kept.delete(canonicalPath);
     divergent.set(canonicalPath, {
       canonicalPath,
       downstreamPaths: [existing.change.downstreamPath, candidate.change.downstreamPath],
     });
   }
 
-  // Divergent paths are dropped from `unique` too: the run is aborting, and a
-  // half-collapsed entry must never reach the apply step.
-  return {
-    unique: [...kept.values()].filter((c) => !divergent.has(c.change.canonicalPath)),
-    divergent: [...divergent.values()],
-  };
+  return { unique: [...kept.values()], divergent: [...divergent.values()] };
 }
 
 /** Everything reconciliation needs to compare a change against canonical. */
