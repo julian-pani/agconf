@@ -1,3 +1,11 @@
+## [0.21.0](https://github.com/julian-pani/agconf/compare/v0.20.1...v0.21.0) (2026-08-16)
+
+### Features
+
+* **autosync:** auto-refresh the user store at session start ([#73](https://github.com/julian-pani/agconf/issues/73)) ([7e5c2db](https://github.com/julian-pani/agconf/commit/7e5c2db86586adbcfb9a6f95031700fba0f857d1))
+* **session-check:** cross-scope duplication guard + SessionStart hook ([#72](https://github.com/julian-pani/agconf/issues/72)) ([6b85720](https://github.com/julian-pani/agconf/commit/6b85720348d65bcf9d3367404adb299b09e285d1))
+* **sync:** user-scope sync (--scope user) for company instructions ([#70](https://github.com/julian-pani/agconf/issues/70)) ([d17443f](https://github.com/julian-pani/agconf/commit/d17443f9904669f104aa15d81d9e269cbe12be8a))
+
 ## [0.20.1](https://github.com/julian-pani/agconf/compare/v0.20.0...v0.20.1) (2026-08-06)
 
 ### Bug Fixes
