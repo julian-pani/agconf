@@ -8,6 +8,7 @@ import { loadCanonicalRepoConfig } from "../config/loader.js";
 import type { CanonicalRepoConfig } from "../config/schema.js";
 import type { Source } from "../schemas/lockfile.js";
 import { removeTempDir } from "../utils/fs.js";
+import { redactGitCredentials } from "../utils/git.js";
 import { validateAgentFrontmatter } from "./agents.js";
 import { readLockfile } from "./lockfile.js";
 import {
@@ -1196,7 +1197,13 @@ async function cloneCanonical(source: Source, targetDir: string): Promise<void> 
     : `https://github.com/${repository}.git`;
 
   const git: SimpleGit = simpleGit();
-  await git.clone(repoUrl, targetDir, ["--branch", ref]);
+  try {
+    await git.clone(repoUrl, targetDir, ["--branch", ref]);
+  } catch (error) {
+    // git's stderr can echo repoUrl with the embedded token — redact before
+    // the error propagates to any caller that logs it.
+    throw new Error(redactGitCredentials(error instanceof Error ? error.message : String(error)));
+  }
 }
 
 async function isGhAvailable(): Promise<boolean> {
