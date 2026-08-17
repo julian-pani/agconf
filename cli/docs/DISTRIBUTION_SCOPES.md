@@ -446,6 +446,15 @@ commands and mechanisms work in which mode — see [§16](#16--feature--mode-mat
   `~/.claude/settings.json`, Codex in `~/.codex/hooks.json` — preserving existing
   settings/hooks. Codex ships `hooks` enabled by default; if a user explicitly
   disabled it, the installer warns with the exact `codex features enable hooks` fix.
+- **Hook-coverage self-heal.** The install target list is only snapshotted at
+  install time (`resolveHookTargets`), so a store that later gains a target (e.g. a
+  Claude-only install, then `sync --scope user --target claude,codex`) is left with
+  no hook for the new target and nothing re-reconciles. The advisory path closes
+  this: `findMissingHookTargets` compares the store's targets against the hooks
+  actually present in the two config files and nudges the developer to re-run
+  `--install-hook`. It's cheap (at most two small JSON reads), never throws, and
+  treats an unreadable/malformed config as "installed" so it never nags about a file
+  `--install-hook` itself would refuse to touch.
 - **Deferred:** plugin-scope detection (needs reading harness plugin state, which is
   version-specific). repo↔user — the main double-load hazard — is covered. (The
   "behind-canonical" freshness gap is now closed by F5b below.)

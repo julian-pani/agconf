@@ -18,8 +18,11 @@
  * SessionStart hook — Claude Code in `~/.claude/settings.json`, Codex in
  * `~/.codex/hooks.json` — idempotently and preserving any existing config/hooks.
  * `installSessionStartHooks` fans that out to the targets the user store was
- * synced to (`resolveHookTargets`). All paths derive from an injectable
- * `homeDir`. See cli/docs/DISTRIBUTION_SCOPES.md (F5).
+ * synced to (`resolveHookTargets`), consulted only at install time. Because that
+ * snapshot never re-reconciles, `findMissingHookTargets` lets the advisory path
+ * detect a target the store gained afterwards whose hook was never installed and
+ * nudge the developer to re-run `--install-hook`. All paths derive from an
+ * injectable `homeDir`. See cli/docs/DISTRIBUTION_SCOPES.md (F5).
  */
 
 import { execFile } from "node:child_process";
@@ -168,6 +171,21 @@ async function readHookConfigOrRefuse(filePath: string): Promise<Record<string, 
 }
 
 /**
+ * Does a SessionStart entry list already carry the `agconf session-check` hook?
+ * Runtime-safe against junk parsed from a hand-edited config: `Array.isArray`
+ * guards a truthy non-array `entry.hooks` (e.g. an object), which would otherwise
+ * make `entry.hooks.some` throw a `TypeError` — unacceptable on the advisory path,
+ * which must never throw.
+ */
+function sessionStartContainsHook(sessionStart: SessionStartEntry[]): boolean {
+  return sessionStart.some(
+    (entry) =>
+      Array.isArray(entry?.hooks) &&
+      entry.hooks.some((h) => typeof h?.command === "string" && h.command.includes(HOOK_COMMAND)),
+  );
+}
+
+/**
  * Add the `agconf session-check` SessionStart entry to a parsed hook-config
  * object. Claude's `settings.json` and Codex's `hooks.json` share the exact same
  * shape here — both key SessionStart under a top-level `hooks` object — so one
@@ -199,9 +217,7 @@ function upsertSessionStartHook(
     ? (hooks.SessionStart as SessionStartEntry[])
     : [];
 
-  const alreadyPresent = sessionStart.some((entry) =>
-    entry?.hooks?.some((h) => typeof h?.command === "string" && h.command.includes(HOOK_COMMAND)),
-  );
+  const alreadyPresent = sessionStartContainsHook(sessionStart);
   if (!alreadyPresent) {
     const entry: SessionStartEntry = {
       hooks: [{ type: "command", command: HOOK_COMMAND, timeout: HOOK_TIMEOUT_SECONDS }],
@@ -303,6 +319,71 @@ export async function resolveHookTargets(homeDir: string): Promise<Target[]> {
   const lock = (await readLockfileSafe(homeDir))?.lockfile;
   const targets = (lock?.content.targets ?? []).filter(isValidTarget);
   return targets.length > 0 ? targets : ["claude"];
+}
+
+/**
+ * Best-effort: is the `agconf session-check` SessionStart hook actually present in
+ * this target's config file? Unlike the installer's `readHookConfigOrRefuse`, this
+ * NEVER throws — it feeds the advisory session-check path, which must not break a
+ * session. The rule is "only report a target missing when `--install-hook` could
+ * add it to THIS target's config", so a per-target nudge never points at a fix that
+ * fails on this file (a cross-target caveat is noted on `findMissingHookTargets`):
+ *   - Absent file (ENOENT) → `false` (missing): the install creates it.
+ *   - Well-formed config lacking our entry — no `hooks`, no `hooks.SessionStart`,
+ *     or a `SessionStart` array without our command → `false` (missing): the
+ *     install adds it.
+ *   - Anything `--install-hook` would REFUSE (unreadable file, malformed JSON,
+ *     non-object root, non-object `hooks`, non-array `SessionStart`) → `true`
+ *     ("can't tell"): don't nag about a config the fix can't touch.
+ * Mirrors the "never warn on unknown" contract of the Codex hooks-feature probe.
+ */
+async function targetHookInstalled(homeDir: string, target: Target): Promise<boolean> {
+  const { filePath } = hookFileSpec(homeDir, target);
+  let raw: string;
+  try {
+    raw = await fs.readFile(filePath, "utf-8");
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== "ENOENT"; // absent → missing; else can't tell
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return true; // malformed JSON → --install-hook refuses it too → don't nag
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return true; // refuse-case
+  const hooks = (parsed as Record<string, unknown>).hooks;
+  if (hooks === undefined) return false; // no hooks yet → install adds it
+  if (typeof hooks !== "object" || hooks === null || Array.isArray(hooks)) return true; // refuse-case
+  const sessionStart = (hooks as Record<string, unknown>).SessionStart;
+  if (sessionStart === undefined) return false; // no SessionStart yet → install adds it
+  if (!Array.isArray(sessionStart)) return true; // refuse-case
+  return sessionStartContainsHook(sessionStart);
+}
+
+/**
+ * The targets the user store is synced to (`resolveHookTargets`) whose SessionStart
+ * hook is NOT installed. This is the drift left when a store gains a target after
+ * the hook was installed — `resolveHookTargets` is only consulted at install time
+ * (`session-check --install-hook`, `autosync --install|--enable`), so e.g. a
+ * Claude-only install followed by `sync --scope user --target claude,codex` never
+ * gets the Codex hook and nothing re-reconciles. Cheap (at most two small JSON
+ * reads) and never throws, so the advisory path can self-heal-nudge on it.
+ *
+ * Caveat: `installSessionStartHooks` (what the nudge points at) is atomic across
+ * targets — a refuse-shape config for one target aborts the whole batch. So if the
+ * developer's OTHER target config is malformed, the nudged `--install-hook` can
+ * fail even for a target reported here. That's rare (requires a separately-corrupt
+ * config) and self-announcing (the installer's error names the offending file), so
+ * we keep the installer's deliberate atomicity rather than loosen it here.
+ */
+export async function findMissingHookTargets(homeDir: string): Promise<Target[]> {
+  const expected = await resolveHookTargets(homeDir);
+  const missing: Target[] = [];
+  for (const target of expected) {
+    if (!(await targetHookInstalled(homeDir, target))) missing.push(target);
+  }
+  return missing;
 }
 
 export type CodexHooksState = "enabled" | "disabled" | "unknown";

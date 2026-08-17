@@ -6,6 +6,7 @@ import { writeLockfile } from "../../src/core/lockfile.js";
 import {
   codexHooksDisabledWarning,
   detectCrossScopeDuplication,
+  findMissingHookTargets,
   getCodexHooksState,
   installClaudeSessionStartHook,
   installCodexSessionStartHook,
@@ -217,6 +218,27 @@ describe("session-check core", () => {
       // The user's file is left exactly as it was — never clobbered.
       expect(await fs.readFile(settingsPath, "utf-8")).toBe(malformed);
     });
+
+    it("installs alongside a pre-existing malformed SessionStart entry without throwing", async () => {
+      const settingsPath = path.join(home, ".claude", "settings.json");
+      await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+      // SessionStart is a valid array, but a prior entry's `hooks` is a non-array
+      // object. The presence scan must not choke on it (Array.isArray guard); our
+      // entry is appended and the junk entry preserved.
+      await fs.writeFile(
+        settingsPath,
+        JSON.stringify({ hooks: { SessionStart: [{ hooks: {} }] } }),
+      );
+
+      const result = await installClaudeSessionStartHook(home);
+      expect(result.installed).toBe(true);
+      const settings = JSON.parse(await fs.readFile(settingsPath, "utf-8"));
+      expect(settings.hooks.SessionStart).toHaveLength(2); // junk entry + ours
+      const cmds = settings.hooks.SessionStart.flatMap((e: { hooks?: unknown }) =>
+        Array.isArray(e.hooks) ? e.hooks.map((h: { command?: string }) => h.command) : [],
+      );
+      expect(cmds).toContain("agconf session-check");
+    });
   });
 
   describe("installCodexSessionStartHook", () => {
@@ -342,6 +364,103 @@ describe("session-check core", () => {
         markerPrefix: "agconf",
       });
       expect(await resolveHookTargets(home)).toEqual(["claude", "codex"]);
+    });
+  });
+
+  describe("findMissingHookTargets", () => {
+    const claudeStore = () =>
+      writeLockfile(home, {
+        source: localSource,
+        globalBlockContent: "CANON",
+        skills: [],
+        targets: ["claude"],
+        markerPrefix: "agconf",
+      });
+    const bothTargetStore = () =>
+      writeLockfile(home, {
+        source: localSource,
+        globalBlockContent: "CANON",
+        skills: [],
+        targets: ["claude", "codex"],
+        markerPrefix: "agconf",
+      });
+
+    it("reports the default claude target missing when no store and no hook exist", async () => {
+      // No user store → resolveHookTargets defaults to ["claude"]; no settings.json → missing.
+      expect(await findMissingHookTargets(home)).toEqual(["claude"]);
+    });
+
+    it("returns empty once the default claude hook is installed", async () => {
+      await installSessionStartHooks(home, ["claude"]);
+      expect(await findMissingHookTargets(home)).toEqual([]);
+    });
+
+    it("detects a target the store gained after the hook was installed", async () => {
+      // The exact drift: hook installed while claude-only, store later gains codex.
+      await installSessionStartHooks(home, ["claude"]);
+      await bothTargetStore();
+      expect(await findMissingHookTargets(home)).toEqual(["codex"]);
+    });
+
+    it("returns empty when every synced target has its hook", async () => {
+      await bothTargetStore();
+      await installSessionStartHooks(home, ["claude", "codex"]);
+      expect(await findMissingHookTargets(home)).toEqual([]);
+    });
+
+    it("reports a target whose config exists but lacks the session-check hook", async () => {
+      await claudeStore();
+      const settingsPath = path.join(home, ".claude", "settings.json");
+      await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+      await fs.writeFile(
+        settingsPath,
+        JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "x" }] }] } }),
+      );
+      expect(await findMissingHookTargets(home)).toEqual(["claude"]);
+    });
+
+    it("treats a malformed hook config as installed (never nags on unparseable config)", async () => {
+      await claudeStore();
+      const settingsPath = path.join(home, ".claude", "settings.json");
+      await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+      // A file we can't parse is the user's to fix; --install-hook would refuse it
+      // too, so nagging would be pointless. Treated as "can't tell" → not missing.
+      await fs.writeFile(settingsPath, "{ not json");
+      expect(await findMissingHookTargets(home)).toEqual([]);
+    });
+
+    it("does not nag on config shapes --install-hook would refuse to modify", async () => {
+      await claudeStore();
+      const settingsPath = path.join(home, ".claude", "settings.json");
+      await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+      // Each of these is a shape the installer throws on rather than touch, so
+      // nudging the developer to run --install-hook would only error. All → "installed".
+      const refuseShapes = [
+        JSON.stringify([]), // non-object root
+        JSON.stringify("nope"), // non-object root (primitive)
+        JSON.stringify({ hooks: [] }), // `hooks` is an array, not an object
+        JSON.stringify({ hooks: { SessionStart: { nope: true } } }), // SessionStart not an array
+        "{ not json", // unparseable
+      ];
+      for (const shape of refuseShapes) {
+        await fs.writeFile(settingsPath, shape);
+        expect(await findMissingHookTargets(home)).toEqual([]);
+      }
+    });
+
+    it("does not throw on a SessionStart array with a malformed entry (reports it missing)", async () => {
+      await claudeStore();
+      const settingsPath = path.join(home, ".claude", "settings.json");
+      await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+      // SessionStart IS a valid array (not a refuse-shape), but an entry's `hooks`
+      // is a non-array object — `entry.hooks.some` would throw a TypeError without
+      // the Array.isArray guard. Our command isn't present, and --install-hook would
+      // successfully append it, so this is correctly reported as missing.
+      await fs.writeFile(
+        settingsPath,
+        JSON.stringify({ hooks: { SessionStart: [{ hooks: {} }] } }),
+      );
+      expect(await findMissingHookTargets(home)).toEqual(["claude"]);
     });
   });
 

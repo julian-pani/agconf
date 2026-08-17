@@ -4,19 +4,30 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { sessionCheckCommand } from "../../src/commands/session-check.js";
+import { syncUserScopeCommand } from "../../src/commands/user-scope.js";
 import { writeLockfile } from "../../src/core/lockfile.js";
+import { installSessionStartHooks } from "../../src/core/session-check.js";
 
 const localSource = { type: "local" as const, path: "/canonical" };
 
 describe("session-check command", () => {
   let home: string;
   let repo: string;
+  let canonical: string;
   let consoleLogSpy: ReturnType<typeof vi.spyOn>;
   let mockExit: ReturnType<typeof vi.spyOn>;
 
   beforeEach(async () => {
     home = await fs.mkdtemp(path.join(os.tmpdir(), "agconf-scc-home-"));
     repo = await fs.mkdtemp(path.join(os.tmpdir(), "agconf-scc-repo-"));
+    canonical = await fs.mkdtemp(path.join(os.tmpdir(), "agconf-scc-canon-"));
+    await fs.mkdir(path.join(canonical, "instructions"), { recursive: true });
+    await fs.mkdir(path.join(canonical, "skills"), { recursive: true });
+    await fs.writeFile(
+      path.join(canonical, "instructions", "AGENTS.md"),
+      "# Company Standards\n\nBe excellent.",
+      "utf-8",
+    );
     consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
       throw new Error("process.exit called");
@@ -28,6 +39,7 @@ describe("session-check command", () => {
     mockExit.mockRestore();
     await fs.rm(home, { recursive: true, force: true });
     await fs.rm(repo, { recursive: true, force: true });
+    await fs.rm(canonical, { recursive: true, force: true });
   });
 
   it("installs the SessionStart hook with --install-hook", async () => {
@@ -199,6 +211,48 @@ describe("session-check command", () => {
     const autosyncSpawn = vi.fn();
     await sessionCheckCommand({ cwd: repo, home, autosyncSpawn });
     expect(autosyncSpawn).not.toHaveBeenCalled();
+    expect(mockExit).not.toHaveBeenCalled();
+  });
+
+  it("nudges to install the hook for a target the store gained after install", async () => {
+    // Clean user scope synced for BOTH targets...
+    await syncUserScopeCommand({
+      scope: "user",
+      local: canonical,
+      home,
+      target: ["claude", "codex"],
+    });
+    // ...but only the Claude hook was ever installed (the drift the finding describes:
+    // resolveHookTargets is snapshotted at install time and never re-reconciled).
+    await installSessionStartHooks(home, ["claude"]);
+    consoleLogSpy.mockClear();
+
+    const autosyncSpawn = vi.fn();
+    await sessionCheckCommand({ cwd: repo, home, autosyncSpawn });
+
+    const output = consoleLogSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(output).toContain("agconf session-check --install-hook");
+    expect(output).toContain("codex");
+    // The installed Claude hook is not falsely reported as missing.
+    expect(output).not.toContain("claude");
+    expect(mockExit).not.toHaveBeenCalled();
+  });
+
+  it("stays silent when a clean store has all its hooks installed", async () => {
+    await syncUserScopeCommand({
+      scope: "user",
+      local: canonical,
+      home,
+      target: ["claude", "codex"],
+    });
+    await installSessionStartHooks(home, ["claude", "codex"]);
+    consoleLogSpy.mockClear();
+
+    const autosyncSpawn = vi.fn();
+    await sessionCheckCommand({ cwd: repo, home, autosyncSpawn });
+
+    // Nothing to say: no cross-scope dup (user scope only), integrity clean, hooks present.
+    expect(consoleLogSpy).not.toHaveBeenCalled();
     expect(mockExit).not.toHaveBeenCalled();
   });
 });
