@@ -410,6 +410,22 @@ ORIGINAL body.
     expect(text).toContain("--files");
   });
 
+  it("suggests a --files pattern anchored to the divergent file, not its harness root", async () => {
+    // A `^\.claude/` style hint would also exclude every other pending change
+    // from the same propose, silently shipping a partial proposal.
+    await setupDivergentTargetCopies();
+
+    await expect(proposeCommand({ cwd: downstreamDir, yes: true, title: "x" })).rejects.toThrow(
+      "process.exit called",
+    );
+
+    const text = output();
+    expect(text).toContain("--files '^\\.claude/skills/my-skill/SKILL\\.md$'");
+    expect(text).not.toContain("--files '^\\.claude/'");
+    // And the narrowing has to be stated, since it applies to the whole run.
+    expect(text).toContain("narrows the whole propose");
+  });
+
   it("still refuses divergent target copies under --override", async () => {
     await setupDivergentTargetCopies();
     const applySpy = vi.spyOn(proposeCore, "applyProposedChanges");

@@ -16,6 +16,7 @@ import {
 } from "../core/propose.js";
 import { StaleBaseError } from "../core/propose-merge.js";
 import { formatSourceString } from "../core/source.js";
+import { escapeRegExp } from "../utils/regex.js";
 import { validateScope } from "./shared.js";
 
 export interface ProposeCommandOptions {
@@ -209,8 +210,18 @@ function reportDivergentCopies(error: DivergentCopiesError): void {
     }
   }
   console.log();
-  prompts.log.info(
-    "To resolve: make the copies match, or select one with --files (e.g. --files '^\\.claude/').",
+  prompts.log.info("To resolve: make the copies match, or select one copy with --files.");
+  // Anchor the example to the divergent file itself, not its harness root. A
+  // pattern like `^\.claude/` would also exclude every other pending change in
+  // the repo — the AGENTS.md block, the other harness's files — leaving a
+  // partial proposal that reads as complete to its author.
+  const example = error.divergent[0]?.downstreamPaths[0];
+  if (example) {
+    console.log(`  ${pc.dim(`agconf propose --files '^${escapeRegExp(example)}$'`)}`);
+    console.log();
+  }
+  prompts.log.warn(
+    "--files narrows the whole propose, not just the file above: anything it excludes will not be proposed.",
   );
   // --override takes the local copy over canonical's. Here every candidate is
   // local, so there is nothing for it to choose between — say so rather than

@@ -368,6 +368,7 @@ export async function detectProposedChanges(options: ProposeOptions = {}): Promi
             canonicalCloneDir,
             dirs.skillsDir,
             matchesFilter,
+            markerPrefix ? { metadataPrefix: markerPrefix } : {},
           )),
         );
       }
@@ -711,17 +712,19 @@ async function detectSkillAssetChanges(
   canonicalCloneDir: string,
   skillsDir: string,
   matchesFilter: (relPath: string) => boolean,
+  metaOpts: MetaOpts,
 ): Promise<Candidate[]> {
   const canonicalSkillDir = path.join(canonicalCloneDir, skillsDir, skillName);
   const candidates: Candidate[] = [];
 
   for (const target of targets) {
     const downstreamSkillDir = path.join(targetDir, getSkillsDir(target), skillName);
-    try {
-      await fs.access(downstreamSkillDir);
-    } catch {
-      continue; // Skill not synced to this target
-    }
+    // Managed-ness is checked per target, not inherited from `managedSkillNames`
+    // (which is true if ANY target's copy is managed). Otherwise a hand-authored
+    // directory that merely shares a name with a managed skill under a different
+    // harness would contribute its files to the proposal, or collide with the
+    // real copy as a spurious divergence.
+    if (!(await skillIsManagedAt(downstreamSkillDir, metaOpts))) continue;
 
     candidates.push(
       ...(await diffSkillDir(
@@ -735,6 +738,18 @@ async function detectSkillAssetChanges(
     );
   }
   return candidates;
+}
+
+/**
+ * Whether this target's copy of a skill exists and is agconf-managed. Absent or
+ * unmanaged means the directory is not ours to propose from.
+ */
+async function skillIsManagedAt(skillDir: string, metaOpts: MetaOpts): Promise<boolean> {
+  try {
+    return isManaged(await fs.readFile(path.join(skillDir, "SKILL.md"), "utf-8"), metaOpts);
+  } catch {
+    return false; // No directory, or no SKILL.md in it
+  }
 }
 
 /**

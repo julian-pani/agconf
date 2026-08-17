@@ -666,15 +666,23 @@ Body line two.
         await editCopy(".claude/skills", "SKILL.md", editedSkill("CLAUDE"));
         await editCopy(".agents/skills", "SKILL.md", editedSkill("CODEX"));
 
-        const tmpRoot = process.env.TMPDIR || "/tmp";
-        const before = (await fs.readdir(tmpRoot)).filter((d) => d.startsWith("agconf-propose-"));
+        // tests/setup/tmpdir.ts already gives this FILE its own TMPDIR, but other
+        // tests here legitimately leave clones in it (a successful detect hands
+        // the clone to its caller). Narrow to a per-test dir so the assertion can
+        // be exact emptiness. cloneCanonicalForDetect reads TMPDIR at call time.
+        const originalTmp = process.env.TMPDIR;
+        const privateTmp = await fs.mkdtemp(path.join(tempDir, "tmproot-"));
+        process.env.TMPDIR = privateTmp;
+        try {
+          await expect(detectProposedChanges({ cwd: downstreamDir })).rejects.toThrow(
+            DivergentCopiesError,
+          );
 
-        await expect(detectProposedChanges({ cwd: downstreamDir })).rejects.toThrow(
-          DivergentCopiesError,
-        );
-
-        const after = (await fs.readdir(tmpRoot)).filter((d) => d.startsWith("agconf-propose-"));
-        expect(after).toEqual(before);
+          expect(await fs.readdir(privateTmp)).toEqual([]);
+        } finally {
+          if (originalTmp === undefined) delete process.env.TMPDIR;
+          else process.env.TMPDIR = originalTmp;
+        }
       });
 
       describe("three or more harnesses", () => {
@@ -759,6 +767,21 @@ Body line two.
           );
           expect(error.divergent[0].downstreamPaths).toHaveLength(3);
         });
+      });
+
+      it("ignores a same-named unmanaged skill dir under another harness", async () => {
+        // managedSkillNames is true if ANY target's copy is managed, so the asset
+        // scan must re-check per target. A hand-authored `.agents/skills/<name>/`
+        // that merely shares a name is not ours to propose from — and must not
+        // collide with the managed copy as a spurious divergence.
+        await setupSyncedToBothTargets();
+        const codexDir = path.join(downstreamDir, ".agents", "skills", "multi-target");
+        await fs.writeFile(path.join(codexDir, "SKILL.md"), SKILL_BODY, "utf-8"); // no metadata
+        await editCopy(".agents/skills", "references/template.py", "print('MINE, not agconf')\n");
+
+        const result = await detectProposedChanges({ cwd: downstreamDir });
+
+        expect(result.changes).toEqual([]);
       });
 
       it("proposes a skill synced only to the Codex target", async () => {
