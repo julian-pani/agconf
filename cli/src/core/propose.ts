@@ -287,77 +287,84 @@ export async function detectProposedChanges(options: ProposeOptions = {}): Promi
   let dirs = resolveCanonicalDirs(undefined);
   if (filesToPropose.length > 0 || managedSkillNames.length > 0) {
     canonicalCloneDir = await cloneCanonicalForDetect(source);
-    dirs = resolveCanonicalDirs(await loadCanonicalRepoConfig(canonicalCloneDir));
   }
 
-  // Reconciliation needs the clone; without it there is nothing to propose and
-  // so nothing to reconcile.
-  const reconcile: ReconcileContext | null = canonicalCloneDir
-    ? {
-        cloneDir: canonicalCloneDir,
-        source,
-        metaOpts: markerPrefix ? { metadataPrefix: markerPrefix } : {},
-        // The base commit is the same for every file, so check it once.
-        commitVerified: source.commit_sha
-          ? await verifyBaseCommit(canonicalCloneDir, source.commit_sha)
-          : false,
-        forceConflicts: options.override === true,
-      }
-    : null;
-
-  const changes: ProposedChange[] = [];
-  const conflicts: ProposeConflict[] = [];
-  const dropped: string[] = [...instructionsDropped];
-
-  for (const file of filesToPropose) {
-    const change = await buildProposedChange(targetDir, file, markerPrefix, dirs);
-    if (!change) continue;
-    if (!reconcile) {
-      changes.push(change);
-      continue;
-    }
-    const decision = await reconcileChange(change, reconcile, {
-      syncedHash: () => readSyncedHash(targetDir, file, markerPrefix),
-    });
-    collectDecision(decision, change, { changes, conflicts, dropped, reconcile });
-  }
-
-  if (canonicalCloneDir) {
-    for (const skillName of managedSkillNames) {
-      const assetChanges = await detectSkillAssetChanges(
-        targetDir,
-        targets,
-        skillName,
-        canonicalCloneDir,
-        dirs.skillsDir,
-        { reconcile, conflicts, dropped, matchesFilter },
-      );
-      changes.push(...assetChanges);
-    }
-  }
-
-  if (conflicts.length > 0) {
-    // The clone only existed to answer this question; nothing downstream will
-    // reuse it now that detection is aborting. Guarded rather than defaulted:
-    // an empty path would resolve to "." and delete the working directory.
+  // Past this point the clone exists on disk. Only the success path below hands
+  // it to the caller (as ProposeResult.canonicalCloneDir, for
+  // applyProposedChanges to reuse); every abort — a conflict, a malformed
+  // canonical config, an unreadable file — has to dispose of it or it leaks
+  // into TMPDIR forever. Hence catch-and-rethrow rather than finally.
+  try {
     if (canonicalCloneDir) {
-      await removeTempDir(path.dirname(canonicalCloneDir));
+      dirs = resolveCanonicalDirs(await loadCanonicalRepoConfig(canonicalCloneDir));
     }
-    throw new StaleBaseError(conflicts);
+
+    // Reconciliation needs the clone; without it there is nothing to propose and
+    // so nothing to reconcile.
+    const reconcile: ReconcileContext | null = canonicalCloneDir
+      ? {
+          cloneDir: canonicalCloneDir,
+          source,
+          metaOpts: markerPrefix ? { metadataPrefix: markerPrefix } : {},
+          // The base commit is the same for every file, so check it once.
+          commitVerified: source.commit_sha
+            ? await verifyBaseCommit(canonicalCloneDir, source.commit_sha)
+            : false,
+          forceConflicts: options.override === true,
+        }
+      : null;
+
+    const changes: ProposedChange[] = [];
+    const conflicts: ProposeConflict[] = [];
+    const dropped: string[] = [...instructionsDropped];
+
+    for (const file of filesToPropose) {
+      const change = await buildProposedChange(targetDir, file, markerPrefix, dirs);
+      if (!change) continue;
+      if (!reconcile) {
+        changes.push(change);
+        continue;
+      }
+      const decision = await reconcileChange(change, reconcile, {
+        syncedHash: () => readSyncedHash(targetDir, file, markerPrefix),
+      });
+      collectDecision(decision, change, { changes, conflicts, dropped, reconcile });
+    }
+
+    if (canonicalCloneDir) {
+      for (const skillName of managedSkillNames) {
+        const assetChanges = await detectSkillAssetChanges(
+          targetDir,
+          targets,
+          skillName,
+          canonicalCloneDir,
+          dirs.skillsDir,
+          { reconcile, conflicts, dropped, matchesFilter },
+        );
+        changes.push(...assetChanges);
+      }
+    }
+
+    if (conflicts.length > 0) {
+      throw new StaleBaseError(conflicts);
+    }
+
+    // Gather originating context
+    const downstream = await getOriginContext(scope, targetDir);
+
+    return {
+      changes,
+      source,
+      markerPrefix,
+      downstream,
+      canonicalCloneDir,
+      baseSha: source.commit_sha,
+      dropped,
+    };
+  } catch (error) {
+    await discardCanonicalClone(canonicalCloneDir);
+    throw error;
   }
-
-  // Gather originating context
-  const downstream = await getOriginContext(scope, targetDir);
-
-  return {
-    changes,
-    source,
-    markerPrefix,
-    downstream,
-    canonicalCloneDir,
-    baseSha: source.commit_sha,
-    dropped,
-  };
 }
 
 /**
@@ -695,16 +702,51 @@ async function diffSkillDir(
   return changes;
 }
 
+/** mkdtemp prefix for the temp dir every canonical clone lives in. */
+const CLONE_TMP_PREFIX = "agconf-propose-";
+/** Directory name of the clone itself, inside that temp dir. */
+const CLONE_DIR_NAME = "canonical";
+
+/** Create the mkdtemp base a canonical clone lives in, and the clone path inside it. */
+async function createCloneDir(): Promise<string> {
+  // mkdtemp atomically creates a uniquely-named dir, so concurrent propose
+  // flows never collide on the same clone path.
+  const tmpBase = await fs.mkdtemp(path.join(process.env.TMPDIR || "/tmp", CLONE_TMP_PREFIX));
+  return path.join(tmpBase, CLONE_DIR_NAME);
+}
+
+/**
+ * Delete a canonical clone and the temp dir it lives in.
+ *
+ * Callers own the clone's lifetime: every propose path that is not handing the
+ * user a way back into the clone must call this, or the clone leaks into TMPDIR
+ * for the life of the machine.
+ *
+ * Deliberately paranoid about what it removes, because it deletes the clone's
+ * *parent* (the mkdtemp base) and so destroys more than the path it is given: a
+ * `cloneDir` of `""` would resolve to `"."` — the working directory — and
+ * `/tmp/anything` would resolve to `/tmp`. It therefore removes nothing unless
+ * the path has the exact shape `createCloneDir` produces
+ * (`<tmp>/agconf-propose-XXXX/canonical`). Anything else is silently ignored
+ * rather than guessed at. Do not relax either check into a default.
+ */
+export async function discardCanonicalClone(cloneDir: string | undefined): Promise<void> {
+  if (!cloneDir) return;
+  if (path.basename(cloneDir) !== CLONE_DIR_NAME) return;
+  const tmpBase = path.dirname(cloneDir);
+  if (!path.basename(tmpBase).startsWith(CLONE_TMP_PREFIX)) return;
+  await removeTempDir(tmpBase);
+}
+
 /**
  * Clone canonical to a temp dir for detection. The same clone is reused by
  * `applyProposedChanges` (it's threaded through `ProposeResult`) so we never
  * clone twice in a single propose flow.
+ *
+ * The caller owns the returned clone and must `discardCanonicalClone` it.
  */
 async function cloneCanonicalForDetect(source: Source): Promise<string> {
-  // mkdtemp atomically creates a uniquely-named dir, so concurrent propose
-  // flows never collide on the same clone path.
-  const tmpBase = await fs.mkdtemp(path.join(process.env.TMPDIR || "/tmp", "agconf-propose-"));
-  const cloneDir = path.join(tmpBase, "canonical");
+  const cloneDir = await createCloneDir();
   await cloneCanonical(source, cloneDir);
   return cloneDir;
 }
@@ -947,41 +989,49 @@ export async function detectNewContent(
 
   // Pass 2: clone canonical once to resolve destination dirs + detect collisions.
   const canonicalCloneDir = await cloneCanonicalForDetect(source);
-  const { skillsDir, rulesDir, agentsDir } = resolveCanonicalDirs(
-    await loadCanonicalRepoConfig(canonicalCloneDir),
-  );
 
-  const candidates: NewContentCandidate[] = [];
-  const adoptable: AdoptableItem[] = [];
-  const warnings: string[] = [];
+  // As in detectProposedChanges: the clone is handed to the caller only on the
+  // success path, so anything that throws from here has to discard it first.
+  try {
+    const { skillsDir, rulesDir, agentsDir } = resolveCanonicalDirs(
+      await loadCanonicalRepoConfig(canonicalCloneDir),
+    );
 
-  for (const raw of raws) {
-    const candidate = await buildNewCandidate(raw, {
-      targetDir,
-      canonicalCloneDir,
-      skillsDir,
-      rulesDir,
-      agentsDir,
-      metaOpts,
+    const candidates: NewContentCandidate[] = [];
+    const adoptable: AdoptableItem[] = [];
+    const warnings: string[] = [];
+
+    for (const raw of raws) {
+      const candidate = await buildNewCandidate(raw, {
+        targetDir,
+        canonicalCloneDir,
+        skillsDir,
+        rulesDir,
+        agentsDir,
+        metaOpts,
+        adoptable,
+        warnings,
+      });
+      if (candidate) candidates.push(candidate);
+    }
+
+    // Auto-select only when a path filter pinned things down to a single survivor.
+    const autoSelect = Boolean(options.path) && candidates.length === 1;
+
+    return {
+      candidates,
       adoptable,
+      autoSelect,
       warnings,
-    });
-    if (candidate) candidates.push(candidate);
+      source,
+      markerPrefix,
+      downstream,
+      canonicalCloneDir,
+    };
+  } catch (error) {
+    await discardCanonicalClone(canonicalCloneDir);
+    throw error;
   }
-
-  // Auto-select only when a path filter pinned things down to a single survivor.
-  const autoSelect = Boolean(options.path) && candidates.length === 1;
-
-  return {
-    candidates,
-    adoptable,
-    autoSelect,
-    warnings,
-    source,
-    markerPrefix,
-    downstream,
-    canonicalCloneDir,
-  };
 }
 
 interface BuildCandidateContext {
@@ -1223,7 +1273,11 @@ function pathFilterMatches(candidatePath: string, filter: string): boolean {
 }
 
 export interface ApplyResult {
-  /** Path to the temporary canonical clone */
+  /**
+   * Path to the temporary canonical clone. Still on disk when this returns, and
+   * the caller owns it: discard it with `discardCanonicalClone` unless
+   * `manualCommands` is set (see below).
+   */
   cloneDir: string;
   /** Branch name created */
   branch: string;
@@ -1231,7 +1285,13 @@ export interface ApplyResult {
   pushed: boolean;
   /** PR URL if created */
   prUrl?: string | undefined;
-  /** Manual commands to run if push or PR creation failed */
+  /**
+   * Manual commands to run if push or PR creation failed.
+   *
+   * When this is set, `cloneDir` MUST be left on disk — it holds the only copy
+   * of the commit, and the commands run inside it. This is the one case where
+   * retaining the clone is deliberate rather than a leak.
+   */
   manualCommands?: string | undefined;
 }
 
@@ -1259,61 +1319,70 @@ export async function applyProposedChanges(
     // common detect-then-apply flow.
     cloneDir = result.canonicalCloneDir;
   } else {
-    // Create a persistent temp directory (not auto-cleaned, so user can retry
-    // on failure). mkdtemp gives a unique name so concurrent applies don't collide.
-    const tmpBase = await fs.mkdtemp(path.join(process.env.TMPDIR || "/tmp", "agconf-propose-"));
-    cloneDir = path.join(tmpBase, "canonical");
+    cloneDir = await createCloneDir();
     await cloneCanonical(source, cloneDir);
   }
 
-  // Create branch from title
-  const branch = generateBranchName(options.title);
-  const git: SimpleGit = simpleGit(cloneDir);
-  await git.checkoutLocalBranch(branch);
-
-  // Apply changes
-  for (const change of result.changes) {
-    const targetPath = path.join(cloneDir, change.canonicalPath);
-    await fs.mkdir(path.dirname(targetPath), { recursive: true });
-    if (typeof change.content === "string") {
-      await fs.writeFile(targetPath, change.content, "utf-8");
-    } else {
-      await fs.writeFile(targetPath, change.content);
-    }
-  }
-
-  // Commit using the title
-  await git.add(".");
-  await git.commit(options.title);
-
-  // Try to push
-  let pushed = false;
-  let prUrl: string | undefined;
-  let manualCommands: string | undefined;
-
   try {
-    await git.push("origin", branch, ["--set-upstream"]);
-    pushed = true;
-  } catch {
-    const pushCmd = `git push -u origin ${branch}`;
-    const prCmd = buildGhPrCommand(branch, result, options);
-    manualCommands = [`cd ${cloneDir}`, pushCmd, "", "Then create a PR:", prCmd].join("\n");
-    return { cloneDir, branch, pushed, manualCommands };
-  }
+    // Create branch from title
+    const branch = generateBranchName(options.title);
+    const git: SimpleGit = simpleGit(cloneDir);
+    await git.checkoutLocalBranch(branch);
 
-  // Try to open PR (only for GitHub sources)
-  if (source.type === "github") {
-    try {
-      const prCmd = buildGhPrCommand(branch, result, options);
-      const { stdout } = await execAsync(prCmd, { cwd: cloneDir });
-      prUrl = stdout.trim();
-    } catch {
-      const prCmd = buildGhPrCommand(branch, result, options);
-      manualCommands = ["Branch was pushed successfully. To create a PR:", prCmd].join("\n");
+    // Apply changes
+    for (const change of result.changes) {
+      const targetPath = path.join(cloneDir, change.canonicalPath);
+      await fs.mkdir(path.dirname(targetPath), { recursive: true });
+      if (typeof change.content === "string") {
+        await fs.writeFile(targetPath, change.content, "utf-8");
+      } else {
+        await fs.writeFile(targetPath, change.content);
+      }
     }
-  }
 
-  return { cloneDir, branch, pushed, prUrl, manualCommands };
+    // Commit using the title
+    await git.add(".");
+    await git.commit(options.title);
+
+    // Try to push
+    let pushed = false;
+    let prUrl: string | undefined;
+    let manualCommands: string | undefined;
+
+    try {
+      await git.push("origin", branch, ["--set-upstream"]);
+      pushed = true;
+    } catch {
+      const pushCmd = `git push -u origin ${branch}`;
+      const prCmd = buildGhPrCommand(branch, result, options);
+      // KEEP THE CLONE. The commit exists only here, and these instructions
+      // start with `cd <cloneDir>` — deleting it would point the user's only
+      // route to recovery at a directory that no longer exists. The caller is
+      // responsible for honoring this (see `manualCommands` on ApplyResult).
+      manualCommands = [`cd ${cloneDir}`, pushCmd, "", "Then create a PR:", prCmd].join("\n");
+      return { cloneDir, branch, pushed, manualCommands };
+    }
+
+    // Try to open PR (only for GitHub sources)
+    if (source.type === "github") {
+      try {
+        const prCmd = buildGhPrCommand(branch, result, options);
+        const { stdout } = await execAsync(prCmd, { cwd: cloneDir });
+        prUrl = stdout.trim();
+      } catch {
+        const prCmd = buildGhPrCommand(branch, result, options);
+        // KEEP THE CLONE, same reasoning: `gh pr create` has to run inside it.
+        manualCommands = ["Branch was pushed successfully. To create a PR:", prCmd].join("\n");
+      }
+    }
+
+    return { cloneDir, branch, pushed, prUrl, manualCommands };
+  } catch (error) {
+    // Nothing was handed back, so there is nothing for the user to retry in
+    // the clone — drop it rather than leaking it into TMPDIR.
+    await discardCanonicalClone(cloneDir);
+    throw error;
+  }
 }
 
 /**
