@@ -1,3 +1,10 @@
+## [0.25.1](https://github.com/julian-pani/agconf/compare/v0.25.0...v0.25.1) (2026-08-18)
+
+### Bug Fixes
+
+* **propose:** anchor the --files hint and check managed-ness per target ([ed4f30f](https://github.com/julian-pani/agconf/commit/ed4f30f996838c3b8214dc8c615fb89c26c1a645))
+* **propose:** collapse downstream copies that map to one canonical path ([e8b1f8d](https://github.com/julian-pani/agconf/commit/e8b1f8d852b9e6bd9da11b7f3c5a0a8ac20b371e))
+
 ## [0.25.0](https://github.com/julian-pani/agconf/compare/v0.24.1...v0.25.0) (2026-08-18)
 
 ### Features
