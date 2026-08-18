@@ -1,3 +1,9 @@
+## [0.24.1](https://github.com/julian-pani/agconf/compare/v0.24.0...v0.24.1) (2026-08-18)
+
+### Bug Fixes
+
+* **propose:** clean up the canonical clone on every non-retry path ([0cb5c15](https://github.com/julian-pani/agconf/commit/0cb5c15ca4c477e679826d13c4636344f897f70a))
+
 ## [0.24.0](https://github.com/julian-pani/agconf/compare/v0.23.0...v0.24.0) (2026-08-16)
 
 ### Features
