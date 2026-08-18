@@ -243,6 +243,11 @@ present in **both** scopes (a repo skill and a different user skill is not a
 collision). The warning is framed as a note for you, not a task for the agent. It
 always exits 0 and never disrupts a session.
 
+It also nudges you to re-run `--install-hook` if your user store later gained a
+target that never got its hook (e.g. you installed the hook while synced for Claude
+only, then re-synced with `--target claude,codex`) — the hook is otherwise only
+wired up for whatever targets existed when you last installed it.
+
 ```bash
 # Install it as a SessionStart hook for the targets your user store was synced to
 # (Claude → ~/.claude/settings.json, Codex → ~/.codex/hooks.json)

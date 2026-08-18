@@ -12,6 +12,7 @@ import {
   codexHooksDisabledWarning,
   type DuplicationFinding,
   detectCrossScopeDuplication,
+  findMissingHookTargets,
   installSessionStartHooks,
   resolveHookTargets,
 } from "../core/session-check.js";
@@ -133,7 +134,11 @@ export async function sessionCheckCommand(options: SessionCheckOptions = {}): Pr
     const integrity = await checkUserScope({ homeDir });
     const hasIntegrityIssue = !integrity.ok && integrity.hasLockfile;
 
-    if (cross.findings.length === 0 && !hasIntegrityIssue) {
+    // Self-heal nudge for the "store gained a target after the hook was installed"
+    // drift — see findMissingHookTargets. Cheap (≤2 JSON reads) and never throws.
+    const missingHooks = await findMissingHookTargets(homeDir);
+
+    if (cross.findings.length === 0 && !hasIntegrityIssue && missingHooks.length === 0) {
       return; // clean — stay silent so the hook adds no noise
     }
 
@@ -157,6 +162,14 @@ export async function sessionCheckCommand(options: SessionCheckOptions = {}): Pr
       console.log(
         pc.dim(
           "Note for the developer: your user-scope agconf files changed since the last sync — run `agconf check --scope user` for details.",
+        ),
+      );
+    }
+
+    if (missingHooks.length > 0) {
+      console.log(
+        pc.dim(
+          `Note for the developer: your user store is synced for ${missingHooks.join(", ")}, but the session-check hook isn't installed for ${missingHooks.length > 1 ? "those targets" : "that target"} — run \`agconf session-check --install-hook\` to add ${missingHooks.length > 1 ? "them" : "it"}.`,
         ),
       );
     }
