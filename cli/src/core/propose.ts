@@ -178,6 +178,34 @@ export interface ProposeResult {
   dropped?: string[] | undefined;
 }
 
+/** One canonical file that two or more downstream copies disagree about. */
+export interface DivergentCopies {
+  /** The shared canonical destination. */
+  canonicalPath: string;
+  /** Every downstream path that maps to it, in discovery order. */
+  downstreamPaths: string[];
+}
+
+/**
+ * Raised when a single canonical file has more than one downstream copy and the
+ * copies no longer agree.
+ *
+ * A skill synced to several targets lives at `.claude/skills/X/…` *and*
+ * `.agents/skills/X/…` but has one canonical home. Editing only one of them is
+ * the normal case and collapses cleanly; editing both differently has no
+ * defined winner, so propose stops instead of picking one and silently
+ * discarding the other edit. `--override` deliberately does not resolve this —
+ * it chooses the local copy over canonical's, and here both sides are local.
+ */
+export class DivergentCopiesError extends Error {
+  constructor(public readonly divergent: DivergentCopies[]) {
+    super(
+      `Refusing to propose ${divergent.length} file(s) whose downstream copies differ from each other`,
+    );
+    this.name = "DivergentCopiesError";
+  }
+}
+
 /**
  * Canonical-side destination directories, resolved from the canonical config
  * with the conventional defaults. Used to map downstream paths
@@ -268,9 +296,9 @@ export async function detectProposedChanges(options: ProposeOptions = {}): Promi
   );
 
   // Non-SKILL.md files inside managed skill dirs are diffed against canonical.
-  // Deduped: checkAllManagedFiles reports a skill once per target it is synced
-  // to, while detectSkillAssetChanges diffs a skill name once (it returns at the
-  // first target whose skill dir exists). One pass per name is all that is used.
+  // Deduped by name: checkAllManagedFiles reports a skill once per target it is
+  // synced to, but the asset scan walks every target itself and collapses the
+  // results, so one pass per name is all that is needed.
   const managedSkillNames = [
     ...new Set(
       allFiles
@@ -314,35 +342,60 @@ export async function detectProposedChanges(options: ProposeOptions = {}): Promi
         }
       : null;
 
-    const changes: ProposedChange[] = [];
-    const conflicts: ProposeConflict[] = [];
-    const dropped: string[] = [...instructionsDropped];
+    // Collect every candidate change BEFORE reconciling anything. Downstream
+    // copies of one canonical file (a skill synced to claude + codex) have to be
+    // collapsed first: reconciliation compares against canonical per canonical
+    // path, so running it twice for one path would do redundant git work and
+    // still leave two entries for `applyProposedChanges` to overwrite in turn.
+    const candidates: Candidate[] = [];
 
     for (const file of filesToPropose) {
       const change = await buildProposedChange(targetDir, file, markerPrefix, dirs);
       if (!change) continue;
+      candidates.push({
+        change,
+        syncedHash: () => readSyncedHash(targetDir, file, markerPrefix),
+      });
+    }
+
+    if (canonicalCloneDir) {
+      for (const skillName of managedSkillNames) {
+        candidates.push(
+          ...(await detectSkillAssetChanges(
+            targetDir,
+            targets,
+            skillName,
+            canonicalCloneDir,
+            dirs.skillsDir,
+            matchesFilter,
+            markerPrefix ? { metadataPrefix: markerPrefix } : {},
+          )),
+        );
+      }
+    }
+
+    // Both this abort and the StaleBaseError below throw, so the catch discards
+    // the clone for them — no explicit cleanup at the throw sites.
+    const collapsed = collapseByCanonicalPath(candidates);
+    if (collapsed.divergent.length > 0) {
+      throw new DivergentCopiesError(collapsed.divergent);
+    }
+
+    const changes: ProposedChange[] = [];
+    const conflicts: ProposeConflict[] = [];
+    const dropped: string[] = [...instructionsDropped];
+
+    for (const candidate of collapsed.unique) {
+      const { change } = candidate;
       if (!reconcile) {
         changes.push(change);
         continue;
       }
       const decision = await reconcileChange(change, reconcile, {
-        syncedHash: () => readSyncedHash(targetDir, file, markerPrefix),
+        syncedHash: candidate.syncedHash,
+        theirsRaw: candidate.theirsRaw,
       });
       collectDecision(decision, change, { changes, conflicts, dropped, reconcile });
-    }
-
-    if (canonicalCloneDir) {
-      for (const skillName of managedSkillNames) {
-        const assetChanges = await detectSkillAssetChanges(
-          targetDir,
-          targets,
-          skillName,
-          canonicalCloneDir,
-          dirs.skillsDir,
-          { reconcile, conflicts, dropped, matchesFilter },
-        );
-        changes.push(...assetChanges);
-      }
     }
 
     if (conflicts.length > 0) {
@@ -406,6 +459,71 @@ async function collapseInstructionFiles(
   const [keep, ...redundant] = instructions;
   dropped.push(...redundant.map((f) => f.path));
   return files.filter((f) => f.type !== "agents" || f === keep);
+}
+
+/**
+ * A change mapped from downstream to canonical but not yet reconciled against
+ * canonical HEAD, plus whatever the reconciliation of that particular file can
+ * reuse instead of re-reading.
+ */
+interface Candidate {
+  change: ProposedChange;
+  /** Reads the file's embedded sync hash; absent for assets, which carry none. */
+  syncedHash?: (() => Promise<string | undefined>) | undefined;
+  /** Canonical HEAD bytes already in hand (`null` = absent upstream). */
+  theirsRaw?: Buffer | null | undefined;
+}
+
+/**
+ * Collapse candidates that share a canonical destination.
+ *
+ * A skill synced to several targets yields one candidate per target
+ * (`.claude/skills/X/SKILL.md`, `.agents/skills/X/SKILL.md`) for a single
+ * canonical file. Copies that agree are one proposal — which is the normal case,
+ * since sync writes them identically and a developer usually edits one. Copies
+ * that disagree have no defined winner: keeping both would let
+ * `applyProposedChanges` write them in sequence, so whichever came last would
+ * silently discard the other edit. Those become `divergent` and abort the run.
+ */
+function collapseByCanonicalPath(candidates: Candidate[]): {
+  unique: Candidate[];
+  divergent: DivergentCopies[];
+} {
+  const kept = new Map<string, Candidate>();
+  const divergent = new Map<string, DivergentCopies>();
+
+  for (const candidate of candidates) {
+    const { canonicalPath } = candidate.change;
+
+    // Checked before `kept`, which no longer holds this path: a third copy of an
+    // already-divergent file must join the record, not re-enter `kept`.
+    const record = divergent.get(canonicalPath);
+    if (record) {
+      record.downstreamPaths.push(candidate.change.downstreamPath);
+      continue;
+    }
+
+    const existing = kept.get(canonicalPath);
+    if (!existing) {
+      kept.set(canonicalPath, candidate);
+      continue;
+    }
+
+    if (toBuffer(existing.change.content).equals(toBuffer(candidate.change.content))) {
+      continue; // Same content — the extra copy adds nothing.
+    }
+
+    // Evict the path from `kept` as well as recording the divergence, so a
+    // half-collapsed entry can never reach the apply step — `unique` is safe to
+    // use even by a caller that chooses to report divergences without aborting.
+    kept.delete(canonicalPath);
+    divergent.set(canonicalPath, {
+      canonicalPath,
+      downstreamPaths: [existing.change.downstreamPath, candidate.change.downstreamPath],
+    });
+  }
+
+  return { unique: [...kept.values()], divergent: [...divergent.values()] };
 }
 
 /** Everything reconciliation needs to compare a change against canonical. */
@@ -578,11 +696,14 @@ function collectDecision(
 
 /**
  * For a single managed skill, walk every non-SKILL.md file in the downstream
- * skill directory and emit a `skill-asset` change for each one whose bytes
+ * skill directory and emit a `skill-asset` candidate for each one whose bytes
  * differ from canonical (or that does not exist in canonical at all).
  *
- * When the skill is synced to multiple targets (e.g. claude + codex) the copies
- * are identical, so we only inspect the first target that has the directory.
+ * Every target the skill is synced to is scanned, not just the first one that
+ * has the directory: sync writes the copies identically, but a developer can
+ * edit any of them, and only looking at one would silently ignore an asset
+ * edited in another. The per-target results are collapsed by canonical path
+ * back in `detectProposedChanges` alongside the metadata-bearing files.
  */
 async function detectSkillAssetChanges(
   targetDir: string,
@@ -590,43 +711,59 @@ async function detectSkillAssetChanges(
   skillName: string,
   canonicalCloneDir: string,
   skillsDir: string,
-  ctx: AssetScanContext,
-): Promise<ProposedChange[]> {
+  matchesFilter: (relPath: string) => boolean,
+  metaOpts: MetaOpts,
+): Promise<Candidate[]> {
   const canonicalSkillDir = path.join(canonicalCloneDir, skillsDir, skillName);
+  const candidates: Candidate[] = [];
 
   for (const target of targets) {
     const downstreamSkillDir = path.join(targetDir, getSkillsDir(target), skillName);
-    try {
-      await fs.access(downstreamSkillDir);
-    } catch {
-      continue; // Skill not synced to this target
-    }
+    // Managed-ness is checked per target, not inherited from `managedSkillNames`
+    // (which is true if ANY target's copy is managed). Otherwise a hand-authored
+    // directory that merely shares a name with a managed skill under a different
+    // harness would contribute its files to the proposal, or collide with the
+    // real copy as a spurious divergence.
+    if (!(await skillIsManagedAt(downstreamSkillDir, metaOpts))) continue;
 
-    return diffSkillDir(target, skillName, downstreamSkillDir, canonicalSkillDir, skillsDir, ctx);
+    candidates.push(
+      ...(await diffSkillDir(
+        target,
+        skillName,
+        downstreamSkillDir,
+        canonicalSkillDir,
+        skillsDir,
+        matchesFilter,
+      )),
+    );
   }
-  return [];
-}
-
-interface AssetScanContext {
-  /** Null only when there is no canonical clone to reconcile against. */
-  reconcile: ReconcileContext | null;
-  /** Collects files that can't be proposed without user action (mutated) */
-  conflicts: ProposeConflict[];
-  /** Collects files dropped as already-up-to-date (mutated) */
-  dropped: string[];
-  /**
-   * The `--files` predicate. Applied before reconciliation so an excluded file
-   * neither costs a git lookup nor aborts the propose on a conflict it would
-   * never have contributed to.
-   */
-  matchesFilter: (relPath: string) => boolean;
+  return candidates;
 }
 
 /**
- * Assets carry no metadata, so a plain byte diff against canonical HEAD can't
- * tell "I edited this" from "canonical moved". Each differing file is therefore
- * run through the same reconciliation as metadata-bearing content, which
- * resolves that from the merge base.
+ * Whether this target's copy of a skill exists and is agconf-managed. Absent or
+ * unmanaged means the directory is not ours to propose from.
+ */
+async function skillIsManagedAt(skillDir: string, metaOpts: MetaOpts): Promise<boolean> {
+  try {
+    return isManaged(await fs.readFile(path.join(skillDir, "SKILL.md"), "utf-8"), metaOpts);
+  } catch {
+    return false; // No directory, or no SKILL.md in it
+  }
+}
+
+/**
+ * Byte-diff one target's copy of a skill directory against canonical HEAD.
+ *
+ * Assets carry no metadata, so this diff alone can't tell "I edited this" from
+ * "canonical moved" — each differing file becomes a candidate that goes through
+ * the same reconciliation as metadata-bearing content, which resolves that from
+ * the merge base. Canonical HEAD's bytes are already read here, so they ride
+ * along on the candidate rather than being read again.
+ *
+ * @param matchesFilter The `--files` predicate. Applied here so an excluded file
+ *   neither costs a git lookup nor aborts the propose on a conflict it would
+ *   never have contributed to.
  */
 async function diffSkillDir(
   target: string,
@@ -634,9 +771,9 @@ async function diffSkillDir(
   downstreamSkillDir: string,
   canonicalSkillDir: string,
   skillsDir: string,
-  ctx: AssetScanContext,
-): Promise<ProposedChange[]> {
-  const changes: ProposedChange[] = [];
+  matchesFilter: (relPath: string) => boolean,
+): Promise<Candidate[]> {
+  const candidates: Candidate[] = [];
 
   const downstreamFiles = await fg("**/*", {
     cwd: downstreamSkillDir,
@@ -672,34 +809,23 @@ async function diffSkillDir(
     // Use POSIX separators in canonical paths so the canonical commit is
     // platform-portable regardless of which OS the proposer is on.
     const downstreamPath = path.join(getSkillsDir(target), skillName, relPath);
-    if (!ctx.matchesFilter(downstreamPath)) continue;
+    if (!matchesFilter(downstreamPath)) continue;
 
     const canonicalPath = `${skillsDir}/${skillName}/${relPath.split(path.sep).join("/")}`;
 
-    const change: ProposedChange = {
-      downstreamPath,
-      canonicalPath,
-      content: downstreamBytes,
-      type: "skill-asset",
-    };
-
-    if (!ctx.reconcile) {
-      changes.push(change);
-      continue;
-    }
-
-    // Canonical HEAD is already in hand from the byte diff above, and assets
-    // carry no embedded hash so there is no fallback signal to supply.
-    const decision = await reconcileChange(change, ctx.reconcile, { theirsRaw: canonicalBytes });
-    collectDecision(decision, change, {
-      changes,
-      conflicts: ctx.conflicts,
-      dropped: ctx.dropped,
-      reconcile: ctx.reconcile,
+    candidates.push({
+      change: {
+        downstreamPath,
+        canonicalPath,
+        content: downstreamBytes,
+        type: "skill-asset",
+      },
+      // Assets carry no embedded hash, so there is no fallback signal to supply.
+      theirsRaw: canonicalBytes,
     });
   }
 
-  return changes;
+  return candidates;
 }
 
 /** mkdtemp prefix for the temp dir every canonical clone lives in. */

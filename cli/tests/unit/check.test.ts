@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stringify as stringifyYaml } from "yaml";
 import { checkCommand } from "../../src/commands/check.js";
 import { compileCommand } from "../../src/commands/compile.js";
+import { syncUserScopeCommand } from "../../src/commands/user-scope.js";
 import { addManagedMetadata } from "../../src/core/managed-content.js";
 
 describe("check command", () => {
@@ -1738,6 +1739,132 @@ ${globalContent}
     });
   });
 
+  describe("lockfile schema compatibility", () => {
+    /** Write a lockfile whose schema `version` we control. */
+    async function writeLockfileWithSchemaVersion(version: string): Promise<void> {
+      const lockfile = {
+        version,
+        synced_at: new Date().toISOString(),
+        source: { type: "local", path: "/some/path", ref: "abc123" },
+        content: {
+          agents_md: { global_block_hash: "sha256:abc123def456", merged: true },
+          skills: [],
+          targets: ["claude"],
+        },
+        cli_version: "1.0.0",
+      };
+      await fs.writeFile(
+        path.join(tempDir, ".agconf", "lockfile.json"),
+        JSON.stringify(lockfile, null, 2),
+      );
+      // A managed, unmodified AGENTS.md so nothing else can fail the check.
+      const { createHash } = await import("node:crypto");
+      const globalContent = "# Global Standards";
+      const hash = createHash("sha256").update(globalContent.trim()).digest("hex");
+      await fs.writeFile(
+        path.join(tempDir, "AGENTS.md"),
+        `<!-- agconf:global:start -->\n<!-- DO NOT EDIT THIS SECTION - Managed by agconf -->\n<!-- Content hash: sha256:${hash.slice(0, 12)} -->\n\n${globalContent}\n\n<!-- agconf:global:end -->\n`,
+      );
+    }
+
+    it("fails (exit 1) with a schema error for an incompatible major version", async () => {
+      await writeLockfileWithSchemaVersion("2.0.0");
+
+      await expect(checkCommand({ cwd: tempDir })).rejects.toThrow("process.exit called");
+
+      expect(mockExit).toHaveBeenCalledWith(1);
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("Schema error"));
+      // It stops before reporting on individual files.
+      expect(consoleLogSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining("All managed files are unchanged"),
+      );
+    });
+
+    it("reports the schema error even in quiet mode by exiting 1 silently", async () => {
+      await writeLockfileWithSchemaVersion("2.0.0");
+
+      await expect(checkCommand({ cwd: tempDir, quiet: true })).rejects.toThrow(
+        "process.exit called",
+      );
+
+      expect(mockExit).toHaveBeenCalledWith(1);
+      expect(consoleLogSpy).not.toHaveBeenCalled();
+    });
+
+    it("warns but still verifies files for a newer minor schema version", async () => {
+      await writeLockfileWithSchemaVersion("1.1.0");
+
+      await checkCommand({ cwd: tempDir });
+
+      expect(consoleLogSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Some features may not work"),
+      );
+      expect(consoleLogSpy).toHaveBeenCalledWith(
+        expect.stringContaining("All managed files are unchanged"),
+      );
+      expect(mockExit).not.toHaveBeenCalled();
+    });
+
+    it("suppresses the schema warning in quiet mode", async () => {
+      await writeLockfileWithSchemaVersion("1.1.0");
+
+      await checkCommand({ cwd: tempDir, quiet: true });
+
+      expect(consoleLogSpy).not.toHaveBeenCalled();
+      expect(mockExit).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("--debug", () => {
+    it("dumps the stored vs computed hash and the hashed content for a modified rule", async () => {
+      const lockfile = {
+        version: "1.0.0",
+        synced_at: new Date().toISOString(),
+        source: { type: "local", path: "/some/path", ref: "abc123" },
+        content: {
+          agents_md: { global_block_hash: "sha256:abc123def456", merged: true },
+          skills: [],
+          rules: { files: ["test-rule.md"], content_hash: "sha256:abc123" },
+          targets: ["claude"],
+        },
+        cli_version: "1.0.0",
+      };
+      await fs.writeFile(
+        path.join(tempDir, ".agconf", "lockfile.json"),
+        JSON.stringify(lockfile, null, 2),
+      );
+      await fs.mkdir(path.join(tempDir, ".claude", "rules"), { recursive: true });
+      await fs.writeFile(
+        path.join(tempDir, ".claude", "rules", "test-rule.md"),
+        `---
+paths:
+  - "src/**/*.ts"
+metadata:
+  agconf_managed: "true"
+  agconf_content_hash: "sha256:originalHash"
+  agconf_source_path: "test-rule.md"
+---
+
+# Test Rule - MODIFIED
+`,
+      );
+      await fs.writeFile(path.join(tempDir, "AGENTS.md"), "# AGENTS.md\n\nSome content");
+
+      await expect(checkCommand({ cwd: tempDir, debug: true })).rejects.toThrow(
+        "process.exit called",
+      );
+
+      const output = consoleLogSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+      expect(output).toContain("[DEBUG] Rule: .claude/rules/test-rule.md");
+      expect(output).toContain("Stored hash: sha256:originalHash");
+      expect(output).toContain("Computed hash: sha256:");
+      // Non-managed frontmatter keys are listed to explain the hashed content.
+      expect(output).toContain("Frontmatter keys:");
+      expect(output).toContain("Metadata keys:");
+      expect(output).toContain("Stripped content (for hashing)");
+    });
+  });
+
   describe("--hook mode (pre-commit branch-aware verdict)", () => {
     async function initGitOnBranch(branch: string): Promise<void> {
       const git = simpleGit(tempDir);
@@ -1815,6 +1942,18 @@ metadata:
       );
       // The detailed report still prints so the user sees what changed.
       expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("have been modified"));
+    });
+
+    it("allows the commit (exit 0) on a detached HEAD, naming no branch", async () => {
+      await initGitOnBranch("main");
+      const git = simpleGit(tempDir);
+      await git.raw(["checkout", "--detach", (await git.revparse(["HEAD"])).trim()]);
+      await writeSyncedRepoWithModifiedSkill();
+
+      await checkCommand({ hook: true, cwd: tempDir });
+
+      expect(mockExit).not.toHaveBeenCalled();
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining("'this branch'"));
     });
 
     it("is a silent no-op (exit 0) when the repo is not synced", async () => {
@@ -2067,5 +2206,101 @@ describe("check command (context combinations)", () => {
     // path (which exits 1 here for "no managed files"), NOT throw a YAML error.
     await expect(checkCommand({ cwd: dir })).rejects.toThrow("process.exit called");
     expect(mockExit).toHaveBeenCalledWith(1);
+  });
+});
+
+// =============================================================================
+// User scope (`check --scope user`)
+// =============================================================================
+
+describe("check command (--scope user)", () => {
+  let home: string;
+  let canonical: string;
+  let mockExit: ReturnType<typeof vi.spyOn>;
+  let consoleLogSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(async () => {
+    home = await fs.mkdtemp(path.join(os.tmpdir(), "agconf-check-home-"));
+    canonical = await fs.mkdtemp(path.join(os.tmpdir(), "agconf-check-canon-"));
+    await fs.mkdir(path.join(canonical, "instructions"), { recursive: true });
+    await fs.mkdir(path.join(canonical, "skills"), { recursive: true });
+    await fs.writeFile(
+      path.join(canonical, "instructions", "AGENTS.md"),
+      "# Company Standards\n\nBe excellent.",
+      "utf-8",
+    );
+
+    mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit called");
+    }) as () => never);
+    consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+
+  afterEach(async () => {
+    mockExit.mockRestore();
+    consoleLogSpy.mockRestore();
+    await fs.rm(home, { recursive: true, force: true });
+    await fs.rm(canonical, { recursive: true, force: true });
+  });
+
+  const output = () => consoleLogSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+
+  it("exits 0 with guidance when user scope was never synced", async () => {
+    await checkCommand({ scope: "user", home });
+
+    expect(mockExit).not.toHaveBeenCalled();
+    expect(output()).toContain("Not synced at user scope");
+  });
+
+  it("exits 0 when the projected user-scope files are unchanged", async () => {
+    await syncUserScopeCommand({ scope: "user", local: canonical, home, target: ["claude"] });
+
+    await checkCommand({ scope: "user", home });
+
+    expect(mockExit).not.toHaveBeenCalled();
+    expect(output()).toContain("User-scope managed files are unchanged");
+  });
+
+  it("exits 1 when a projected user-scope file was edited", async () => {
+    await syncUserScopeCommand({ scope: "user", local: canonical, home, target: ["claude"] });
+    const claudeMd = path.join(home, ".claude", "CLAUDE.md");
+    const content = await fs.readFile(claudeMd, "utf-8");
+    await fs.writeFile(claudeMd, content.replace("Be excellent.", "TAMPERED"), "utf-8");
+
+    await expect(checkCommand({ scope: "user", home })).rejects.toThrow("process.exit called");
+
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(output()).toContain("out of sync");
+  });
+
+  it("stays silent but still exits 1 in quiet mode", async () => {
+    await syncUserScopeCommand({ scope: "user", local: canonical, home, target: ["claude"] });
+    const claudeMd = path.join(home, ".claude", "CLAUDE.md");
+    const content = await fs.readFile(claudeMd, "utf-8");
+    await fs.writeFile(claudeMd, content.replace("Be excellent.", "TAMPERED"), "utf-8");
+    consoleLogSpy.mockClear(); // drop the seeding sync's own output
+
+    await expect(checkCommand({ scope: "user", home, quiet: true })).rejects.toThrow(
+      "process.exit called",
+    );
+
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(consoleLogSpy).not.toHaveBeenCalled();
+  });
+
+  it("never touches the repo when --scope user is given from inside a repo", async () => {
+    // A repo cwd with no lockfile would print "Not synced" on the repo path; the
+    // user-scope branch must take over before any repo resolution happens.
+    const repo = await fs.mkdtemp(path.join(os.tmpdir(), "agconf-check-repo-"));
+    try {
+      await syncUserScopeCommand({ scope: "user", local: canonical, home, target: ["claude"] });
+
+      await checkCommand({ scope: "user", home, cwd: repo });
+
+      expect(output()).not.toContain("Not synced\n");
+      expect(output()).toContain("User-scope managed files are unchanged");
+    } finally {
+      await fs.rm(repo, { recursive: true, force: true });
+    }
   });
 });

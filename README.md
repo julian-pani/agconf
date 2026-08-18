@@ -347,6 +347,19 @@ a PR never looks complete while quietly dropping part of your change. Pass
 discards canonical's version *of the conflicting files only*; files that merge
 cleanly are still merged, and files you never touched are still left alone.
 
+#### When one canonical file has two local copies
+
+A skill synced to several targets is written once per target —
+`.claude/skills/X/…` for Claude and `.agents/skills/X/…` for Codex — but it has a
+single home in canonical. Editing one copy is the normal case, and the copies are
+collapsed into one proposal. Editing **both differently** has no correct answer,
+so the propose stops and lists each copy alongside the canonical path they share.
+
+`--override` does **not** resolve this one. It decides between your copy and
+canonical's, and here both candidates are yours. Either make the copies match, or
+select one with `--files` — and note `--files` narrows the *whole* propose, so
+anything it excludes is left out of the PR too.
+
 When the sync-time commit can't be resolved — a local canonical outside git, a
 force-push, a sync from another ref — there is no base to merge against. In that
 case propose falls back to the hash each managed file recorded at sync time: if

@@ -2,10 +2,26 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// Stub the two network seams so the GitHub-source paths stay offline.
+vi.mock("../../src/core/version.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/core/version.js")>()),
+  getLatestRelease: vi.fn(),
+}));
+
+vi.mock("../../src/core/source.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/core/source.js")>()),
+  resolveGithubSource: vi.fn(),
+}));
+
 import { autosyncCommand } from "../../src/commands/autosync.js";
 import { syncUserScopeCommand } from "../../src/commands/user-scope.js";
 import { isAutosyncInstalled, loadUserScopeConfig } from "../../src/config/loader.js";
 import { getAutosyncPaths, writeAutosyncState } from "../../src/core/autosync.js";
+import { writeLockfile } from "../../src/core/lockfile.js";
+import { resolveGithubSource } from "../../src/core/source.js";
+import { getUserPaths } from "../../src/core/user-scope.js";
+import { getLatestRelease } from "../../src/core/version.js";
 
 describe("autosync command", () => {
   let home: string;
@@ -32,13 +48,33 @@ describe("autosync command", () => {
   afterEach(async () => {
     consoleLogSpy.mockRestore();
     mockExit.mockRestore();
+    vi.mocked(getLatestRelease).mockReset();
+    vi.mocked(resolveGithubSource).mockReset();
     await fs.rm(home, { recursive: true, force: true });
     await fs.rm(canonical, { recursive: true, force: true });
   });
 
   const readLog = () => fs.readFile(getAutosyncPaths(home).logPath, "utf-8").catch(() => "");
+  const output = () => consoleLogSpy.mock.calls.map((c) => c.join(" ")).join("\n");
   const seedUserScope = () =>
     syncUserScopeCommand({ scope: "user", local: canonical, home, target: ["claude"] });
+  /** Record a GitHub-sourced store at `pinnedVersion` (no clone involved). */
+  const seedGithubStore = (pinnedVersion: string) =>
+    writeLockfile(home, {
+      source: { type: "github", repository: "acme/standards", commit_sha: "abc123", ref: "v1" },
+      globalBlockContent: "CANON",
+      skills: [],
+      targets: ["claude"],
+      markerPrefix: "agconf",
+      pinnedVersion,
+    });
+  const release = (version: string) => ({
+    tag: `v${version}`,
+    version,
+    commitSha: "abc123",
+    publishedAt: "2026-01-01T00:00:00Z",
+    tarballUrl: `https://example.invalid/${version}`,
+  });
 
   it("syncs and records state + log when the store has a source", async () => {
     await seedUserScope();
@@ -102,6 +138,74 @@ describe("autosync command", () => {
     expect(mockExit).not.toHaveBeenCalled();
   });
 
+  it("takes the up-to-date fast path (no clone) and reports it on a manual run", async () => {
+    await seedGithubStore("1.1.0");
+    vi.mocked(getLatestRelease).mockResolvedValue(release("1.1.0"));
+
+    await autosyncCommand({ home, trigger: "manual", force: true });
+
+    expect(await readLog()).toContain("result=up-to-date version=1.1.0");
+    expect(resolveGithubSource).not.toHaveBeenCalled();
+    expect(output()).toContain("Already up to date.");
+  });
+
+  it("tells the user why a manual run did nothing (disabled / throttled)", async () => {
+    await fs.mkdir(path.join(home, ".agconf"), { recursive: true });
+    await fs.writeFile(path.join(home, ".agconf", "config.yaml"), "autosync:\n  enabled: false\n");
+
+    await autosyncCommand({ home, trigger: "manual" });
+    expect(output()).toContain("Auto-sync is disabled");
+    consoleLogSpy.mockClear();
+
+    await fs.writeFile(path.join(home, ".agconf", "config.yaml"), "autosync:\n  enabled: true\n");
+    await writeAutosyncState(home, { version: 1, last_attempt: new Date().toISOString() });
+
+    await autosyncCommand({ home, trigger: "manual" });
+    expect(output()).toContain("Use --force to sync now.");
+    expect(await readLog()).toContain("result=throttled");
+  });
+
+  it("stays silent in quiet mode even on a manual run", async () => {
+    await autosyncCommand({ home, trigger: "manual", quiet: true }); // no source → error path
+    expect(consoleLogSpy).not.toHaveBeenCalled();
+    expect(await readLog()).toContain("result=error");
+  });
+
+  it("logs result=locked (never an error) when another sync holds the store lock", async () => {
+    await seedUserScope();
+    const storeDir = getUserPaths(home).storeDir;
+    await fs.writeFile(path.join(storeDir, ".lock"), String(Date.now()), "utf-8");
+
+    await expect(
+      autosyncCommand({ home, trigger: "startup", force: true }),
+    ).resolves.toBeUndefined();
+
+    const log = await readLog();
+    expect(log).toContain("result=locked");
+    expect(log).not.toContain("result=error");
+    expect(mockExit).not.toHaveBeenCalled();
+  });
+
+  it("redacts embedded git credentials from the persisted error state and log", async () => {
+    await seedGithubStore("1.0.0");
+    vi.mocked(getLatestRelease).mockResolvedValue(release("1.1.0"));
+    vi.mocked(resolveGithubSource).mockRejectedValue(
+      new Error(
+        "fatal: could not read from https://x-access-token:ghp_SUPERSECRET@github.com/acme/standards.git",
+      ),
+    );
+
+    await autosyncCommand({ home, trigger: "startup", force: true });
+
+    const log = await readLog();
+    expect(log).toContain("result=error");
+    expect(log).not.toContain("ghp_SUPERSECRET");
+    expect(log).toContain("//***@github.com");
+    const state = JSON.parse(await fs.readFile(getAutosyncPaths(home).statePath, "utf-8"));
+    expect(state.last_result).toBe("error");
+    expect(state.last_error).not.toContain("ghp_SUPERSECRET");
+  });
+
   it("--install installs the SessionStart hook and enables auto-sync", async () => {
     await autosyncCommand({ home, install: true });
 
@@ -127,6 +231,30 @@ describe("autosync command", () => {
     expect((await loadUserScopeConfig(home)).autosync.enabled).toBe(true);
     // A codex-only store does not create Claude's settings.json.
     await expect(fs.access(path.join(home, ".claude", "settings.json"))).rejects.toThrow();
+  });
+
+  it("--install is idempotent and says so on a second run", async () => {
+    await autosyncCommand({ home, install: true });
+    consoleLogSpy.mockClear();
+
+    await autosyncCommand({ home, install: true });
+
+    expect(output()).toContain("SessionStart hook already present for claude");
+    expect((await loadUserScopeConfig(home)).autosync.enabled).toBe(true);
+  });
+
+  it("--install --quiet installs without printing anything", async () => {
+    await autosyncCommand({ home, install: true, quiet: true });
+
+    expect(consoleLogSpy).not.toHaveBeenCalled();
+    expect(await isAutosyncInstalled(home)).toBe(true);
+  });
+
+  it("--disable --quiet turns auto-sync off without printing anything", async () => {
+    await autosyncCommand({ home, disable: true, quiet: true });
+
+    expect(consoleLogSpy).not.toHaveBeenCalled();
+    expect((await loadUserScopeConfig(home)).autosync.enabled).toBe(false);
   });
 
   it("--uninstall disables auto-sync but leaves the shared hook in place", async () => {

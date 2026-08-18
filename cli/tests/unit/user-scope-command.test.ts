@@ -2,13 +2,31 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// The two seams that would reach the network are stubbed; everything else runs
+// for real against temp directories.
+vi.mock("../../src/core/version.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/core/version.js")>()),
+  getLatestRelease: vi.fn(),
+}));
+
+vi.mock("../../src/core/source.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/core/source.js")>()),
+  resolveGithubSource: vi.fn(async () => {
+    throw new Error("clone attempted");
+  }),
+}));
+
 import {
   checkUserScopeCommand,
   probeUserScopeFreshness,
+  runUserScopeSync,
   syncUserScopeCommand,
 } from "../../src/commands/user-scope.js";
 import { writeLockfile } from "../../src/core/lockfile.js";
+import { resolveGithubSource } from "../../src/core/source.js";
 import { getUserPaths } from "../../src/core/user-scope.js";
+import { getLatestRelease } from "../../src/core/version.js";
 
 describe("user-scope commands", () => {
   let home: string;
@@ -109,6 +127,135 @@ describe("user-scope commands", () => {
     expect(out).toContain("sync --scope user");
   });
 
+  it("reports removed content and backed-up files, and skips a no-op commit", async () => {
+    // First sync brings a skill down...
+    await fs.mkdir(path.join(canonical, "skills", "code-review"), { recursive: true });
+    await fs.writeFile(
+      path.join(canonical, "skills", "code-review", "SKILL.md"),
+      "---\nname: code-review\ndescription: Review code\n---\n\n# Code Review\n",
+      "utf-8",
+    );
+    // ...and a pre-existing, divergent local skill of the same name is backed up
+    // rather than silently overwritten (user scope runs unattended).
+    const localSkill = path.join(home, ".claude", "skills", "code-review", "SKILL.md");
+    await fs.mkdir(path.dirname(localSkill), { recursive: true });
+    await fs.writeFile(
+      localSkill,
+      "---\nname: code-review\ndescription: My own version\n---\n\n# Mine\n",
+      "utf-8",
+    );
+
+    await syncUserScopeCommand({ scope: "user", local: canonical, home, target: ["claude"] });
+    expect(consoleLogSpy.mock.calls.map((c) => c.join(" ")).join("\n")).toMatch(
+      /backed up 1 of your own file\(s\)/,
+    );
+    consoleLogSpy.mockClear();
+
+    // Dropping the skill from canonical removes the projected copy.
+    await fs.rm(path.join(canonical, "skills", "code-review"), { recursive: true, force: true });
+    await syncUserScopeCommand({ scope: "user", home });
+
+    const out = consoleLogSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(out).toContain("removed (dropped from canonical): 1 skill(s)");
+    expect(await exists(localSkill)).toBe(false);
+  });
+
+  it("still projects (reporting a skipped commit) when the store's git is unusable", async () => {
+    // `.git` as a regular file: git commands in the store fail, which must be
+    // non-fatal — the projection is the point, the git history is a convenience.
+    const storeDir = getUserPaths(home).storeDir;
+    await fs.mkdir(storeDir, { recursive: true });
+    await fs.writeFile(path.join(storeDir, ".git"), "not a git dir", "utf-8");
+
+    await syncUserScopeCommand({ scope: "user", local: canonical, home, target: ["claude"] });
+
+    expect(consoleLogSpy.mock.calls.map((c) => c.join(" ")).join("\n")).toContain(
+      "git commit skipped",
+    );
+    expect(await exists(path.join(home, ".claude", "CLAUDE.md"))).toBe(true);
+    expect(mockExit).not.toHaveBeenCalled();
+  });
+
+  it("propagates an unexpected projection failure instead of swallowing it", async () => {
+    // A directory where CLAUDE.md must be written: the write fails with EISDIR.
+    // Only StoreBusy / no-source are handled; anything else must surface.
+    await fs.mkdir(path.join(home, ".claude", "CLAUDE.md"), { recursive: true });
+
+    await expect(
+      syncUserScopeCommand({ scope: "user", local: canonical, home, target: ["claude"] }),
+    ).rejects.toThrow(/EISDIR|illegal operation on a directory/i);
+
+    expect(mockExit).not.toHaveBeenCalled();
+  });
+
+  it("exits non-zero (without throwing) when another sync holds the store lock", async () => {
+    const storeDir = getUserPaths(home).storeDir;
+    await fs.mkdir(storeDir, { recursive: true });
+    // A fresh (non-stale) lock file: a live holder.
+    await fs.writeFile(path.join(storeDir, ".lock"), String(Date.now()), "utf-8");
+    const previousExitCode = process.exitCode;
+
+    try {
+      await syncUserScopeCommand({ scope: "user", local: canonical, home, target: ["claude"] });
+
+      expect(process.exitCode).toBe(1);
+      expect(consoleErrorSpy.mock.calls.map((c) => c.join(" ")).join("\n")).toContain(
+        "already running",
+      );
+      // Nothing was projected while the lock was held.
+      expect(await exists(path.join(home, ".claude", "CLAUDE.md"))).toBe(false);
+    } finally {
+      process.exitCode = previousExitCode;
+    }
+  });
+
+  describe("runUserScopeSync (shared core)", () => {
+    const seedGithubStore = (pinnedVersion: string) =>
+      writeLockfile(home, {
+        source: { type: "github", repository: "acme/standards", commit_sha: "abc123", ref: "v1" },
+        globalBlockContent: "CANON",
+        skills: [],
+        targets: ["claude"],
+        markerPrefix: "agconf",
+        pinnedVersion,
+      });
+
+    it("skips the clone entirely when the store is already at the latest version", async () => {
+      await seedGithubStore("1.1.0");
+      vi.mocked(getLatestRelease).mockResolvedValue({
+        tag: "v1.1.0",
+        version: "1.1.0",
+        commitSha: "abc123",
+        publishedAt: "2026-01-01T00:00:00Z",
+        tarballUrl: "https://example.invalid/1.1.0",
+      });
+
+      const result = await runUserScopeSync({ home, skipIfUpToDate: true });
+
+      expect(result).toEqual({ result: null, upToDate: true, pinnedVersion: "1.1.0" });
+      // The repository was recovered from the store lockfile, and no clone ran.
+      expect(getLatestRelease).toHaveBeenCalledWith("acme/standards");
+      expect(resolveGithubSource).not.toHaveBeenCalled();
+    });
+
+    it("does not skip when the store is behind (the fast path is freshness-gated)", async () => {
+      await seedGithubStore("1.0.0");
+      vi.mocked(getLatestRelease).mockResolvedValue({
+        tag: "v1.1.0",
+        version: "1.1.0",
+        commitSha: "abc123",
+        publishedAt: "2026-01-01T00:00:00Z",
+        tarballUrl: "https://example.invalid/1.1.0",
+      });
+
+      // throwOnResolveError so the stubbed clone surfaces instead of exiting.
+      await expect(
+        runUserScopeSync({ home, skipIfUpToDate: true, throwOnResolveError: true }),
+      ).rejects.toThrow("clone attempted");
+      expect(resolveGithubSource).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe("probeUserScopeFreshness", () => {
     const seedGithubStore = (pinnedVersion: string) =>
       writeLockfile(home, {
@@ -140,6 +287,17 @@ describe("user-scope commands", () => {
     it("is a no-op (behind:false) when the lookup can't resolve a version", async () => {
       await seedGithubStore("1.0.0");
       const probe = await probeUserScopeFreshness({ home, fetchLatest: async () => null });
+      expect(probe.behind).toBe(false);
+    });
+
+    it("swallows a failing lookup (never throws at session start)", async () => {
+      await seedGithubStore("1.0.0");
+      const probe = await probeUserScopeFreshness({
+        home,
+        fetchLatest: async () => {
+          throw new Error("boom");
+        },
+      });
       expect(probe.behind).toBe(false);
     });
 

@@ -198,6 +198,104 @@ describe("session-check command", () => {
     expect(autosyncSpawn).toHaveBeenCalledTimes(1);
   });
 
+  it("reports an already-present hook instead of claiming a fresh install", async () => {
+    await sessionCheckCommand({ installHook: true, home });
+    const settingsPath = path.join(home, ".claude", "settings.json");
+    const first = await fs.readFile(settingsPath, "utf-8");
+    consoleLogSpy.mockClear();
+
+    await sessionCheckCommand({ installHook: true, home });
+
+    const output = consoleLogSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(output).toContain("already present");
+    expect(output).not.toContain("Installed agconf session-check");
+    // Idempotent: the file is byte-identical, no duplicate hook entry.
+    expect(await fs.readFile(settingsPath, "utf-8")).toBe(first);
+  });
+
+  it("flags divergent instructions differently from identical ones", async () => {
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    await writeLockfile(repo, {
+      source: localSource,
+      globalBlockContent: "REPO VERSION",
+      skills: [],
+      targets: ["claude"],
+      markerPrefix: "agconf",
+    });
+    await writeLockfile(home, {
+      source: localSource,
+      globalBlockContent: "USER VERSION",
+      skills: [],
+      targets: ["claude"],
+      markerPrefix: "agconf",
+    });
+
+    await sessionCheckCommand({ cwd: repo, home });
+
+    const output = consoleLogSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(output).toContain("divergent");
+    expect(output).toContain("conflicting guidance");
+    expect(output).not.toContain("identical");
+  });
+
+  it("names the specific skills/rules/agents duplicated across scopes", async () => {
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    const content = {
+      globalBlockContent: "CANON",
+      skills: ["shared-skill", "repo-only"],
+      targets: ["claude"],
+      markerPrefix: "agconf",
+      rules: { files: ["security/shared.md"], content_hash: "sha256:aaaaaaaaaaaa" },
+      agents: { files: ["shared-agent.md"], content_hash: "sha256:bbbbbbbbbbbb" },
+    };
+    await writeLockfile(repo, { source: localSource, ...content });
+    await writeLockfile(home, {
+      source: localSource,
+      ...content,
+      skills: ["shared-skill", "user-only"],
+    });
+
+    await sessionCheckCommand({ cwd: repo, home });
+
+    const output = consoleLogSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(output).toContain("skills (shared-skill)");
+    expect(output).toContain("rules (security/shared.md)");
+    expect(output).toContain("agents (shared-agent.md)");
+    // Objects that exist in only one scope are not a double-load.
+    expect(output).not.toContain("repo-only");
+    expect(output).not.toContain("user-only");
+  });
+
+  it("notes user-scope drift even when there is no cross-scope duplication", async () => {
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    // Only user scope is synced (no repo lockfile) → no duplication findings.
+    await syncUserScopeCommand({ scope: "user", local: canonical, home, target: ["claude"] });
+    const claudeMd = path.join(home, ".claude", "CLAUDE.md");
+    const projected = await fs.readFile(claudeMd, "utf-8");
+    await fs.writeFile(claudeMd, projected.replace("Be excellent.", "TAMPERED"), "utf-8");
+    consoleLogSpy.mockClear();
+
+    await sessionCheckCommand({ cwd: repo, home });
+
+    const output = consoleLogSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(output).toContain("check --scope user");
+    expect(output).not.toContain("more than one scope");
+    expect(mockExit).not.toHaveBeenCalled();
+  });
+
+  it("stays silent when user scope is synced and everything is consistent", async () => {
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    await syncUserScopeCommand({ scope: "user", local: canonical, home, target: ["claude"] });
+    // "Consistent" includes having the hook installed for every synced target —
+    // otherwise the missing-hook nudge fires and silence is the wrong assertion.
+    await sessionCheckCommand({ installHook: true, home });
+    consoleLogSpy.mockClear();
+
+    await sessionCheckCommand({ cwd: repo, home });
+
+    expect(consoleLogSpy).not.toHaveBeenCalled();
+  });
+
   it("does not trigger background auto-sync when it is not installed", async () => {
     execFileSync("git", ["init", "-q"], { cwd: repo });
     await writeLockfile(home, {

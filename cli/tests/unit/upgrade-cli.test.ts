@@ -1,5 +1,6 @@
 import { execSync } from "node:child_process";
 import fs from "node:fs";
+import * as prompts from "@clack/prompts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { upgradeCliCommand } from "../../src/commands/upgrade-cli.js";
 import { getCliVersion } from "../../src/core/lockfile.js";
@@ -27,7 +28,7 @@ vi.mock("@clack/prompts", () => ({
   outro: (msg: string) => console.log(msg),
   cancel: (msg: string) => console.log(msg),
   confirm: vi.fn(async () => true),
-  isCancel: () => false,
+  isCancel: vi.fn(() => false),
 }));
 
 const execSyncMock = vi.mocked(execSync);
@@ -229,6 +230,82 @@ describe("upgradeCliCommand", () => {
     await expect(upgradeCliCommand({ yes: true, packageManager: "npm" })).resolves.toBeUndefined();
 
     expect(logOutput()).toContain("asdf detected. Run: asdf reshim nodejs");
+  });
+
+  it("auto-detects the package manager when the flag is omitted (src ~90-91)", async () => {
+    getCliVersionMock.mockReturnValue("1.0.0");
+    mockFetchOk(LATEST);
+    execSyncMock.mockImplementation(((command: string) =>
+      command === "agconf --version" ? `${LATEST}\n` : "") as typeof execSync);
+
+    await expect(upgradeCliCommand({ yes: true })).resolves.toBeUndefined();
+
+    // Whatever is detected, it must be one of the supported managers and be
+    // reported with the reason it was chosen.
+    expect(logOutput()).toMatch(/Package manager: (npm|pnpm|yarn|bun) \(.+\)/);
+    expect(logOutput()).toContain(`CLI upgraded to ${LATEST}!`);
+  });
+
+  it("aborts with exit 0 when the interactive confirm is declined (src ~97-107)", async () => {
+    getCliVersionMock.mockReturnValue("1.0.0");
+    mockFetchOk(LATEST);
+    vi.mocked(prompts.confirm).mockResolvedValue(false as never);
+
+    await expect(upgradeCliCommand({ packageManager: "npm" })).rejects.toThrow(
+      "process.exit called",
+    );
+
+    expect(mockExit).toHaveBeenCalledWith(0);
+    expect(logOutput()).toContain("Upgrade cancelled");
+    expect(execSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("aborts with exit 0 when the interactive confirm is cancelled (src ~103-106)", async () => {
+    getCliVersionMock.mockReturnValue("1.0.0");
+    mockFetchOk(LATEST);
+    vi.mocked(prompts.confirm).mockResolvedValue(true as never);
+    vi.mocked(prompts.isCancel).mockReturnValue(true);
+
+    await expect(upgradeCliCommand({ packageManager: "npm" })).rejects.toThrow(
+      "process.exit called",
+    );
+
+    expect(mockExit).toHaveBeenCalledWith(0);
+    expect(execSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("skips post-install verification when `agconf --version` cannot run (src ~133-135)", async () => {
+    getCliVersionMock.mockReturnValue("1.0.0");
+    mockFetchOk(LATEST);
+    execSyncMock.mockImplementation(((command: string) => {
+      if (command === "agconf --version") throw new Error("command not found");
+      return "";
+    }) as typeof execSync);
+
+    await expect(upgradeCliCommand({ yes: true, packageManager: "npm" })).resolves.toBeUndefined();
+
+    // Unverifiable is treated as success, not as a mismatch.
+    expect(logOutput()).toContain(`CLI upgraded to ${LATEST}!`);
+    expect(logOutput()).not.toContain("Version mismatch");
+  });
+
+  it("falls back to a generic shim hint for an unrecognized path (src ~147-150,159-161)", async () => {
+    getCliVersionMock.mockReturnValue("1.0.0");
+    mockFetchOk(LATEST);
+    execSyncMock.mockImplementation(((command: string) =>
+      command === "agconf --version" ? "1.0.0\n" : "") as typeof execSync);
+
+    process.argv[1] = "/opt/weird/bin/agconf";
+    // realpathSync failing must not break the mismatch report.
+    vi.spyOn(fs, "realpathSync").mockImplementation((() => {
+      throw new Error("ELOOP");
+    }) as never);
+
+    await expect(upgradeCliCommand({ yes: true, packageManager: "npm" })).resolves.toBeUndefined();
+
+    expect(logOutput()).toContain("Version mismatch");
+    expect(logOutput()).toContain("Your tool manager may be shimming the binary");
+    expect(logOutput()).toContain("Upgrade installed but not active in $PATH");
   });
 
   it("detects a mise shim on version mismatch (bonus, src ~156-157)", async () => {

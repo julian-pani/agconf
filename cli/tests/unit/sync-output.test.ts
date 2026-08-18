@@ -165,6 +165,238 @@ describe("renderSyncSummary", () => {
     expect(expanded.summaryLines.some((l) => l.includes("more new"))).toBe(false);
   });
 
+  it("reports CLAUDE.md as created, reference-only, or unchanged", () => {
+    const created = renderSyncSummary(
+      baseInput({
+        result: baseResult({
+          claudeMd: { created: true, updated: false, deletedDotClaudeClaudeMd: false },
+        }),
+      }),
+    );
+    expect(created.summaryLines).toContain("- `CLAUDE.md` (created)");
+
+    // Updated without a .claude/CLAUDE.md consolidation → reference-only hint.
+    const referenced = renderSyncSummary(
+      baseInput({
+        result: baseResult({
+          claudeMd: { created: false, updated: true, deletedDotClaudeClaudeMd: false },
+        }),
+      }),
+    );
+    expect(referenced.summaryLines).toContain("- `CLAUDE.md` (reference added)");
+    expect(referenced.summaryLines.some((l) => l.includes(".claude/CLAUDE.md"))).toBe(false);
+
+    const unchanged = renderSyncSummary(baseInput());
+    expect(unchanged.summaryLines).toContain("- `CLAUDE.md` (unchanged)");
+  });
+
+  it("marks skills as unchanged when nothing was added, updated, or removed", () => {
+    const { summaryLines } = renderSyncSummary(
+      baseInput({
+        previousSkills: ["alpha"],
+        result: baseResult({
+          targets: [{ target: "claude", skills: { copied: 2 } }],
+          skills: { synced: ["alpha"], modified: [], totalCopied: 2, validationErrors: [] },
+        }),
+      }),
+    );
+    expect(summaryLines).toContain("- `.claude/skills/` (total: 1 skills, 2 files) (unchanged)");
+    // No per-skill new/updated bullets when the re-sync changed nothing.
+    const skillItems = summaryLines.filter((l) => l.includes("`.claude/skills/alpha/`"));
+    expect(skillItems).toEqual([]);
+  });
+
+  it("distinguishes deleted from skipped orphaned skills", () => {
+    const { summaryLines } = renderSyncSummary(
+      baseInput({
+        previousSkills: ["gone", "kept-locally"],
+        orphanResult: { deleted: ["gone"], skipped: ["kept-locally"] },
+      }),
+    );
+    expect(summaryLines).toContain("  - `.claude/skills/gone/` (removed)");
+    expect(summaryLines).toContain("  - `.claude/skills/kept-locally/` (orphaned but skipped)");
+  });
+
+  it("renders orphaned rules and agents (removed and skipped) even when none remain", () => {
+    const { summaryLines } = renderSyncSummary(
+      baseInput({
+        ruleOrphanResult: { deleted: ["security/old.md"], skipped: ["security/mine.md"] },
+        agentOrphanResult: { deleted: ["old-agent.md"], skipped: ["my-agent.md"] },
+      }),
+    );
+    expect(summaryLines).toContain("  - `.claude/rules/security/old.md` (removed)");
+    expect(summaryLines).toContain("  - `.claude/rules/security/mine.md` (orphaned but skipped)");
+    expect(summaryLines).toContain("  - `.claude/agents/old-agent.md` (removed)");
+    expect(summaryLines).toContain("  - `.claude/agents/my-agent.md` (orphaned but skipped)");
+  });
+
+  it("maps orphaned Codex agents to their .toml filenames and skips rule orphans", () => {
+    const { summaryLines } = renderSyncSummary(
+      baseInput({
+        targets: ["codex"],
+        result: baseResult({ targets: [{ target: "codex", skills: { copied: 0 } }] }),
+        // Codex rules live in the AGENTS.md section, so file-based rule orphans
+        // must not be reported for that target.
+        ruleOrphanResult: { deleted: ["security/old.md"], skipped: [] },
+        agentOrphanResult: { deleted: ["old-agent.md"], skipped: [] },
+      }),
+    );
+    expect(summaryLines).toContain("  - `.codex/agents/old-agent.toml` (removed)");
+    expect(summaryLines.some((l) => l.includes("rules/security/old.md"))).toBe(false);
+  });
+
+  it("reports the legacy .codex/skills cleanup (removed and left in place)", () => {
+    const { consoleLines, summaryLines } = renderSyncSummary(
+      baseInput({
+        targets: ["codex"],
+        result: baseResult({
+          targets: [{ target: "codex", skills: { copied: 0 } }],
+          migratedCodexSkills: { moved: ["beta", "alpha"], skipped: ["mine"] },
+        }),
+      }),
+    );
+    expect(
+      summaryLines.some((l) => l.includes("Removed 2 legacy Codex skill(s)") && l.includes("2")),
+    ).toBe(true);
+    // Sorted for a stable summary.
+    const legacy = summaryLines.filter((l) => l.startsWith("  - `.codex/skills/"));
+    expect(legacy).toEqual([
+      "  - `.codex/skills/alpha/` (legacy removed)",
+      "  - `.codex/skills/beta/` (legacy removed)",
+      "  - `.codex/skills/mine/` (legacy, left in place)",
+    ]);
+    expect(consoleLines.some((l) => l.includes("legacy, left in place"))).toBe(true);
+  });
+
+  it("lists created, updated, and unchanged workflow files", () => {
+    const { summaryLines } = renderSyncSummary(
+      baseInput({
+        workflowResult: {
+          created: ["agconf-sync.yml"],
+          updated: ["agconf-check.yml"],
+          unchanged: ["agconf-other.yml"],
+        } as RenderSyncSummaryInput["workflowResult"],
+      }),
+    );
+    expect(summaryLines).toContain("- `.github/workflows/agconf-sync.yml` (created)");
+    expect(summaryLines).toContain("- `.github/workflows/agconf-check.yml` (updated)");
+    expect(summaryLines).toContain("- `.github/workflows/agconf-other.yml` (unchanged)");
+  });
+
+  it("appends the version and multi-target footers only when applicable", () => {
+    const single = renderSyncSummary(baseInput());
+    expect(single.consoleLines.some((l) => l.includes("Version:"))).toBe(false);
+    expect(single.consoleLines.some((l) => l.includes("Targets:"))).toBe(false);
+
+    const multi = renderSyncSummary(
+      baseInput({
+        resolvedVersion: { version: "1.4.0" },
+        targets: ["claude", "codex"],
+        result: baseResult({
+          targets: [
+            { target: "claude", skills: { copied: 0 } },
+            { target: "codex", skills: { copied: 0 } },
+          ],
+        }),
+      }),
+    );
+    expect(multi.consoleLines.some((l) => l.includes("Version: 1.4.0"))).toBe(true);
+    expect(multi.consoleLines.some((l) => l.includes("Targets: claude, codex"))).toBe(true);
+  });
+
+  describe("standalone git hook status", () => {
+    const hook = (
+      overrides: Partial<NonNullable<RenderSyncSummaryInput["hookResult"]>>,
+    ): RenderSyncSummaryInput["hookResult"] => ({
+      installed: true,
+      path: "/repo/.git/hooks/pre-commit",
+      alreadyExisted: false,
+      wasUpdated: false,
+      wasAppended: false,
+      ...overrides,
+    });
+
+    const hookLine = (overrides: Partial<NonNullable<RenderSyncSummaryInput["hookResult"]>>) =>
+      renderSyncSummary(baseInput({ hookResult: hook(overrides) })).summaryLines.find((l) =>
+        l.includes(".git/hooks/pre-commit"),
+      );
+
+    it("reports a fresh install", () => {
+      expect(hookLine({})).toBe("- `.git/hooks/pre-commit` (installed)");
+    });
+
+    it("reports an agconf section updated inside an existing custom hook", () => {
+      expect(hookLine({ wasAppended: true, wasUpdated: true, alreadyExisted: true })).toBe(
+        "- `.git/hooks/pre-commit` (updated in existing hook)",
+      );
+    });
+
+    it("reports an unchanged agconf section in an existing custom hook", () => {
+      expect(hookLine({ wasAppended: true, alreadyExisted: true })).toBe(
+        "- `.git/hooks/pre-commit` (unchanged)",
+      );
+    });
+
+    it("reports a first-time append to a custom hook", () => {
+      expect(hookLine({ wasAppended: true })).toBe(
+        "- `.git/hooks/pre-commit` (appended to existing hook)",
+      );
+    });
+
+    it("reports an unchanged agconf-owned hook", () => {
+      expect(hookLine({ alreadyExisted: true })).toBe("- `.git/hooks/pre-commit` (unchanged)");
+    });
+
+    it("reports an updated agconf-owned hook", () => {
+      expect(hookLine({ wasUpdated: true })).toBe("- `.git/hooks/pre-commit` (updated)");
+    });
+
+    it("reports a skip when a custom hook exists and agconf did not install", () => {
+      expect(hookLine({ installed: false, alreadyExisted: true })).toBe(
+        "- `.git/hooks/pre-commit` (skipped - custom hook exists)",
+      );
+    });
+
+    it("emits no hook line at all when nothing was installed and nothing existed", () => {
+      expect(hookLine({ installed: false })).toBeUndefined();
+    });
+
+    it("defaults a pre-commit result with no action to '(unchanged)'", () => {
+      const { summaryLines } = renderSyncSummary(
+        baseInput({
+          hookResult: {
+            mode: "pre-commit",
+            installed: true,
+            path: "/repo/.pre-commit-config.yaml",
+            alreadyExisted: true,
+            wasUpdated: false,
+            wasAppended: false,
+          },
+        }),
+      );
+      expect(summaryLines).toContain("- `.pre-commit-config.yaml` (agconf-check hook unchanged)");
+    });
+
+    it("labels a newly created .pre-commit-config.yaml", () => {
+      const { summaryLines } = renderSyncSummary(
+        baseInput({
+          hookResult: {
+            mode: "pre-commit",
+            installed: true,
+            path: "/repo/.pre-commit-config.yaml",
+            alreadyExisted: false,
+            wasUpdated: false,
+            wasAppended: false,
+            preCommit: { action: "created", installNeeded: false },
+          },
+        }),
+      );
+      expect(summaryLines).toContain(
+        "- `.pre-commit-config.yaml` (created, agconf-check hook registered)",
+      );
+    });
+  });
+
   it("renders Codex agents under .codex/agents as .toml files", () => {
     const input = baseInput({
       targets: ["codex"],

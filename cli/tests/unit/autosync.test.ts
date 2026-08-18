@@ -8,6 +8,9 @@ import {
   setAutosyncEnabled,
 } from "../../src/config/loader.js";
 import {
+  appendAutosyncLog,
+  formatLogLine,
+  getAutosyncPaths,
   isThrottled,
   maybeStartBackgroundAutosync,
   readAutosyncState,
@@ -78,6 +81,10 @@ describe("autosync core", () => {
       expect(isThrottled(recent, 10, now)).toBe(true);
       expect(isThrottled(old, 10, now)).toBe(false);
     });
+
+    it("does not throttle on an unparseable timestamp (fails open, never wedges)", () => {
+      expect(isThrottled({ version: 1, last_attempt: "not-a-date" }, 10, now)).toBe(false);
+    });
   });
 
   describe("state round-trip", () => {
@@ -85,6 +92,52 @@ describe("autosync core", () => {
       await writeAutosyncState(home, { version: 1, last_attempt: "x", last_result: "synced" });
       const state = await readAutosyncState(home);
       expect(state?.last_result).toBe("synced");
+    });
+
+    const writeState = async (raw: string) => {
+      const { statePath } = getAutosyncPaths(home);
+      await fs.mkdir(path.dirname(statePath), { recursive: true });
+      await fs.writeFile(statePath, raw, "utf-8");
+    };
+
+    it("returns null for a missing or unparseable state file", async () => {
+      expect(await readAutosyncState(home)).toBeNull();
+      await writeState("{ not json");
+      expect(await readAutosyncState(home)).toBeNull();
+    });
+
+    it("returns null for a JSON payload that is not an object", async () => {
+      await writeState("null");
+      expect(await readAutosyncState(home)).toBeNull();
+    });
+
+    it("defaults a missing version to 1 rather than rejecting the state", async () => {
+      await writeState(JSON.stringify({ last_result: "synced" }));
+      expect(await readAutosyncState(home)).toEqual({ version: 1, last_result: "synced" });
+    });
+  });
+
+  describe("appendAutosyncLog", () => {
+    it("appends lines in order, creating the log directory", async () => {
+      await appendAutosyncLog(home, formatLogLine("T1", "startup", "synced"));
+      await appendAutosyncLog(home, formatLogLine("T2", "manual", "error", 'error="boom"'));
+
+      const log = await fs.readFile(getAutosyncPaths(home).logPath, "utf-8");
+      expect(log).toBe(
+        '[T1] trigger=startup result=synced\n[T2] trigger=manual result=error error="boom"\n',
+      );
+    });
+
+    it("rotates once to .1 when the log grows past its cap", async () => {
+      const { logPath } = getAutosyncPaths(home);
+      await fs.mkdir(path.dirname(logPath), { recursive: true });
+      await fs.writeFile(logPath, "x".repeat(256 * 1024 + 1), "utf-8");
+
+      await appendAutosyncLog(home, "[T] trigger=startup result=synced");
+
+      // The oversized log moved aside; the live log restarts with just the new line.
+      expect((await fs.stat(`${logPath}.1`)).size).toBe(256 * 1024 + 1);
+      expect(await fs.readFile(logPath, "utf-8")).toBe("[T] trigger=startup result=synced\n");
     });
   });
 
@@ -113,6 +166,43 @@ describe("autosync core", () => {
       const spawn = vi.fn();
       const started = await maybeStartBackgroundAutosync(home, { spawn });
       expect(started).toBe(false);
+      expect(spawn).not.toHaveBeenCalled();
+    });
+
+    it("spawns the CLI's own entry point so the running build stays consistent", async () => {
+      await setAutosyncEnabled(home, true);
+      const spawn = vi.fn();
+
+      await maybeStartBackgroundAutosync(home, { spawn });
+
+      expect(spawn).toHaveBeenCalledWith(process.execPath, [
+        process.argv[1],
+        "autosync",
+        "--trigger",
+        "startup",
+      ]);
+    });
+
+    it("falls back to the `agconf` binary when there is no script entry point", async () => {
+      await setAutosyncEnabled(home, true);
+      const spawn = vi.fn();
+      const originalEntry = process.argv[1];
+      delete process.argv[1];
+
+      try {
+        const started = await maybeStartBackgroundAutosync(home, { spawn });
+        expect(started).toBe(true);
+        expect(spawn).toHaveBeenCalledWith("agconf", ["autosync", "--trigger", "startup"]);
+      } finally {
+        if (originalEntry !== undefined) process.argv[1] = originalEntry;
+      }
+    });
+
+    it("returns false (never throws) when the config cannot be read", async () => {
+      await writeConfig("autosync: [not, a, mapping]\n");
+      const spawn = vi.fn();
+
+      expect(await maybeStartBackgroundAutosync(home, { spawn })).toBe(false);
       expect(spawn).not.toHaveBeenCalled();
     });
   });

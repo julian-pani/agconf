@@ -1,8 +1,14 @@
+import { execSync } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { isManaged } from "../../src/core/managed-content.js";
+import {
+  applyProposedChanges,
+  DivergentCopiesError,
+  detectProposedChanges,
+} from "../../src/core/propose.js";
 import { resolveLocalSource } from "../../src/core/source.js";
 import { sync, UnmanagedOverwriteError } from "../../src/core/sync.js";
 
@@ -113,5 +119,150 @@ Body.
     const after = await fs.readFile(localPath, "utf-8");
     expect(isManaged(after)).toBe(true);
     expect(after).not.toContain("LOCAL EDIT");
+  });
+
+  /**
+   * End-to-end multi-harness round trip: real `sync` to claude + codex, edit the
+   * downstream copies, then `propose` all the way through
+   * `applyProposedChanges`.
+   *
+   * The unit tests assert what detection *returns*; these assert what actually
+   * lands in the canonical commit, which is where a duplicate canonical path did
+   * its damage — the apply loop wrote both copies to the same path in sequence.
+   */
+  describe("synced to claude + codex", () => {
+    const SKILL_DIRS = [".claude/skills", ".agents/skills"] as const;
+
+    // applyProposedChanges commits inside a clone it creates itself, so the test
+    // cannot `git config` that repo. A fresh clone inherits no identity from the
+    // origin either, and CI runners have no global one — git then fails with
+    // "Author identity unknown". These env vars supply it without touching config.
+    const GIT_IDENTITY = {
+      GIT_AUTHOR_NAME: "Test",
+      GIT_AUTHOR_EMAIL: "t@t.com",
+      GIT_COMMITTER_NAME: "Test",
+      GIT_COMMITTER_EMAIL: "t@t.com",
+    } as const;
+    const savedIdentity: Record<string, string | undefined> = {};
+
+    beforeEach(() => {
+      for (const [k, v] of Object.entries(GIT_IDENTITY)) {
+        savedIdentity[k] = process.env[k];
+        process.env[k] = v;
+      }
+    });
+
+    afterEach(() => {
+      for (const k of Object.keys(GIT_IDENTITY)) {
+        const prior = savedIdentity[k];
+        if (prior === undefined) delete process.env[k];
+        else process.env[k] = prior;
+      }
+    });
+
+    /** Sync the canonical skill into both targets, then hand back the source. */
+    async function syncBothTargets() {
+      execSync("git init", { cwd: canonicalDir, stdio: "ignore" });
+      execSync("git config user.email t@t.com", { cwd: canonicalDir, stdio: "ignore" });
+      execSync("git config user.name T", { cwd: canonicalDir, stdio: "ignore" });
+      execSync("git add -A && git commit -m init", { cwd: canonicalDir, stdio: "ignore" });
+
+      const resolvedSource = await resolveLocalSource({ path: canonicalDir });
+      await sync(downstreamDir, resolvedSource, {
+        override: false,
+        targets: ["claude", "codex"],
+      });
+      return resolvedSource;
+    }
+
+    const copyPath = (skillsDir: string, relPath: string) =>
+      path.join(downstreamDir, ...skillsDir.split("/"), "my-skill", ...relPath.split("/"));
+
+    /** Rewrite one target's copy, preserving its managed frontmatter. */
+    async function editCopy(skillsDir: string, relPath: string, from: string, to: string) {
+      const full = copyPath(skillsDir, relPath);
+      const current = await fs.readFile(full, "utf-8");
+      await fs.writeFile(full, current.replace(from, to), "utf-8");
+    }
+
+    it("writes the canonical file once when both copies carry the same edit", async () => {
+      await syncBothTargets();
+      for (const skillsDir of SKILL_DIRS) {
+        await editCopy(skillsDir, "SKILL.md", "Body.", "Body, improved in both copies.");
+      }
+
+      const detected = await detectProposedChanges({ cwd: downstreamDir });
+      // One entry, so the PR body lists the path once rather than twice.
+      expect(detected.changes.map((c) => c.canonicalPath)).toEqual(["skills/my-skill/SKILL.md"]);
+
+      const applied = await applyProposedChanges(detected, { title: "Improve my-skill" });
+      const committed = await fs.readFile(
+        path.join(applied.cloneDir, "skills", "my-skill", "SKILL.md"),
+        "utf-8",
+      );
+      expect(committed).toContain("Body, improved in both copies.");
+      // Managed metadata must never round-trip back into canonical.
+      expect(isManaged(committed)).toBe(false);
+      await fs.rm(path.dirname(applied.cloneDir), { recursive: true, force: true });
+    });
+
+    it("carries an edit made only in the codex copy through to canonical", async () => {
+      // Before the asset scan walked every target, an edit confined to the
+      // non-first target's copy was silently dropped and never reached canonical.
+      await syncBothTargets();
+      await editCopy(".agents/skills", "references/helper.py", "helper", "helper CODEX-ONLY");
+
+      const detected = await detectProposedChanges({ cwd: downstreamDir });
+      expect(detected.changes.map((c) => c.canonicalPath)).toEqual([
+        "skills/my-skill/references/helper.py",
+      ]);
+
+      const applied = await applyProposedChanges(detected, { title: "Fix helper" });
+      const committed = await fs.readFile(
+        path.join(applied.cloneDir, "skills", "my-skill", "references", "helper.py"),
+        "utf-8",
+      );
+      expect(committed).toBe("print('helper CODEX-ONLY')\n");
+      await fs.rm(path.dirname(applied.cloneDir), { recursive: true, force: true });
+    });
+
+    it("refuses the whole propose when the two copies were edited differently", async () => {
+      // The original data loss: both copies map to one canonical path, so the
+      // apply loop wrote claude's edit and then overwrote it with codex's.
+      await syncBothTargets();
+      await editCopy(".claude/skills", "SKILL.md", "Body.", "Body, the CLAUDE edit.");
+      await editCopy(".agents/skills", "SKILL.md", "Body.", "Body, the CODEX edit.");
+
+      await expect(detectProposedChanges({ cwd: downstreamDir })).rejects.toBeInstanceOf(
+        DivergentCopiesError,
+      );
+
+      // Canonical is untouched — nothing was committed on either side.
+      const canonicalSkill = await fs.readFile(
+        path.join(canonicalDir, "skills", "my-skill", "SKILL.md"),
+        "utf-8",
+      );
+      expect(canonicalSkill).toBe(SKILL_BODY);
+    });
+
+    it("ships the selected copy when --files resolves a divergence", async () => {
+      await syncBothTargets();
+      await editCopy(".claude/skills", "SKILL.md", "Body.", "Body, the CLAUDE edit.");
+      await editCopy(".agents/skills", "SKILL.md", "Body.", "Body, the CODEX edit.");
+
+      const detected = await detectProposedChanges({
+        cwd: downstreamDir,
+        files: ["^\\.claude/"],
+      });
+      const applied = await applyProposedChanges(detected, { title: "Take the claude edit" });
+
+      const committed = await fs.readFile(
+        path.join(applied.cloneDir, "skills", "my-skill", "SKILL.md"),
+        "utf-8",
+      );
+      expect(committed).toContain("Body, the CLAUDE edit.");
+      expect(committed).not.toContain("CODEX");
+      await fs.rm(path.dirname(applied.cloneDir), { recursive: true, force: true });
+    });
   });
 });
