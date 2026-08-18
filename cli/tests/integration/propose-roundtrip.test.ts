@@ -133,6 +133,33 @@ Body.
   describe("synced to claude + codex", () => {
     const SKILL_DIRS = [".claude/skills", ".agents/skills"] as const;
 
+    // applyProposedChanges commits inside a clone it creates itself, so the test
+    // cannot `git config` that repo. A fresh clone inherits no identity from the
+    // origin either, and CI runners have no global one — git then fails with
+    // "Author identity unknown". These env vars supply it without touching config.
+    const GIT_IDENTITY = {
+      GIT_AUTHOR_NAME: "Test",
+      GIT_AUTHOR_EMAIL: "t@t.com",
+      GIT_COMMITTER_NAME: "Test",
+      GIT_COMMITTER_EMAIL: "t@t.com",
+    } as const;
+    const savedIdentity: Record<string, string | undefined> = {};
+
+    beforeEach(() => {
+      for (const [k, v] of Object.entries(GIT_IDENTITY)) {
+        savedIdentity[k] = process.env[k];
+        process.env[k] = v;
+      }
+    });
+
+    afterEach(() => {
+      for (const k of Object.keys(GIT_IDENTITY)) {
+        const prior = savedIdentity[k];
+        if (prior === undefined) delete process.env[k];
+        else process.env[k] = prior;
+      }
+    });
+
     /** Sync the canonical skill into both targets, then hand back the source. */
     async function syncBothTargets() {
       execSync("git init", { cwd: canonicalDir, stdio: "ignore" });
