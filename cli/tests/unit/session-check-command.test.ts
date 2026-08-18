@@ -286,6 +286,9 @@ describe("session-check command", () => {
   it("stays silent when user scope is synced and everything is consistent", async () => {
     execFileSync("git", ["init", "-q"], { cwd: repo });
     await syncUserScopeCommand({ scope: "user", local: canonical, home, target: ["claude"] });
+    // "Consistent" includes having the hook installed for every synced target —
+    // otherwise the missing-hook nudge fires and silence is the wrong assertion.
+    await sessionCheckCommand({ installHook: true, home });
     consoleLogSpy.mockClear();
 
     await sessionCheckCommand({ cwd: repo, home });
