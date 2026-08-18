@@ -1,3 +1,9 @@
+## [0.25.0](https://github.com/julian-pani/agconf/compare/v0.24.1...v0.25.0) (2026-08-18)
+
+### Features
+
+* **session-check:** nudge to install hooks for targets gained after install ([cd01e5f](https://github.com/julian-pani/agconf/commit/cd01e5fd8a100b0c3cde1fcf3a75085a8c16ffc6))
+
 ## [0.24.1](https://github.com/julian-pani/agconf/compare/v0.24.0...v0.24.1) (2026-08-18)
 
 ### Bug Fixes
