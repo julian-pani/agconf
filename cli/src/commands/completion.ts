@@ -6,14 +6,27 @@ import pc from "picocolors";
 import tabtab from "tabtab";
 // @ts-expect-error - tabtab internal module not typed
 import tabtabInstaller from "tabtab/lib/installer.js";
+import { PACKAGE_MANAGERS } from "../utils/package-manager.js";
 
 const CLI_NAME = "agconf";
 
 // Commands and their options for completion
 const COMMANDS = {
   init: {
-    description: "Initialize or sync agconf standards",
-    options: ["-s", "--source", "--local", "-y", "--yes", "--override", "--ref", "-t", "--target"],
+    description: "Initialize agconf standards for a repository or your user account",
+    options: [
+      "-s",
+      "--source",
+      "--local",
+      "-y",
+      "--yes",
+      "--override",
+      "--ref",
+      "-t",
+      "--target",
+      "--scope",
+      "--no-autosync",
+    ],
   },
   sync: {
     description: "Sync agconf standards",
@@ -116,7 +129,8 @@ const CONFIG_SUBCOMMANDS = ["show", "get", "set"];
 const COMPLETION_SUBCOMMANDS = ["install", "uninstall"];
 const CANONICAL_SUBCOMMANDS = ["init"];
 const TARGET_VALUES = ["claude", "codex"];
-const PACKAGE_MANAGER_VALUES = ["npm", "pnpm", "yarn", "bun"];
+const SCOPE_VALUES = ["repo", "user"];
+const PACKAGE_MANAGER_VALUES = [...PACKAGE_MANAGERS];
 
 /**
  * Handle shell completion requests.
@@ -199,6 +213,11 @@ export function handleCompletion(): boolean {
   // Complete --target values
   if (prev === "--target" || prev === "-t") {
     tabtab.log(TARGET_VALUES);
+    return true;
+  }
+  // Complete --scope values
+  if (prev === "--scope") {
+    tabtab.log(SCOPE_VALUES);
     return true;
   }
 

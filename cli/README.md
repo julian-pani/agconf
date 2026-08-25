@@ -7,6 +7,7 @@ CLI to sync AI agent configurations across repositories.
 
 ## Documentation
 
+- [User Scope](./docs/USER_SCOPE.md) - Installing company standards once per machine (`~/.claude`, `~/.codex`)
 - [Canonical Repository Setup](./docs/CANONICAL_REPOSITORY_SETUP.md) - Setting up a source repository
 - [Downstream Repository Configuration](./docs/DOWNSTREAM_REPOSITORY_CONFIGURATION.md) - Customizing sync behavior
 - [Versioning](./docs/VERSIONING.md) - How version management works
@@ -24,6 +25,7 @@ Full documentation available on GitHub: https://github.com/julian-pani/agconf
 | `sync` | Sync content from canonical repo (fetches latest by default) | `agconf sync` or `agconf sync --pinned` |
 | `check` | Verify managed files are unchanged (`--scope user` checks the per-user projection; in a canonical repo, verifies compiled plugin freshness) | `agconf check` or `agconf check --scope user` |
 | `compile` | Compile installable Claude Code / Codex plugins + marketplace from canonical content | `agconf compile` or `agconf compile --check` |
+| `init --scope user` | Guided one-shot user-scope setup: sync + SessionStart hook + auto-sync | `agconf init --scope user` |
 | `sync --scope user` | Project the company instructions once per machine into `~/.claude`/`~/.codex` (git-tracked `~/.agconf` store) | `agconf sync --scope user --source org/standards` |
 | `autosync` | Keep the per-user store fresh automatically (runs at session start; opt-in) | `agconf autosync --install` |
 | `session-check` | Advisory cross-scope duplication + integrity check (`--hook` emits the SessionStart envelope) | `agconf session-check --install-hook` |
@@ -31,7 +33,7 @@ Full documentation available on GitHub: https://github.com/julian-pani/agconf
 | `propose --scope user` | Propose edits made to the per-user projection (`~/.claude`, `~/.codex`) instead of a repo | `agconf propose --scope user` |
 | `propose --new [path]` | Propose new (unmanaged) skills/rules/agents upstream; optional path filters discovery (**required** at user scope) | `agconf propose --new .claude/skills/my-skill` |
 | `propose --override` | Resolve conflicts with canonical by taking the local copy instead of aborting | `agconf propose --override` |
-| `upgrade-cli` | Upgrade the CLI to latest version (auto-detects package manager) | `agconf upgrade-cli` |
+| `upgrade-cli` | Upgrade the CLI to latest version (auto-detects package manager, incl. volta/asdf/mise) | `agconf upgrade-cli` |
 | `canonical init` | Scaffold a new canonical repository | `agconf canonical init` |
 | `config show` | Show current configuration | `agconf config show` |
 | `completion install` | Install shell completions | `agconf completion install` |
@@ -51,12 +53,25 @@ agconf canonical init --name my-standards --org "My Org"
 
 This scaffolds the structure for your standards. Edit `instructions/AGENTS.md` to add your engineering guidelines, then commit and push to GitHub.
 
-### 2. Sync to your projects
+### 2. Deliver the standards
+
+Into a repository, committed alongside the code:
 
 ```bash
 cd your-project
 agconf init --source your-org/engineering-standards
 ```
+
+Or **once per machine** into your own `~/.claude` / `~/.codex`, so they apply
+everywhere without being committed anywhere. This asks for the source, the
+harnesses to project into, and whether to refresh in the background:
+
+```bash
+agconf init --scope user
+```
+
+See the [User Scope guide](./docs/USER_SCOPE.md) for what lands where, how to keep
+it fresh, and how to back it out.
 
 ## Local edits & overwrite protection
 

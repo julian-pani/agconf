@@ -59,7 +59,7 @@ export function createCli(): Command {
 
   program
     .command("init")
-    .description("Initialize or sync agconf standards to the current repository")
+    .description("Initialize agconf standards for this repository, or for your user account")
     .option(
       "-s, --source <repo>",
       "Canonical repository in owner/repo format (e.g., acme/standards)",
@@ -71,7 +71,12 @@ export function createCli(): Command {
       "Let canonical win over local content (replace AGENTS.md instead of merging; overwrite divergent unmanaged skills/rules/agents)",
     )
     .option("--ref <ref>", "GitHub ref/version to sync from (default: latest release)")
-    .option("-t, --target <targets...>", "Target platforms (claude, codex)", ["claude"])
+    .option("-t, --target <targets...>", "Target platforms (claude, codex)")
+    .option(
+      "--scope <scope>",
+      "Distribution scope: 'repo' (default) or 'user' (guided setup of ~/.agconf, ~/.claude, ~/.codex)",
+    )
+    .option("--no-autosync", "With --scope user: don't enable background auto-sync")
     .action(
       async (options: {
         source?: string;
@@ -80,6 +85,8 @@ export function createCli(): Command {
         override?: boolean;
         ref?: string;
         target?: string[];
+        scope?: string;
+        autosync?: boolean;
       }) => {
         await initCommand(options);
       },
@@ -243,7 +250,7 @@ export function createCli(): Command {
     .command("upgrade-cli")
     .description("Upgrade the agconf CLI to the latest version")
     .option("-y, --yes", "Non-interactive mode")
-    .option("-p, --package-manager <pm>", "Package manager to use (npm, pnpm, yarn, bun)")
+    .option("-p, --package-manager <pm>", "Package manager to use (npm, pnpm, yarn, bun, volta)")
     .action(async (options: { yes?: boolean; packageManager?: string }) => {
       await upgradeCliCommand(options);
     });

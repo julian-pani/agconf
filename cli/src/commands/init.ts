@@ -3,6 +3,7 @@ import pc from "picocolors";
 import { getSyncStatus } from "../core/sync.js";
 import { createLogger } from "../utils/logger.js";
 import { promptCompletionInstall } from "./completion.js";
+import { type InitUserScopeOptions, initUserScopeCommand } from "./init-user-scope.js";
 import {
   checkModifiedFilesBeforeSync,
   parseAndValidateTargets,
@@ -12,12 +13,34 @@ import {
   resolveTargetDirectory,
   resolveVersion,
   type SharedSyncOptions,
+  validateScope,
 } from "./shared.js";
 
-export interface InitOptions extends SharedSyncOptions {}
+// `home` already comes from SharedSyncOptions; `codexFeaturesRun` is picked up so
+// the user-scope branch stays injectable through `initCommand` in tests.
+export interface InitOptions
+  extends SharedSyncOptions,
+    Pick<InitUserScopeOptions, "autosync" | "codexFeaturesRun"> {}
 
 export async function initCommand(options: InitOptions): Promise<void> {
   const logger = createLogger();
+
+  // Reject an unknown --scope rather than silently initializing the repo — a
+  // typo like `--scope usr` must not commit canonical content into the repo.
+  validateScope(options.scope);
+
+  // User scope: guided setup of the ~/.agconf store, the per-user projection,
+  // the SessionStart hook and auto-sync — no repo is involved.
+  if (options.scope === "user") {
+    await initUserScopeCommand(options);
+    return;
+  }
+
+  // Accepting a flag and doing nothing with it reads as "auto-sync is off here",
+  // when auto-sync is a user-scope concept that repo init never touches.
+  if (options.autosync === false) {
+    logger.warn("--no-autosync only applies to --scope user; ignoring it.");
+  }
 
   console.log();
   prompts.intro(pc.bold("agconf init"));
