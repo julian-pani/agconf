@@ -9,7 +9,8 @@
 > acceptance criteria, and the per-feature status (F1–F7) below — including how a
 > developer is stopped from loading the same content **twice** when a repo commits
 > content *and* they also have it at user scope (see `agconf session-check`). For
-> user-facing usage, see the [README](../../README.md#user-scope---scope-user).
+> user-facing usage, see the [User Scope guide](./USER_SCOPE.md) — how to install
+> it, what lands where, how to update or remove it.
 >
 > **Looking for "does feature X work in mode Y?"** → [§16 Feature × mode
 > matrix](#16-feature--mode-matrix), with the remaining gaps called out in
@@ -318,7 +319,7 @@ Canonical content types and their reachable homes:
 | mcps | ❌ (not synced) | ❌ (deliberately plugin-only) | ✅ |
 
 That is the **content** axis. For the **feature/command** axis — which agconf
-commands and mechanisms work in which mode — see [§16](#16--feature--mode-matrix).
+commands and mechanisms work in which mode — see [§16](#16-feature--mode-matrix).
 
 ## 11. Feature set
 
