@@ -390,6 +390,17 @@ commands and mechanisms work in which mode — see [§16](#16--feature--mode-mat
 ## 14. Acceptance criteria
 
 **F1 — Scopes** ✅ *implemented*
+- `agconf init --scope user` is the guided front door: it asks for the canonical
+  source (recovered from the store on a re-run), the targets to project into, and
+  whether to enable auto-sync. A thin orchestrator: it runs `runUserScopeSync`,
+  then either `enableAutosync` (which installs the SessionStart hook *and* writes
+  the opt-in config) or, when auto-sync is declined, `installStoreHooks` alone.
+  Hooks are installed after the sync because they resolve their targets from the
+  store lockfile the sync just wrote. Auto-sync defaults on, but a machine where
+  it was deliberately disabled keeps that preference, and a decline is persisted
+  as `enabled: false` rather than left unwritten. A failed hook install is reported
+  (non-zero exit, no "Done."), never papered over. `--yes` makes it scriptable
+  (`--no-autosync` opts out of background refresh).
 - `agconf sync --scope user` projects the company content into per-user harness
   locations, preserving surrounding content, and writes `~/.agconf/lockfile.json`:
   - **instructions** — the global block into `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`;
@@ -403,8 +414,7 @@ commands and mechanisms work in which mode — see [§16](#16--feature--mode-mat
 - `--scope repo` (default) is a byte-for-byte regression match to prior behavior.
 - `agconf check --scope user` verifies user-scope managed integrity (block + skills
   + rules + agents) and exits 1 on drift.
-- Wired on `sync` and `check`; `init --scope user` is deferred — first-time
-  projection is already covered by `sync --scope user`.
+- Wired on `sync`, `check` and `init`.
 
 **F2 — Delivery map** ✅ *implemented*
 - Config accepts `delivery.{skills,agents,mcps}` ∈ `{sync,plugin,off}` (the
@@ -468,11 +478,16 @@ commands and mechanisms work in which mode — see [§16](#16--feature--mode-mat
   point, which agconf has. Dropping the scheduler also removes a class of macOS cron
   failures (deprecated/TCC Full-Disk-Access, minimal PATH, no keychain/token).
 - **Opt-in, off by default until installed:** background sync runs only after
-  `agconf autosync --install` / `--enable`, which installs the hook and writes
-  `~/.agconf/config.yaml` — its **presence is the install marker** (`isAutosyncInstalled`).
-  So upgrading a user who only had the F5 duplication hook never silently starts
-  syncs or git commits. `--uninstall` / `--disable` set `autosync.enabled: false`
-  (the shared SessionStart hook stays, as it also powers the duplication check).
+  `agconf autosync --install` / `--enable` (or accepting it during
+  `init --scope user`), which installs the hook and writes `~/.agconf/config.yaml`.
+  The gate is that file's **presence** (`isAutosyncInstalled`) **AND**
+  `autosync.enabled !== false` — both halves matter, because `init --scope user`
+  also writes the file when auto-sync is *declined* (`enabled: false`), so that a
+  later run can tell a decline from "never configured" and not helpfully switch it
+  back on. Upgrading a user who only had the F5 duplication hook never silently
+  starts syncs or git commits. `--uninstall` / `--disable` set
+  `autosync.enabled: false` (the shared SessionStart hook stays, as it also powers
+  the duplication check).
 - The hook launches the runner **detached** (`maybeStartBackgroundAutosync`) so the
   session never blocks; runs are throttled via `~/.agconf/autosync-state.json`
   (`last_attempt`, window = `interval_minutes`, default 10).
@@ -556,7 +571,7 @@ exist, doesn't yet) · **➖ not applicable** (the mode has no such concept).
 | Feature | Repo scope (`sync`) | User scope (`sync --scope user`) | Plugin (`compile` + harness install) |
 |---|---|---|---|
 | **Project content** | ✅ `sync`/`init` write into the git root (`commands/sync.ts`) | ✅ `syncCommand` branches at the top to `syncUserScopeCommand` (`commands/user-scope.ts`) | ➖ agconf only *publishes*; the harness installs. `sync` skips any type set to `delivery: plugin` |
-| **First-time setup (`init`)** | ✅ `initCommand` → `resolveTargetDirectory` (git root) | ❌ no `--scope` on `init`; `sync --scope user` performs the first projection instead (deliberate, §14 F1) | ➖ `canonical init` scaffolds the `plugins` block canonical-side |
+| **First-time setup (`init`)** | ✅ `initCommand` → `resolveTargetDirectory` (git root) | ✅ `initCommand` branches to `initUserScopeCommand` (`commands/init-user-scope.ts`): prompts for source/targets/auto-sync, then sync → SessionStart hook → auto-sync. `sync --scope user` still does a bare first projection | ➖ `canonical init` scaffolds the `plugins` block canonical-side |
 | **Integrity check** | ✅ `checkDownstream` — per-file hashes + lockfile reconciliation | ✅ `checkUserScope` — block + skills/rules/agents, absolute paths, ghosts/missing | ⚠️ canonical-side only: `check`/`compile --check` run `verifyPluginsFresh` on the *committed artifacts*. Nothing verifies an **installed** plugin on a developer machine |
 | **Pre-commit verdict (`check --hook`)** | ✅ branch-aware exit (`printHookVerdict`) | ❌ flag ignored — `checkCommand` returns inside the `--scope user` branch **before** the hook verdict, so `--hook --scope user` just exits 1 on any drift | ➖ |
 | **Propose managed edits upstream** | ✅ `detectProposedChanges` + three-way rebase onto canonical HEAD | ✅ `propose --scope user` — same detection and rebase against the store lockfile; see [§17.1](#171-propose-at-user-scope) | ❌ published plugin files are a pure projection with **no managed metadata**, so a local edit is undetectable and has no hash to reconcile |
@@ -592,10 +607,7 @@ cells above that are **gaps**, in rough priority order:
 2. **`check --hook` at user scope** is accepted but ignored. It should either be
    rejected as an invalid combination or made a no-op with a message; today it
    silently degrades to a plain check that exits 1 on any drift.
-3. **`init --scope user`** does not exist. Low priority — `sync --scope user`
-   already covers first-time projection — but the asymmetry with `sync`/`check`/
-   `propose` is a discoverability wart.
-4. **No delivery map at user scope.** You cannot say "skills come from a plugin,
+3. **No delivery map at user scope.** You cannot say "skills come from a plugin,
    instructions from user scope" at the per-user level the way a repo can.
 
 Deliberately **not applicable** (do not file these as gaps): instructions/rules

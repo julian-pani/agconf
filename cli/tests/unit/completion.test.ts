@@ -276,8 +276,33 @@ describe("completion", () => {
 
       expect(handleCompletion()).toBe(true);
       expect(tabtab.log).toHaveBeenCalledWith(
-        expect.arrayContaining(["--source", "-s", "--yes", "-y", "--target", "-t"]),
+        expect.arrayContaining([
+          "--source",
+          "-s",
+          "--yes",
+          "-y",
+          "--target",
+          "-t",
+          "--scope",
+          "--no-autosync",
+        ]),
       );
+    });
+
+    it("should complete --scope values", () => {
+      vi.mocked(tabtab.parseEnv).mockReturnValue({
+        complete: true,
+        words: 3,
+        point: 22,
+        line: "agconf init --scope ",
+        partial: "",
+        last: "",
+        lastPartial: "",
+        prev: "--scope",
+      });
+
+      expect(handleCompletion()).toBe(true);
+      expect(tabtab.log).toHaveBeenCalledWith(["repo", "user"]);
     });
 
     it("should complete options for check command", () => {

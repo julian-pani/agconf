@@ -57,6 +57,10 @@ describe("user-scope commands", () => {
     mockExit.mockRestore();
     consoleLogSpy.mockRestore();
     consoleErrorSpy.mockRestore();
+    // Call counts would otherwise accumulate across tests, so a new test earlier
+    // in the file silently breaks a `toHaveBeenCalledTimes` assertion later.
+    vi.mocked(getLatestRelease).mockClear();
+    vi.mocked(resolveGithubSource).mockClear();
     await fs.rm(home, { recursive: true, force: true });
     await fs.rm(canonical, { recursive: true, force: true });
   });
@@ -78,7 +82,22 @@ describe("user-scope commands", () => {
     expect(await exists(path.join(home, ".claude", "CLAUDE.md"))).toBe(true);
     expect(await exists(path.join(home, ".codex", "AGENTS.md"))).toBe(true);
     expect(await exists(path.join(getUserPaths(home).storeDir, "lockfile.json"))).toBe(true);
+    // Standalone sync still points at auto-sync (init suppresses this tip).
+    expect(consoleLogSpy.mock.calls.map((c) => c.join(" ")).join("\n")).toContain(
+      "agconf autosync --install",
+    );
     expect(mockExit).not.toHaveBeenCalled();
+  });
+
+  it("honours an explicit --source over a local source recorded in the store", async () => {
+    await syncUserScopeCommand({ scope: "user", local: canonical, home, target: ["claude"] });
+
+    // The recorded local must not silently win: it would make switching a store
+    // to the company repo impossible (every sync rewrites the lockfile as local).
+    await expect(
+      syncUserScopeCommand({ scope: "user", source: "acme/standards", home }),
+    ).rejects.toThrow("process.exit called");
+    expect(getLatestRelease).toHaveBeenCalledWith("acme/standards");
   });
 
   it("re-syncs from the store lockfile without re-specifying --local", async () => {
