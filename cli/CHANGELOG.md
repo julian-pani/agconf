@@ -1,3 +1,13 @@
+## [0.26.0](https://github.com/julian-pani/agconf/compare/v0.25.1...v0.26.0) (2026-08-25)
+
+### Features
+
+* **init:** add guided user-scope setup via `init --scope user` ([45995e2](https://github.com/julian-pani/agconf/commit/45995e22cf6f6f52f52886160404e07158f4bd9d))
+
+### Bug Fixes
+
+* **security:** clone canonical without a shell, and validate repo/ref ([4e22d3b](https://github.com/julian-pani/agconf/commit/4e22d3b1fc325a93bcfb1180662d233b0691ff9e))
+
 ## [0.25.1](https://github.com/julian-pani/agconf/compare/v0.25.0...v0.25.1) (2026-08-18)
 
 ### Bug Fixes
