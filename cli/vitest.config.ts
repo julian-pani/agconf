@@ -5,6 +5,9 @@ export default defineConfig({
     globals: true,
     environment: "node",
     include: ["tests/**/*.test.ts"],
+    // Harness tests drive the real claude/codex CLIs (model calls, credentials):
+    // opt in with `pnpm test:harness` (vitest.harness.config.ts).
+    exclude: ["tests/harness/**"],
     setupFiles: ["tests/setup/tmpdir.ts"],
     coverage: {
       provider: "v8",

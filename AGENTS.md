@@ -26,6 +26,7 @@ pnpm dev                  # Watch mode
 pnpm test                 # Run tests
 pnpm test:watch           # Watch mode
 pnpm test:coverage        # With coverage
+pnpm test:harness         # Opt-in: drive the real claude/codex CLIs (see Harness Tests)
 
 # Code Quality
 pnpm check                # Lint + format check (Biome)
@@ -253,6 +254,18 @@ When adding or modifying CLI commands, always update the shell completions in `c
 - Avoid any verification steps that require manual execution
 - Use temp directories and mocks for file system and external dependencies
 - For commands that use `process.cwd()`, add a `cwd` option for testability
+
+### Harness Tests
+
+`cli/tests/harness/` holds the one thing unit tests structurally cannot cover: whether the **real** `claude` / `codex` CLIs accept what agconf writes for them and act on it. Both failure modes it guards against were shipped once — a SessionStart hook whose output Codex rejected outright, and a note the agent read as background context and never passed to the developer. Neither is visible from inside the CLI.
+
+- Run with `pnpm test:harness` (config: `cli/vitest.harness.config.ts`). **Excluded from `pnpm test`** — these cost real model calls and need the harness CLIs installed and authenticated.
+- Each test **skips** itself when the harness isn't usable (CLI not on PATH, no credentials, CLI won't run), so ordinary CI stays green while a developer's machine — or a CI image with the CLIs installed — gets the coverage. Never convert a skip into a failure.
+- Fixtures build a throwaway HOME with the user store synced, install the hook through the real installer, and point the hook command at a shim named `agconf` on a prepended PATH (the command string must still read `agconf session-check --hook` for hook-state detection to see a current install).
+- Assertions on model wording retry, and are kept to "did the note reach the human at all" (`/scope|agconf/i`) rather than exact phrasing.
+- Codex needs `--dangerously-bypass-hook-trust`: a hooks.json hook that was never trusted interactively does not run under `codex exec`, and each fixture writes a fresh one.
+
+Add a harness test when a change alters what agconf writes into a harness's config or what it emits to a harness — not for logic that ends at agconf's own boundary.
 
 ### Check Command Integrity Requirement
 **Critical:** The `check` command must verify the integrity of ALL synced content.

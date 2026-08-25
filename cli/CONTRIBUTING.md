@@ -114,7 +114,27 @@ pnpm test:watch
 
 # Run tests with coverage
 pnpm test:coverage
+
+# Harness tests (opt-in): drive the real claude/codex CLIs
+pnpm test:harness
 ```
+
+### Harness Tests
+
+`tests/harness/` checks what unit tests structurally cannot: that the real
+`claude` / `codex` CLIs accept what agconf writes for them and act on it — e.g.
+that a SessionStart hook's output is in the format the harness accepts, and that
+the agent passes the note on to you.
+
+They are **excluded from `pnpm test`**: each run makes real model calls and needs
+the harness CLIs installed and logged in. Run them with `pnpm test:harness`. Any
+test whose harness isn't usable here (CLI missing, no credentials, CLI won't run)
+**skips itself**, so this config is safe to add to a CI image that has the CLIs —
+and harmless on one that doesn't.
+
+Codex requires `--dangerously-bypass-hook-trust`, because a hooks.json entry that
+was never trusted interactively doesn't run under `codex exec` and every fixture
+writes a fresh one into a throwaway HOME.
 
 ### Writing Tests
 

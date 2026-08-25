@@ -20,6 +20,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "pretest:harness": "pnpm build",
+    "test:harness": "vitest run --config vitest.harness.config.ts",
     "lint": "biome lint",
     "lint:fix": "biome lint --fix",
     "format": "biome format --write",
