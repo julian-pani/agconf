@@ -167,6 +167,14 @@ describe("version", () => {
         );
       });
 
+      it("rejects an unsafe repository before it reaches the API path", async () => {
+        // The value can come from a lockfile; it lands in a URL path here and in
+        // a subprocess argument list in source.ts. Guard must run at the sink.
+        await expect(getLatestRelease("acme/$(id)")).rejects.toThrow(/owner\/repo format/);
+        await expect(getLatestRelease("../../etc/passwd")).rejects.toThrow(/owner\/repo format/);
+        expect(fetchMock).not.toHaveBeenCalled();
+      });
+
       it("defaults commitSha to an empty string when target_commitish is absent", async () => {
         fetchMock.mockResolvedValue(okResponse({ ...RELEASE_BODY, target_commitish: undefined }));
 

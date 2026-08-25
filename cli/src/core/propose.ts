@@ -1,4 +1,4 @@
-import { exec } from "node:child_process";
+import { exec, execFile } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -10,6 +10,7 @@ import type { CanonicalRepoConfig } from "../config/schema.js";
 import type { Source } from "../schemas/lockfile.js";
 import { removeTempDir } from "../utils/fs.js";
 import { redactGitCredentials } from "../utils/git.js";
+import { assertValidGitRef, assertValidRepositorySlug } from "../utils/repository.js";
 import { validateAgentFrontmatter } from "./agents.js";
 import { readLockfile } from "./lockfile.js";
 import {
@@ -42,6 +43,7 @@ import { getSkillsDir, getUserInstructionsFile } from "./targets.js";
 import { getUserPaths } from "./user-scope.js";
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 /**
  * Where the local copy being proposed lives: a synced repo (`repo`, the
@@ -1517,17 +1519,24 @@ export async function applyProposedChanges(
 async function cloneCanonical(source: Source, targetDir: string): Promise<void> {
   if (source.type === "local") {
     const git: SimpleGit = simpleGit();
-    await git.clone(source.path, targetDir);
+    // Resolved, so a recorded path beginning with `-` can't be read as a flag.
+    await git.clone(path.resolve(source.path), targetDir);
     return;
   }
 
   // GitHub source — try gh CLI first, then git with token
   const { repository, ref } = source;
+  // Both come straight out of `.agconf/lockfile.json`, a COMMITTED file — i.e.
+  // attacker-controlled in any repo you clone. Validate before either reaches a
+  // subprocess argument list or the clone URL.
+  assertValidRepositorySlug(repository);
+  assertValidGitRef(ref);
 
   const ghAvailable = await isGhAvailable();
   if (ghAvailable) {
     try {
-      await execAsync(`gh repo clone ${repository} ${targetDir} -- --branch ${ref}`);
+      // Argument array, never a shell string — see cloneRepository in source.ts.
+      await execFileAsync("gh", ["repo", "clone", repository, targetDir, "--", "--branch", ref]);
       return;
     } catch {
       // Fall through to git clone
@@ -1551,7 +1560,7 @@ async function cloneCanonical(source: Source, targetDir: string): Promise<void> 
 
 async function isGhAvailable(): Promise<boolean> {
   try {
-    await execAsync("gh --version");
+    await execFileAsync("gh", ["--version"]);
     return true;
   } catch {
     return false;
@@ -1678,6 +1687,10 @@ function buildGhPrCommand(branch: string, result: ProposeResult, options: ApplyO
   const body = buildPrBody(result, options);
   const { source } = result;
 
+  // This string is BOTH executed via a shell and printed as manual instructions,
+  // so the lockfile-sourced repository has to be proven safe rather than escaped
+  // at one of the two call sites. `branch` is slugified by generateBranchName.
+  if (source.type === "github") assertValidRepositorySlug(source.repository);
   const repo = source.type === "github" ? ` --repo ${source.repository}` : "";
   // Use single quotes to avoid shell interpreting backticks or special chars
   const escapedTitle = options.title.replace(/'/g, "'\\''");

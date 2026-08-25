@@ -110,6 +110,7 @@ GitHub Actions workflows are created automatically to keep downstream repos in s
 | Command | Description |
 |---------|-------------|
 | `init` | Initialize repo from a canonical source |
+| `init --scope user` | Guided one-shot setup of **user scope**: sync, session hook and auto-sync in one command ([details](#user-scope---scope-user)) |
 | `sync` | Sync content from canonical repo (fetches latest by default) |
 | `sync --scope user` | Project company standards **once per machine** into `~/.claude`/`~/.codex` instead of committing them per repo ([details](#user-scope---scope-user)) |
 | `check` | Verify managed files are unchanged (`--scope user` verifies the per-user projection; in a canonical repo, verifies compiled plugin freshness) |
@@ -142,6 +143,9 @@ agconf init --source your-org/engineering-standards --ref develop
 
 # Use a local canonical repository (development mode)
 agconf init --local /path/to/canonical-repo
+
+# Set up user scope instead of a repository (see below)
+agconf init --scope user --source your-org/engineering-standards
 ```
 
 ### `agconf sync`
@@ -185,17 +189,30 @@ By default `sync` will **not** silently overwrite a local skill/rule/agent it do
 Instead of committing the company standards into every repo, project them **once per machine** into your per-user harness files:
 
 ```bash
-# First time: point at the canonical source
-agconf sync --scope user --source your-org/standards
-# or a local canonical:  agconf sync --scope user --local /path/to/canonical
+# First time: guided setup — asks for the source, the harnesses to project
+# into, and whether to keep it fresh automatically, then does the whole setup
+# (sync + session hook + auto-sync) in one go.
+agconf init --scope user
+
+# Non-interactive equivalent (for dotfile bootstrap scripts):
+agconf init --scope user --source your-org/standards --target claude codex --yes
+# ...and add --no-autosync to skip enabling background auto-sync.
 
 # Later: re-sync (source is remembered in ~/.agconf/lockfile.json)
 agconf sync --scope user
 ```
 
+`init --scope user` is the discoverable front door; `sync --scope user` is the
+scriptable one and can also do the first sync on its own
+(`agconf sync --scope user --source your-org/standards`, or `--local
+/path/to/canonical`), leaving the hook and auto-sync for you to set up
+separately. Both are idempotent, so re-running `init` is an update flow — it
+remembers your source and targets, and it will not switch auto-sync back on if
+you turned it off.
+
 This projects the company standards into your per-user harness locations, preserving your own content: the **global instructions block** into `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`, plus **skills** (`~/.claude/skills`, `~/.agents/skills`), **subagents** (`~/.claude/agents`, `~/.codex/agents`), and **rules** (`~/.claude/rules`; a rules section in `~/.codex/AGENTS.md`). It's all tracked in a git store at `~/.agconf/` (run `git -C ~/.agconf log` to see diffs). Your personal instructions go in the never-overwritten `~/.agconf/USER.md` (Claude imports it automatically; on Codex it's referenced by a note). Any pre-existing file that would be overwritten is backed up under `~/.agconf/backups/` first. (MCP servers are delivered via plugins, not user scope.)
 
-**Keep it fresh automatically.** `agconf autosync --install` sets up auto-sync so you don't have to run it by hand — it refreshes the store in the background at session start (throttled, and only when you're actually behind canonical), the same check-on-startup approach Claude Code and Codex use for their own updates. No cron or other background scheduler is installed. If a new version landed after your session started, agconf tells you to restart to pick it up. Auto-sync is opt-in (nothing runs until you `--install`); once installed it's on by default (safe: git-tracked store + backups). Runs are logged to `~/.agconf/logs/autosync.log`.
+**Keep it fresh automatically.** `init --scope user` offers this during setup; `agconf autosync --install` turns it on at any time, so you don't have to sync by hand — it refreshes the store in the background at session start (throttled, and only when you're actually behind canonical), the same check-on-startup approach Claude Code and Codex use for their own updates. No cron or other background scheduler is installed. If a new version landed after your session started, agconf tells you to restart to pick it up. Auto-sync is opt-in (nothing runs until you `--install` it or accept it during `init --scope user`); once installed it's on by default (safe: git-tracked store + backups). Runs are logged to `~/.agconf/logs/autosync.log`.
 
 ```bash
 agconf autosync --install     # install the SessionStart hook + enable auto-sync

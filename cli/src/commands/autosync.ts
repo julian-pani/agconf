@@ -9,13 +9,9 @@ import {
   readAutosyncState,
   writeAutosyncState,
 } from "../core/autosync.js";
-import {
-  type CodexFeaturesRunner,
-  codexHooksDisabledWarning,
-  installSessionStartHooks,
-  resolveHookTargets,
-} from "../core/session-check.js";
+import type { CodexFeaturesRunner } from "../core/session-check.js";
 import { StoreBusyError } from "../core/user-scope.js";
+import { installStoreHooks, printHookLines } from "./hook-install.js";
 import { NoUserScopeSourceError, runUserScopeSync } from "./user-scope.js";
 
 export interface AutosyncCommandOptions {
@@ -50,8 +46,10 @@ export interface AutosyncCommandOptions {
 export async function autosyncCommand(options: AutosyncCommandOptions = {}): Promise<void> {
   const homeDir = options.home ?? os.homedir();
 
-  if (options.install || options.enable)
-    return enableAutosync(homeDir, options.quiet, options.codexFeaturesRun);
+  if (options.install || options.enable) {
+    await enableAutosync(homeDir, options.quiet, options.codexFeaturesRun);
+    return;
+  }
   if (options.uninstall || options.disable) return disableAutosync(homeDir, options.quiet);
 
   const trigger = options.trigger ?? "manual";
@@ -147,39 +145,30 @@ export async function autosyncCommand(options: AutosyncCommandOptions = {}): Pro
  * the user store was synced to (Claude → settings.json, Codex → hooks.json) and
  * write the config (whose presence is the opt-in marker) with `enabled: true`. A
  * malformed config file we refuse to clobber is fatal here (explicit admin action).
+ * Returns whether the whole thing succeeded, so a caller composing it into a
+ * larger setup flow (`init --scope user`) does not report success after a failure.
  */
-async function enableAutosync(
+export async function enableAutosync(
   homeDir: string,
   quiet?: boolean,
   codexFeaturesRun?: CodexFeaturesRunner,
-): Promise<void> {
-  let hooks: Awaited<ReturnType<typeof installSessionStartHooks>>;
-  try {
-    const targets = await resolveHookTargets(homeDir);
-    hooks = await installSessionStartHooks(homeDir, targets);
-  } catch (err) {
-    console.error(pc.red(`✗ ${err instanceof Error ? err.message : String(err)}`));
-    process.exitCode = 1;
-    return;
-  }
+): Promise<boolean> {
+  const hooks = await installStoreHooks(homeDir);
+  // Hook install failed (e.g. a config file we refuse to clobber). Auto-sync is
+  // driven BY that hook, so enabling it now would record an opt-in that nothing
+  // acts on. Report the failure instead of half-enabling.
+  if (!hooks) return false;
   await setAutosyncEnabled(homeDir, true);
 
-  if (quiet) return;
+  if (quiet) return true;
   console.log();
   console.log(`${pc.green("✓")} Auto-sync enabled — refreshes the user store at session start.`);
-  for (const hook of hooks) {
-    console.log(
-      hook.alreadyPresent
-        ? pc.dim(`  SessionStart hook already present for ${hook.target} (${hook.filePath})`)
-        : pc.dim(`  Installed SessionStart hook for ${hook.target} (${hook.filePath})`),
-    );
-  }
-  const warning = await codexHooksDisabledWarning(hooks, codexFeaturesRun);
-  if (warning) console.log(pc.yellow(`  ${warning}`));
+  await printHookLines(hooks, codexFeaturesRun);
   console.log(
     pc.dim("  Turn off with `agconf autosync --disable`. Debug log: ~/.agconf/logs/autosync.log"),
   );
   console.log();
+  return true;
 }
 
 /** Disable auto-sync (set `enabled: false`). The shared hook is left in place. */

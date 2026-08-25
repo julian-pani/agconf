@@ -1,6 +1,6 @@
 import * as os from "node:os";
 import pc from "picocolors";
-import { getSyncStatusSafe } from "../core/sync.js";
+import { getSyncStatusSafe, type SyncStatus } from "../core/sync.js";
 import {
   checkUserScope,
   getUserPaths,
@@ -41,6 +41,31 @@ export interface RunUserScopeSyncResult {
 }
 
 /**
+ * The canonical source for a user-scope sync: whichever source flag was passed,
+ * else the one recorded in the store lockfile. One implementation, because both
+ * `sync --scope user` and `init --scope user` need it — the latter to decide
+ * whether to prompt at all — and a drift between the two would make init ask for
+ * a source the sync would have found on its own.
+ *
+ * The lockfile is consulted ALL-OR-NOTHING: a passed `--source` must not be
+ * silently combined with a recorded `local` (which wins downstream in
+ * `resolveVersion`/`resolveSource`), or switching a store from a local canonical
+ * to the company repo would appear to work while still syncing the old path.
+ */
+export function resolveRecordedSource(
+  options: Pick<SharedSyncOptions, "source" | "local">,
+  lockfile: SyncStatus["lockfile"],
+): { source?: string; local?: string | boolean } {
+  // `--local` first, so passing both flags resolves the same way it does at repo
+  // scope (where `local` wins inside resolveVersion/resolveSource).
+  if (options.local !== undefined) return { local: options.local };
+  if (options.source) return { source: options.source };
+  if (lockfile?.source.type === "github") return { source: lockfile.source.repository };
+  if (lockfile?.source.type === "local") return { local: lockfile.source.path };
+  return {};
+}
+
+/**
  * Resolve the source (from flags or the store lockfile) and project it into the
  * user scope — the print-free core shared by `sync --scope user` and `autosync`.
  * Throws {@link NoUserScopeSourceError} when there is no source to sync from.
@@ -62,15 +87,7 @@ export async function runUserScopeSync(
   );
 
   // Recover the source from the store lockfile on re-sync (GitHub or local).
-  let sourceRepo = options.source;
-  let localOpt = options.local;
-  if (!sourceRepo && localOpt === undefined && status.lockfile) {
-    if (status.lockfile.source.type === "github") {
-      sourceRepo = status.lockfile.source.repository;
-    } else if (status.lockfile.source.type === "local") {
-      localOpt = status.lockfile.source.path;
-    }
-  }
+  const { source: sourceRepo, local: localOpt } = resolveRecordedSource(options, status.lockfile);
   if (!sourceRepo && localOpt === undefined) {
     throw new NoUserScopeSourceError();
   }
@@ -188,8 +205,23 @@ export async function syncUserScopeCommand(options: UserScopeSyncOptions): Promi
   }
   if (!result) return; // only reachable via the skipIfUpToDate fast path (unused here)
 
+  printUserSyncResult(result, homeDir, "agconf sync --scope user");
+}
+
+/**
+ * Render a completed user-scope sync: the harness files written, a content
+ * summary, orphan removals, backups, and the store commit state. Shared by
+ * `sync --scope user` and `init --scope user` (which passes its own title and
+ * suppresses the auto-sync tip, having just offered it).
+ */
+export function printUserSyncResult(
+  result: UserSyncResult,
+  homeDir: string,
+  title: string,
+  options: { autosyncTip?: boolean } = {},
+): void {
   console.log();
-  console.log(pc.bold("agconf sync --scope user"));
+  console.log(pc.bold(title));
   console.log(pc.dim(`Store: ${result.storeDir}`));
   console.log();
   for (const f of result.files) {
@@ -234,9 +266,11 @@ export async function syncUserScopeCommand(options: UserScopeSyncOptions): Promi
       ? pc.dim("Committed to the ~/.agconf git store (run `git -C ~/.agconf log` to see diffs).")
       : pc.dim("Store written (git commit skipped)."),
   );
-  console.log(
-    pc.dim("Tip: `agconf autosync --install` keeps this fresh automatically at session start."),
-  );
+  if (options.autosyncTip !== false) {
+    console.log(
+      pc.dim("Tip: `agconf autosync --install` keeps this fresh automatically at session start."),
+    );
+  }
   console.log();
 }
 
