@@ -56,6 +56,7 @@ import {
   promptCompletionInstall,
   uninstallCompletion,
 } from "../../src/commands/completion.js";
+import { PACKAGE_MANAGERS } from "../../src/utils/package-manager.js";
 
 describe("completion", () => {
   const originalEnv = process.env;
@@ -380,6 +381,23 @@ describe("completion", () => {
 
       expect(handleCompletion()).toBe(true);
       expect(tabtab.log).toHaveBeenCalledWith(expect.arrayContaining(["-y", "--yes"]));
+    });
+
+    it("should complete package-manager values from the canonical list", () => {
+      vi.mocked(tabtab.parseEnv).mockReturnValue({
+        complete: true,
+        words: 3,
+        point: 41,
+        line: "agconf upgrade-cli --package-manager ",
+        partial: "",
+        last: "",
+        lastPartial: "",
+        prev: "--package-manager",
+      });
+
+      expect(handleCompletion()).toBe(true);
+      // Completions must not drift from the managers the CLI actually accepts.
+      expect(tabtab.log).toHaveBeenCalledWith([...PACKAGE_MANAGERS]);
     });
 
     it("should fall back to command names for unknown input", () => {

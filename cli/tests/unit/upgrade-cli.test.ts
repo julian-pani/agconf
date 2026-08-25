@@ -53,6 +53,7 @@ describe("upgradeCliCommand", () => {
   let logSpy: ReturnType<typeof vi.spyOn>;
   let errSpy: ReturnType<typeof vi.spyOn>;
   let originalArgv: string[];
+  let originalEnv: NodeJS.ProcessEnv;
 
   beforeEach(() => {
     mockExit = vi.spyOn(process, "exit").mockImplementation((() => {
@@ -61,12 +62,14 @@ describe("upgradeCliCommand", () => {
     logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     originalArgv = [...process.argv];
+    originalEnv = { ...process.env };
     execSyncMock.mockReset();
     getCliVersionMock.mockReset();
   });
 
   afterEach(() => {
     process.argv = originalArgv;
+    process.env = originalEnv;
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -92,7 +95,7 @@ describe("upgradeCliCommand", () => {
 
     expect(mockExit).toHaveBeenCalledWith(1);
     expect(errorOutput()).toContain("Invalid package manager: cargo");
-    expect(logOutput()).toContain("Valid options: npm, pnpm, yarn, bun");
+    expect(logOutput()).toContain("Valid options: npm, pnpm, yarn, bun, volta");
     // We must not have attempted an install.
     expect(execSyncMock).not.toHaveBeenCalled();
   });
@@ -182,9 +185,8 @@ describe("upgradeCliCommand", () => {
 
     expect(mockExit).toHaveBeenCalledWith(1);
     expect(errorOutput()).toContain("EACCES: permission denied");
-    // Manual-command hint and the alternate-PM hint go through logger.info (console.log).
+    // The manual-command hint goes through logger.info (console.log).
     expect(logOutput()).toContain("You can try manually: npm install -g agconf@latest");
-    expect(logOutput()).toContain("--package-manager");
   });
 
   it("detects a Volta shim on version mismatch (src ~152-162)", async () => {
@@ -229,7 +231,9 @@ describe("upgradeCliCommand", () => {
 
     await expect(upgradeCliCommand({ yes: true, packageManager: "npm" })).resolves.toBeUndefined();
 
-    expect(logOutput()).toContain("asdf detected. Run: asdf reshim nodejs");
+    // The reshim already ran and did not help, so re-suggesting it is useless.
+    expect(logOutput()).toContain("The asdf step already ran");
+    expect(logOutput()).toContain("which -a agconf");
   });
 
   it("auto-detects the package manager when the flag is omitted (src ~90-91)", async () => {
@@ -238,11 +242,19 @@ describe("upgradeCliCommand", () => {
     execSyncMock.mockImplementation(((command: string) =>
       command === "agconf --version" ? `${LATEST}\n` : "") as typeof execSync);
 
+    // Pin the binary so detection can't read the host's own node install, and
+    // clear the agent the test runner itself sets so tier 2 is what answers.
+    delete process.env.npm_config_user_agent;
+    process.argv[1] = "/usr/local/bin/agconf";
+    vi.spyOn(fs, "realpathSync").mockReturnValue(
+      "/home/me/.local/share/pnpm/.pnpm-global/5/node_modules/agconf/dist/index.js" as never,
+    );
+
     await expect(upgradeCliCommand({ yes: true })).resolves.toBeUndefined();
 
-    // Whatever is detected, it must be one of the supported managers and be
-    // reported with the reason it was chosen.
-    expect(logOutput()).toMatch(/Package manager: (npm|pnpm|yarn|bun) \(.+\)/);
+    expect(logOutput()).toContain("Package manager: pnpm (binary path)");
+    expect(logOutput()).toContain("Will run:");
+    expect(logOutput()).toContain("pnpm add -g agconf@latest");
     expect(logOutput()).toContain(`CLI upgraded to ${LATEST}!`);
   });
 
@@ -289,7 +301,7 @@ describe("upgradeCliCommand", () => {
     expect(logOutput()).not.toContain("Version mismatch");
   });
 
-  it("falls back to a generic shim hint for an unrecognized path (src ~147-150,159-161)", async () => {
+  it("falls back to a concrete diagnostic for an unrecognized path", async () => {
     getCliVersionMock.mockReturnValue("1.0.0");
     mockFetchOk(LATEST);
     execSyncMock.mockImplementation(((command: string) =>
@@ -304,7 +316,9 @@ describe("upgradeCliCommand", () => {
     await expect(upgradeCliCommand({ yes: true, packageManager: "npm" })).resolves.toBeUndefined();
 
     expect(logOutput()).toContain("Version mismatch");
-    expect(logOutput()).toContain("Your tool manager may be shimming the binary");
+    // No tool manager was detected, so the advice must not guess at one.
+    expect(logOutput()).not.toContain("tool manager");
+    expect(logOutput()).toContain("which -a agconf");
     expect(logOutput()).toContain("Upgrade installed but not active in $PATH");
   });
 
@@ -325,6 +339,198 @@ describe("upgradeCliCommand", () => {
 
     await expect(upgradeCliCommand({ yes: true, packageManager: "npm" })).resolves.toBeUndefined();
 
-    expect(logOutput()).toContain("mise detected. Run: mise reshim");
+    expect(logOutput()).toContain("The mise step already ran");
+  });
+
+  it("upgrades through volta when the binary is a volta shim", async () => {
+    getCliVersionMock.mockReturnValue("1.0.0");
+    mockFetchOk(LATEST);
+    execSyncMock.mockImplementation(((command: string) =>
+      command === "agconf --version" ? `${LATEST}\n` : "") as typeof execSync);
+
+    process.argv[1] = "/Users/me/.volta/bin/agconf";
+    vi.spyOn(fs, "realpathSync").mockReturnValue(
+      "/Users/me/.volta/tools/image/packages/agconf/bin/agconf" as never,
+    );
+
+    await expect(upgradeCliCommand({ yes: true })).resolves.toBeUndefined();
+
+    expect(logOutput()).toContain("Package manager: volta (volta shim)");
+    // volta is both the installer and the shim — don't print it twice.
+    expect(logOutput()).not.toContain("Tool manager:");
+    expect(execSyncMock).toHaveBeenCalledWith(
+      "volta install agconf@latest",
+      expect.objectContaining({ stdio: "pipe" }),
+    );
+    expect(logOutput()).toContain(`CLI upgraded to ${LATEST}!`);
+  });
+
+  it("runs the reshim step after installing under a mise shim", async () => {
+    getCliVersionMock.mockReturnValue("1.0.0");
+    mockFetchOk(LATEST);
+    execSyncMock.mockImplementation(((command: string) =>
+      command === "agconf --version" ? `${LATEST}\n` : "") as typeof execSync);
+
+    process.argv[1] = "/Users/me/.local/bin/agconf";
+    vi.spyOn(fs, "realpathSync").mockReturnValue(
+      "/Users/me/.local/share/mise/installs/node/20.0.0/bin/agconf" as never,
+    );
+
+    await expect(upgradeCliCommand({ yes: true, packageManager: "npm" })).resolves.toBeUndefined();
+
+    expect(logOutput()).toContain("Tool manager:");
+    // Order matters: a reshim after the verification would read the stale shim.
+    expect(execSyncMock.mock.calls.map((c) => c[0])).toEqual([
+      "npm install -g agconf@latest",
+      "mise reshim",
+      "agconf --version",
+    ]);
+    expect(logOutput()).toContain(`CLI upgraded to ${LATEST}!`);
+  });
+
+  it("warns but still succeeds when the reshim step fails", async () => {
+    getCliVersionMock.mockReturnValue("1.0.0");
+    mockFetchOk(LATEST);
+    execSyncMock.mockImplementation(((command: string) => {
+      if (command === "asdf reshim") throw new Error("asdf: not found");
+      return command === "agconf --version" ? `${LATEST}\n` : "";
+    }) as typeof execSync);
+
+    process.argv[1] = "/Users/me/.asdf/shims/agconf";
+    vi.spyOn(fs, "realpathSync").mockReturnValue(
+      "/Users/me/.asdf/installs/nodejs/20.0.0/bin/agconf" as never,
+    );
+
+    await expect(upgradeCliCommand({ yes: true, packageManager: "npm" })).resolves.toBeUndefined();
+
+    expect(mockExit).not.toHaveBeenCalled();
+    expect(logOutput()).toContain("asdf: not found");
+    expect(logOutput()).toContain("You can try manually: asdf reshim");
+    // The install itself worked, so this is not a failure — but it must not be
+    // reported as an unqualified success either.
+    expect(logOutput()).toContain(`CLI upgraded to ${LATEST}, but the asdf shim rebuild failed`);
+    expect(logOutput()).not.toContain(`CLI upgraded to ${LATEST}!`);
+  });
+
+  it("does not run a reshim for a plain global install", async () => {
+    getCliVersionMock.mockReturnValue("1.0.0");
+    mockFetchOk(LATEST);
+    execSyncMock.mockImplementation(((command: string) =>
+      command === "agconf --version" ? `${LATEST}\n` : "") as typeof execSync);
+
+    process.argv[1] = "/usr/local/bin/agconf";
+    vi.spyOn(fs, "realpathSync").mockReturnValue(
+      "/usr/local/lib/node_modules/agconf/dist/index.js" as never,
+    );
+
+    await expect(upgradeCliCommand({ yes: true, packageManager: "npm" })).resolves.toBeUndefined();
+
+    expect(logOutput()).not.toContain("Tool manager:");
+    const commands = execSyncMock.mock.calls.map((c) => c[0]);
+    expect(commands).toEqual(["npm install -g agconf@latest", "agconf --version"]);
+  });
+
+  it("honors --package-manager volta on a machine with no shim", async () => {
+    getCliVersionMock.mockReturnValue("1.0.0");
+    mockFetchOk(LATEST);
+    execSyncMock.mockImplementation(((command: string) =>
+      command === "agconf --version" ? `${LATEST}\n` : "") as typeof execSync);
+
+    process.argv[1] = "/usr/local/bin/agconf";
+    vi.spyOn(fs, "realpathSync").mockReturnValue(
+      "/usr/local/lib/node_modules/agconf/dist/index.js" as never,
+    );
+
+    await expect(
+      upgradeCliCommand({ yes: true, packageManager: "volta" }),
+    ).resolves.toBeUndefined();
+
+    expect(logOutput()).toContain("Package manager: volta (--package-manager flag)");
+    // No shim was detected, so nothing may be reported or run beyond the install.
+    expect(logOutput()).not.toContain("Tool manager:");
+    expect(execSyncMock.mock.calls.map((c) => c[0])).toEqual([
+      "volta install agconf@latest",
+      "agconf --version",
+    ]);
+  });
+
+  it("names the volta installer, not `undefined`, when no shim was detected", async () => {
+    getCliVersionMock.mockReturnValue("1.0.0");
+    mockFetchOk(LATEST);
+    // Install succeeds but $PATH still serves the old binary.
+    execSyncMock.mockImplementation(((command: string) =>
+      command === "agconf --version" ? "1.0.0\n" : "") as typeof execSync);
+
+    process.argv[1] = "/usr/local/bin/agconf";
+    vi.spyOn(fs, "realpathSync").mockReturnValue(
+      "/usr/local/lib/node_modules/agconf/dist/index.js" as never,
+    );
+
+    await expect(
+      upgradeCliCommand({ yes: true, packageManager: "volta" }),
+    ).resolves.toBeUndefined();
+
+    expect(logOutput()).toContain("The volta step already ran");
+    expect(logOutput()).not.toContain("undefined");
+  });
+
+  it("still reshims when --package-manager overrides the installer", async () => {
+    getCliVersionMock.mockReturnValue("1.0.0");
+    mockFetchOk(LATEST);
+    execSyncMock.mockImplementation(((command: string) =>
+      command === "agconf --version" ? `${LATEST}\n` : "") as typeof execSync);
+
+    process.argv[1] = "/Users/me/.asdf/shims/agconf";
+    vi.spyOn(fs, "realpathSync").mockReturnValue(
+      "/Users/me/.asdf/installs/nodejs/20.0.0/bin/agconf" as never,
+    );
+
+    await expect(upgradeCliCommand({ yes: true, packageManager: "pnpm" })).resolves.toBeUndefined();
+
+    expect(logOutput()).toContain("Tool manager:");
+    expect(execSyncMock.mock.calls.map((c) => c[0])).toEqual([
+      "pnpm add -g agconf@latest",
+      "asdf reshim",
+      "agconf --version",
+    ]);
+  });
+
+  it("explains why a tool manager is not a --package-manager value", async () => {
+    getCliVersionMock.mockReturnValue("1.0.0");
+    mockFetchOk(LATEST);
+
+    await expect(upgradeCliCommand({ yes: true, packageManager: "asdf" })).rejects.toThrow(
+      "process.exit called",
+    );
+
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(errorOutput()).toContain("Invalid package manager: asdf");
+    expect(logOutput()).toContain("asdf is detected automatically");
+    expect(execSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("suggests an alternate manager only when none was supplied", async () => {
+    getCliVersionMock.mockReturnValue("1.0.0");
+    mockFetchOk(LATEST);
+    execSyncMock.mockImplementation((() => {
+      throw new Error("EACCES: permission denied");
+    }) as typeof execSync);
+
+    process.argv[1] = "/usr/local/bin/agconf";
+    vi.spyOn(fs, "realpathSync").mockReturnValue(
+      "/usr/local/lib/node_modules/agconf/dist/index.js" as never,
+    );
+
+    // Explicit flag: re-suggesting the flag the user just used is noise.
+    await expect(upgradeCliCommand({ yes: true, packageManager: "npm" })).rejects.toThrow(
+      "process.exit called",
+    );
+    expect(logOutput()).not.toContain("If npm is not your package manager");
+
+    logSpy.mockClear();
+
+    // Auto-detected: the override hint is the useful next step.
+    await expect(upgradeCliCommand({ yes: true })).rejects.toThrow("process.exit called");
+    expect(logOutput()).toContain("--package-manager");
   });
 });

@@ -118,7 +118,7 @@ GitHub Actions workflows are created automatically to keep downstream repos in s
 | `session-check` | Advisory cross-scope duplication + integrity check, run at session start |
 | `compile` | Compile installable Claude Code / Codex plugins + marketplace from canonical content (canonical repos) |
 | `propose` | Propose local changes (or new skills/rules/agents via `--new`) back to canonical as a PR (`--scope user` proposes from the per-user projection) |
-| `upgrade-cli` | Upgrade the CLI to latest version (auto-detects package manager) |
+| `upgrade-cli` | Upgrade the CLI to latest version (auto-detects package manager, incl. volta/asdf/mise) |
 | `canonical init` | Scaffold a new canonical repository |
 | `config` | Manage global CLI configuration |
 
@@ -384,7 +384,7 @@ it proves canonical has moved, the propose aborts rather than guessing.
 
 ### `agconf upgrade-cli`
 
-Upgrade the CLI itself to the latest version. The command automatically detects which package manager was used to install agconf (npm, pnpm, yarn, or bun) and uses it for the upgrade.
+Upgrade the CLI itself to the latest version. The command automatically detects which package manager was used to install agconf (npm, pnpm, yarn, bun, or volta) and uses it for the upgrade.
 
 ```bash
 # Upgrade to latest version (auto-detect package manager)
@@ -396,7 +396,14 @@ agconf upgrade-cli --yes
 # Explicit package manager override
 agconf upgrade-cli --package-manager pnpm
 agconf upgrade-cli -p yarn
+agconf upgrade-cli -p volta
 ```
+
+Detection covers `npm`, `pnpm`, `yarn`, `bun` and `volta`. When the binary is
+shimmed by `asdf` or `mise`, the underlying package manager is used for the
+install and the shims are rebuilt afterwards (`asdf reshim` / `mise reshim`),
+after which every command that will run is listed before the confirmation
+prompt.
 
 ### `agconf canonical init`
 

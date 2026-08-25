@@ -32,7 +32,7 @@ Full documentation available on GitHub: https://github.com/julian-pani/agconf
 | `propose --scope user` | Propose edits made to the per-user projection (`~/.claude`, `~/.codex`) instead of a repo | `agconf propose --scope user` |
 | `propose --new [path]` | Propose new (unmanaged) skills/rules/agents upstream; optional path filters discovery (**required** at user scope) | `agconf propose --new .claude/skills/my-skill` |
 | `propose --override` | Resolve conflicts with canonical by taking the local copy instead of aborting | `agconf propose --override` |
-| `upgrade-cli` | Upgrade the CLI to latest version (auto-detects package manager) | `agconf upgrade-cli` |
+| `upgrade-cli` | Upgrade the CLI to latest version (auto-detects package manager, incl. volta/asdf/mise) | `agconf upgrade-cli` |
 | `canonical init` | Scaffold a new canonical repository | `agconf canonical init` |
 | `config show` | Show current configuration | `agconf config show` |
 | `completion install` | Install shell completions | `agconf completion install` |

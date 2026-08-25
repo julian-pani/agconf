@@ -90,7 +90,7 @@ Commands: init (with `--scope repo|user`), sync (with `--scope repo|user`), chec
 > **Reminder**: When modifying command options in `cli/src/cli.ts`, you MUST also update `cli/src/commands/completion.ts`. See [CLI Command Changes](#cli-command-changes).
 
 ### Utilities (`cli/src/utils/`)
-- `package-manager.ts` - Package manager detection for CLI upgrades (npm, pnpm, yarn, bun)
+- `package-manager.ts` - Package manager detection for CLI upgrades (npm, pnpm, yarn, bun, volta). Also detects the Node tool managers that shim global binaries (`detectToolManager`: volta/asdf/mise) — volta becomes the installer (`volta install`), while asdf/mise keep the underlying installer and add a `postInstallCommand` reshim (`buildReshimCommand`) that `upgrade-cli` runs after the install.
 
 ### Configuration (`cli/src/config/`)
 - Zod schemas for canonical config (`agconf.yaml`) and lockfile validation

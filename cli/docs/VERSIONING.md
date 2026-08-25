@@ -148,6 +148,17 @@ If the lockfile was created with a newer CLI, a warning is shown:
 
 This is informational only - the CLI will still work if schema versions are compatible. The `upgrade-cli` command automatically detects which package manager was used to install agconf and uses it for the upgrade.
 
+Detection covers `npm`, `pnpm`, `yarn`, `bun` and `volta`, and also recognizes the Node tool managers that shim global binaries:
+
+| Installed via | Upgrade command | Follow-up |
+|---|---|---|
+| npm / pnpm / yarn / bun | that manager's global install | — |
+| Volta | `volta install agconf@latest` | none (Volta writes its own shims) |
+| asdf | the underlying manager's global install | `asdf reshim`, run automatically |
+| mise | the underlying manager's global install | `mise reshim`, run automatically |
+
+Override the detection with `agconf upgrade-cli --package-manager <npm|pnpm|yarn|bun|volta>`. A detected asdf/mise shim is still reshimmed afterwards, since the flag only selects the installer.
+
 ## Canonical Repository Setup
 
 When creating a canonical repository with `agconf canonical init`:

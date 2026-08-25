@@ -6,6 +6,7 @@ import pc from "picocolors";
 import tabtab from "tabtab";
 // @ts-expect-error - tabtab internal module not typed
 import tabtabInstaller from "tabtab/lib/installer.js";
+import { PACKAGE_MANAGERS } from "../utils/package-manager.js";
 
 const CLI_NAME = "agconf";
 
@@ -129,7 +130,7 @@ const COMPLETION_SUBCOMMANDS = ["install", "uninstall"];
 const CANONICAL_SUBCOMMANDS = ["init"];
 const TARGET_VALUES = ["claude", "codex"];
 const SCOPE_VALUES = ["repo", "user"];
-const PACKAGE_MANAGER_VALUES = ["npm", "pnpm", "yarn", "bun"];
+const PACKAGE_MANAGER_VALUES = [...PACKAGE_MANAGERS];
 
 /**
  * Handle shell completion requests.
