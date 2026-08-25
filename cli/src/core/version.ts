@@ -7,6 +7,7 @@
 
 import { execFile, execSync } from "node:child_process";
 import { promisify } from "node:util";
+import { assertValidRepositorySlug } from "../utils/repository.js";
 
 const GITHUB_API_BASE = "https://api.github.com";
 
@@ -78,6 +79,9 @@ export interface ReleaseInfo {
  * Fetches the latest release from a GitHub repository.
  */
 export async function getLatestRelease(repo: string): Promise<ReleaseInfo> {
+  // `repo` is interpolated into an API path and can arrive from a lockfile, so
+  // reject `..` segments before they can walk to a different endpoint.
+  assertValidRepositorySlug(repo);
   const url = `${GITHUB_API_BASE}/repos/${repo}/releases/latest`;
 
   const response = await fetch(url, {
@@ -127,6 +131,7 @@ export async function getLatestReleaseSafe(
   timeoutMs: number,
 ): Promise<ReleaseInfo | null> {
   try {
+    assertValidRepositorySlug(repo);
     const token = await getGitHubTokenSafe();
     const headers: Record<string, string> = {
       Accept: "application/vnd.github.v3+json",
