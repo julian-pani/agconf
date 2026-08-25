@@ -44,6 +44,10 @@ When you're using AI coding agents like Claude Code across multiple repositories
 
 **Everything is managed in git.** No database. No infrastructure. Just repositories and a CLI.
 
+Standards can also be delivered **per machine** rather than per repo — the same
+canonical source projected into your `~/.claude` and `~/.codex` instead of
+committed into each project. See [User scope](#user-scope---scope-user).
+
 ## Installation
 
 ```bash
@@ -75,6 +79,15 @@ gh repo clone your-org/agconf /tmp/agconf -- --depth 1 \
 
 ## Quick Start
 
+Two decisions: **where the standards live** (a canonical repository — someone on
+your team has probably made one already) and **how they reach you**.
+
+| Your situation | Start here |
+|---|---|
+| Your team has a canonical repo and you want its standards on your machine | [User scope](#user-scope---scope-user) — one command, nothing committed |
+| You want a repository to carry the standards (committed, reviewable, enforced in CI) | [Step 2](#2-sync-to-your-projects) below |
+| You're setting up the canonical repository itself | [Step 1](#1-create-a-canonical-repository) below |
+
 ### 1. Create a canonical repository
 
 ```bash
@@ -104,6 +117,54 @@ This will:
 ### 3. Set up automatic sync (optional)
 
 GitHub Actions workflows are created automatically to keep downstream repos in sync. See [cli/docs/CANONICAL_REPOSITORY_SETUP.md](cli/docs/CANONICAL_REPOSITORY_SETUP.md) for detailed instructions on configuring automated updates.
+
+## User scope (`--scope user`)
+
+Instead of committing the company standards into every repo, project them **once per machine** into your per-user harness files. Full walkthrough — what lands where, the personal layer, updating, and backing it out — in the [User Scope guide](cli/docs/USER_SCOPE.md).
+
+```bash
+# First time: guided setup — asks for the source, the harnesses to project
+# into, and whether to keep it fresh automatically, then does the whole setup
+# (sync + session hook + auto-sync) in one go.
+agconf init --scope user
+
+# Non-interactive equivalent (for dotfile bootstrap scripts):
+agconf init --scope user --source your-org/standards --target claude codex --yes
+# ...and add --no-autosync to skip enabling background auto-sync.
+
+# Later: re-sync (source is remembered in ~/.agconf/lockfile.json)
+agconf sync --scope user
+```
+
+**Restart your agent session afterwards** — Claude Code and Codex read their
+config at startup, so a session that is already running won't see the standards.
+
+`init --scope user` is the discoverable front door; `sync --scope user` is the
+scriptable one and can also do the first sync on its own
+(`agconf sync --scope user --source your-org/standards`, or `--local
+/path/to/canonical`), leaving the hook and auto-sync for you to set up
+separately. Both are idempotent, so re-running `init` is an update flow — it
+remembers your source and targets, and it will not switch auto-sync back on if
+you turned it off.
+
+This projects the company standards into your per-user harness locations, preserving your own content: the **global instructions block** into `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`, plus **skills** (`~/.claude/skills`, `~/.agents/skills`), **subagents** (`~/.claude/agents`, `~/.codex/agents`), and **rules** (`~/.claude/rules`; a rules section in `~/.codex/AGENTS.md`). It's all tracked in a git store at `~/.agconf/` (run `git -C ~/.agconf log` to see diffs). Your personal instructions go in the never-overwritten `~/.agconf/USER.md` (Claude imports it automatically; on Codex it's referenced by a note). Any pre-existing file that would be overwritten is backed up under `~/.agconf/backups/` first. (MCP servers are delivered via plugins, not user scope.)
+
+**Keep it fresh automatically.** `init --scope user` offers this during setup; `agconf autosync --install` turns it on at any time, so you don't have to sync by hand — it refreshes the store in the background at session start (throttled, and only when you're actually behind canonical), the same check-on-startup approach Claude Code and Codex use for their own updates. No cron or other background scheduler is installed. If a new version landed after your session started, agconf tells you to restart to pick it up. Auto-sync is opt-in (nothing runs until you `--install` it or accept it during `init --scope user`); once installed it's on by default (safe: git-tracked store + backups). Runs are logged to `~/.agconf/logs/autosync.log`.
+
+```bash
+agconf autosync --install     # install the SessionStart hook + enable auto-sync
+agconf autosync               # run once now (throttled; --force to bypass)
+agconf autosync --disable     # turn off (or --uninstall); --enable to turn back on
+```
+
+**Sending changes back.** Edits you make to the projected files can be proposed
+to canonical with [`agconf propose --scope user`](#proposing-from-user-scope).
+
+**What user scope doesn't do.** Generated CI workflows and the pre-commit hook
+are repo-only (there's no repo and no commit to gate), and MCP servers are
+delivered via plugins rather than user scope. See the
+[feature × mode matrix](cli/docs/DISTRIBUTION_SCOPES.md#16-feature--mode-matrix)
+and the [gap list](cli/docs/DISTRIBUTION_SCOPES.md#17-known-gaps).
 
 ## Commands
 
@@ -144,7 +205,7 @@ agconf init --source your-org/engineering-standards --ref develop
 # Use a local canonical repository (development mode)
 agconf init --local /path/to/canonical-repo
 
-# Set up user scope instead of a repository (see below)
+# Set up user scope instead of a repository — see the User scope section
 agconf init --scope user --source your-org/engineering-standards
 ```
 
@@ -183,51 +244,6 @@ agconf sync --override
 ```
 
 By default `sync` will **not** silently overwrite a local skill/rule/agent it does not manage. If a local **unmanaged** file is identical to canonical it is **adopted** (gains tracking metadata); if it **differs**, sync stops with an error and writes nothing. Use `agconf propose` to send the change upstream, or `--override` to discard it. CI sync jobs typically pass `--override` (the working tree is committed, so overwrites are git-recoverable).
-
-#### User scope (`--scope user`)
-
-Instead of committing the company standards into every repo, project them **once per machine** into your per-user harness files:
-
-```bash
-# First time: guided setup — asks for the source, the harnesses to project
-# into, and whether to keep it fresh automatically, then does the whole setup
-# (sync + session hook + auto-sync) in one go.
-agconf init --scope user
-
-# Non-interactive equivalent (for dotfile bootstrap scripts):
-agconf init --scope user --source your-org/standards --target claude codex --yes
-# ...and add --no-autosync to skip enabling background auto-sync.
-
-# Later: re-sync (source is remembered in ~/.agconf/lockfile.json)
-agconf sync --scope user
-```
-
-`init --scope user` is the discoverable front door; `sync --scope user` is the
-scriptable one and can also do the first sync on its own
-(`agconf sync --scope user --source your-org/standards`, or `--local
-/path/to/canonical`), leaving the hook and auto-sync for you to set up
-separately. Both are idempotent, so re-running `init` is an update flow — it
-remembers your source and targets, and it will not switch auto-sync back on if
-you turned it off.
-
-This projects the company standards into your per-user harness locations, preserving your own content: the **global instructions block** into `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`, plus **skills** (`~/.claude/skills`, `~/.agents/skills`), **subagents** (`~/.claude/agents`, `~/.codex/agents`), and **rules** (`~/.claude/rules`; a rules section in `~/.codex/AGENTS.md`). It's all tracked in a git store at `~/.agconf/` (run `git -C ~/.agconf log` to see diffs). Your personal instructions go in the never-overwritten `~/.agconf/USER.md` (Claude imports it automatically; on Codex it's referenced by a note). Any pre-existing file that would be overwritten is backed up under `~/.agconf/backups/` first. (MCP servers are delivered via plugins, not user scope.)
-
-**Keep it fresh automatically.** `init --scope user` offers this during setup; `agconf autosync --install` turns it on at any time, so you don't have to sync by hand — it refreshes the store in the background at session start (throttled, and only when you're actually behind canonical), the same check-on-startup approach Claude Code and Codex use for their own updates. No cron or other background scheduler is installed. If a new version landed after your session started, agconf tells you to restart to pick it up. Auto-sync is opt-in (nothing runs until you `--install` it or accept it during `init --scope user`); once installed it's on by default (safe: git-tracked store + backups). Runs are logged to `~/.agconf/logs/autosync.log`.
-
-```bash
-agconf autosync --install     # install the SessionStart hook + enable auto-sync
-agconf autosync               # run once now (throttled; --force to bypass)
-agconf autosync --disable     # turn off (or --uninstall); --enable to turn back on
-```
-
-**Sending changes back.** Edits you make to the projected files can be proposed
-to canonical with [`agconf propose --scope user`](#proposing-from-user-scope).
-
-**What user scope doesn't do.** Generated CI workflows and the pre-commit hook
-are repo-only (there's no repo and no commit to gate), and MCP servers are
-delivered via plugins rather than user scope. See the
-[feature × mode matrix](cli/docs/DISTRIBUTION_SCOPES.md#16-feature--mode-matrix)
-and the [gap list](cli/docs/DISTRIBUTION_SCOPES.md#17-known-gaps).
 
 ### `agconf check`
 

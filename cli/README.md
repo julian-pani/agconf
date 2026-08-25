@@ -7,6 +7,7 @@ CLI to sync AI agent configurations across repositories.
 
 ## Documentation
 
+- [User Scope](./docs/USER_SCOPE.md) - Installing company standards once per machine (`~/.claude`, `~/.codex`)
 - [Canonical Repository Setup](./docs/CANONICAL_REPOSITORY_SETUP.md) - Setting up a source repository
 - [Downstream Repository Configuration](./docs/DOWNSTREAM_REPOSITORY_CONFIGURATION.md) - Customizing sync behavior
 - [Versioning](./docs/VERSIONING.md) - How version management works
@@ -52,19 +53,25 @@ agconf canonical init --name my-standards --org "My Org"
 
 This scaffolds the structure for your standards. Edit `instructions/AGENTS.md` to add your engineering guidelines, then commit and push to GitHub.
 
-### 2. Sync to your projects
+### 2. Deliver the standards
+
+Into a repository, committed alongside the code:
 
 ```bash
 cd your-project
 agconf init --source your-org/engineering-standards
 ```
 
-Or set the standards up **once per machine** instead of per repo — this walks you
-through the source, the harnesses to project into, and background refresh:
+Or **once per machine** into your own `~/.claude` / `~/.codex`, so they apply
+everywhere without being committed anywhere. This asks for the source, the
+harnesses to project into, and whether to refresh in the background:
 
 ```bash
 agconf init --scope user
 ```
+
+See the [User Scope guide](./docs/USER_SCOPE.md) for what lands where, how to keep
+it fresh, and how to back it out.
 
 ## Local edits & overwrite protection
 
