@@ -1,3 +1,9 @@
+## [0.27.1](https://github.com/julian-pani/agconf/compare/v0.27.0...v0.27.1) (2026-08-25)
+
+### Bug Fixes
+
+* **session-check:** relay notes to the developer and emit Codex's hook envelope ([24256c7](https://github.com/julian-pani/agconf/commit/24256c721e605755a3b81b067e39eddca5865630))
+
 ## [0.27.0](https://github.com/julian-pani/agconf/compare/v0.26.0...v0.27.0) (2026-08-25)
 
 ### Features
