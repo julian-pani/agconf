@@ -1,3 +1,9 @@
+## [0.27.0](https://github.com/julian-pani/agconf/compare/v0.26.0...v0.27.0) (2026-08-25)
+
+### Features
+
+* **upgrade-cli:** auto-discover volta, asdf, and mise ([400365f](https://github.com/julian-pani/agconf/commit/400365fdec3c68365afcd6f0f6c127cb67b8eef7))
+
 ## [0.26.0](https://github.com/julian-pani/agconf/compare/v0.25.1...v0.26.0) (2026-08-25)
 
 ### Features
