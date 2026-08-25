@@ -20,7 +20,7 @@
  *
  * Model output is not deterministic, so the relay assertions retry.
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -35,7 +35,7 @@ const CLI_ENTRY = path.resolve(__dirname, "../../dist/index.js");
 const codexAuth = path.join(os.homedir(), ".codex", "auth.json");
 const HARNESS_TIMEOUT = 240_000;
 /** Retries per relay assertion: the agent's phrasing (and compliance) varies. */
-const RELAY_RETRIES = 2;
+const RELAY_RETRIES = 3;
 
 /** Is this executable on PATH? */
 function onPath(binary: string): boolean {
@@ -159,19 +159,39 @@ async function makeFixture(kind: "duplicated" | "clean", targets: Target[]): Pro
   return { home, repo, dirs: [home, repo, canonical, bin] };
 }
 
-/** Run a harness CLI in the fixture repo, or `null` if it could not run at all. */
-function runHarness(command: string, args: string[], options: { cwd: string; home?: string }) {
-  try {
-    return execFileSync(command, args, {
-      cwd: options.cwd,
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: HARNESS_TIMEOUT - 30_000,
-      ...(options.home ? { env: { ...process.env, HOME: options.home } } : {}),
-    });
-  } catch {
-    return null; // not authenticated, rate-limited, timed out — treat as unavailable
+interface HarnessRun {
+  /** stdout: the agent's reply, and nothing else. */
+  reply: string;
+  /** stdout + stderr: harness diagnostics live here (Codex's `hook:` lines). */
+  all: string;
+}
+
+/**
+ * Run a harness CLI in the fixture repo. Returns `null` when the harness itself
+ * could not run — spawn failure, timeout, or an exit that looks like a login
+ * problem — so the caller skips instead of reporting our code broken. A CLI that
+ * runs and answers is always asserted against, whatever its exit code (Codex can
+ * exit non-zero on an otherwise fine turn).
+ */
+function runHarness(
+  command: string,
+  args: string[],
+  options: { cwd: string; home?: string },
+): HarnessRun | null {
+  const result = spawnSync(command, args, {
+    cwd: options.cwd,
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: HARNESS_TIMEOUT - 30_000,
+    ...(options.home ? { env: { ...process.env, HOME: options.home } } : {}),
+  });
+  if (result.error) return null;
+  const reply = result.stdout ?? "";
+  const all = `${reply}\n${result.stderr ?? ""}`;
+  if (reply.trim() === "" && /log ?in|auth|credential|unauthorized|api key/i.test(all)) {
+    return null; // not signed in here
   }
+  return { reply, all };
 }
 
 const fixtures: Fixture[] = [];
@@ -199,22 +219,20 @@ describe.skipIf(!claudeAvailable)("Claude Code relays session-check notes", () =
     async (ctx) => {
       const { repo } = await fixture("duplicated", ["claude"]);
 
-      const reply = runHarness("claude", ["-p", "What is 2+2?", "--model", "sonnet"], {
-        cwd: repo,
-      });
-      if (reply === null) ctx.skip();
+      const run = runHarness("claude", ["-p", "What is 2+2?", "--model", "sonnet"], { cwd: repo });
+      if (run === null) ctx.skip();
 
-      expect(reply).toMatch(/scope|agconf/i);
+      expect(run?.reply).toMatch(/scope|agconf/i);
     },
   );
 
   it("says nothing when there is nothing to report", { timeout: HARNESS_TIMEOUT }, async (ctx) => {
     const { repo } = await fixture("clean", ["claude"]);
 
-    const reply = runHarness("claude", ["-p", "What is 2+2?", "--model", "sonnet"], { cwd: repo });
-    if (reply === null) ctx.skip();
+    const run = runHarness("claude", ["-p", "What is 2+2?", "--model", "sonnet"], { cwd: repo });
+    if (run === null) ctx.skip();
 
-    expect(reply).not.toMatch(/agconf|more than one scope/i);
+    expect(run?.reply).not.toMatch(/agconf|more than one scope/i);
   });
 });
 
@@ -236,11 +254,11 @@ describe.skipIf(!codexAvailable)("Codex relays session-check notes", () => {
     async (ctx) => {
       const { repo, home } = await fixture("duplicated", ["codex"]);
 
-      const reply = runHarness("codex", codexArgs("What is 2+2?"), { cwd: repo, home });
-      if (reply === null) ctx.skip();
+      const run = runHarness("codex", codexArgs("What is 2+2?"), { cwd: repo, home });
+      if (run === null) ctx.skip();
 
-      expect(reply).toContain("hook: SessionStart Completed");
-      expect(reply).toMatch(/scope|agconf/i);
+      expect(run?.all).toContain("hook: SessionStart Completed");
+      expect(run?.reply).toMatch(/scope|agconf/i);
     },
   );
 
@@ -250,13 +268,13 @@ describe.skipIf(!codexAvailable)("Codex relays session-check notes", () => {
     async (ctx) => {
       const { repo, home } = await fixture("clean", ["codex"]);
 
-      const reply = runHarness("codex", codexArgs("What is 2+2?"), { cwd: repo, home });
-      if (reply === null) ctx.skip();
+      const run = runHarness("codex", codexArgs("What is 2+2?"), { cwd: repo, home });
+      if (run === null) ctx.skip();
 
       // The clean path emits an envelope with an empty `additionalContext`:
       // bare-empty stdout is not valid hook output either.
-      expect(reply).toContain("hook: SessionStart Completed");
-      expect(reply).not.toMatch(/agconf|more than one scope/i);
+      expect(run?.all).toContain("hook: SessionStart Completed");
+      expect(run?.reply).not.toMatch(/agconf|more than one scope/i);
     },
   );
 
@@ -274,13 +292,13 @@ describe.skipIf(!codexAvailable)("Codex relays session-check notes", () => {
       }
       await fs.writeFile(hooksPath, JSON.stringify(config, null, 2), "utf-8");
 
-      const reply = runHarness("codex", codexArgs("What is 2+2?"), { cwd: repo, home });
-      if (reply === null) ctx.skip();
+      const run = runHarness("codex", codexArgs("What is 2+2?"), { cwd: repo, home });
+      if (run === null) ctx.skip();
 
       // If this ever starts passing plain text through, `--hook` could become
       // optional for Codex — worth knowing, hence the assertion.
-      expect(reply).toContain("hook: SessionStart Failed");
-      expect(reply).not.toMatch(/more than one scope/i);
+      expect(run?.all).toContain("hook: SessionStart Failed");
+      expect(run?.reply).not.toMatch(/more than one scope/i);
     },
   );
 });
