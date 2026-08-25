@@ -13,11 +13,10 @@ import {
   type DuplicationFinding,
   detectCrossScopeDuplication,
   findMissingHookTargets,
-  installSessionStartHooks,
-  resolveHookTargets,
 } from "../core/session-check.js";
 import { checkUserScope } from "../core/user-scope.js";
 import { getGitRoot } from "../utils/git.js";
+import { installStoreHooks } from "./hook-install.js";
 import { probeUserScopeFreshness } from "./user-scope.js";
 
 export interface SessionCheckOptions {
@@ -68,24 +67,18 @@ export async function sessionCheckCommand(options: SessionCheckOptions = {}): Pr
   // Explicit admin action — surface failures instead of swallowing them (unlike
   // the advisory check path below, which must never break a session).
   if (options.installHook) {
-    try {
-      const targets = await resolveHookTargets(homeDir);
-      const results = await installSessionStartHooks(homeDir, targets);
-      if (!options.quiet) {
-        for (const r of results) {
-          console.log(
-            r.alreadyPresent
-              ? pc.dim(`agconf session-check hook already present for ${r.target} (${r.filePath})`)
-              : `${pc.green("✓")} Installed agconf session-check SessionStart hook for ${r.target} (${r.filePath})`,
-          );
-        }
-        // Guarded by !quiet so quiet mode never shells out to `codex features list`.
-        const warning = await codexHooksDisabledWarning(results, options.codexFeaturesRun);
-        if (warning) console.log(pc.yellow(warning));
+    const results = await installStoreHooks(homeDir);
+    if (results && !options.quiet) {
+      for (const r of results) {
+        console.log(
+          r.alreadyPresent
+            ? pc.dim(`agconf session-check hook already present for ${r.target} (${r.filePath})`)
+            : `${pc.green("✓")} Installed agconf session-check SessionStart hook for ${r.target} (${r.filePath})`,
+        );
       }
-    } catch (err) {
-      console.error(pc.red(`✗ ${err instanceof Error ? err.message : String(err)}`));
-      process.exitCode = 1;
+      // Guarded by !quiet so quiet mode never shells out to `codex features list`.
+      const warning = await codexHooksDisabledWarning(results, options.codexFeaturesRun);
+      if (warning) console.log(pc.yellow(warning));
     }
     return;
   }
