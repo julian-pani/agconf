@@ -102,6 +102,41 @@ describe("printHookLines", () => {
     expect(out).toContain("already present for codex");
   });
 
+  it("reports an upgraded hook as an upgrade, not an install or a no-op", async () => {
+    await printHookLines([
+      {
+        target: "claude",
+        filePath: "/h/.claude/settings.json",
+        installed: false,
+        alreadyPresent: false,
+        upgraded: true,
+        stale: false,
+      },
+    ]);
+
+    const out = logSpy.mock.calls.flat().join("\n");
+    expect(out).toContain("Updated the SessionStart hook for claude");
+    expect(out).toContain("agconf session-check --hook");
+  });
+
+  it("warns about a customized hook command that agconf will not rewrite", async () => {
+    await printHookLines([
+      {
+        target: "codex",
+        filePath: "/h/.codex/hooks.json",
+        installed: false,
+        alreadyPresent: true,
+        upgraded: false,
+        stale: true,
+      },
+    ]);
+
+    // Without `--hook` Codex discards the output, and only the developer can fix
+    // a command they wrote themselves.
+    const out = logSpy.mock.calls.flat().join("\n");
+    expect(out).toContain("without `--hook`");
+  });
+
   it("surfaces the codex-hooks-disabled warning when the probe reports it", async () => {
     await printHookLines(
       [{ target: "codex", filePath: "/h/.codex/hooks.json", alreadyPresent: false }],

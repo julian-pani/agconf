@@ -47,7 +47,9 @@ describe("session-check command", () => {
     const settings = JSON.parse(
       await fs.readFile(path.join(home, ".claude", "settings.json"), "utf-8"),
     );
-    expect(settings.hooks.SessionStart[0].hooks[0].command).toContain("session-check");
+    // `--hook` is what makes the output the SessionStart wire envelope, which
+    // Codex requires and Claude accepts.
+    expect(settings.hooks.SessionStart[0].hooks[0].command).toBe("agconf session-check --hook");
     expect(mockExit).not.toHaveBeenCalled();
   });
 
@@ -168,8 +170,213 @@ describe("session-check command", () => {
     expect(output).toContain("more than one scope");
     expect(output).toContain("instructions");
     expect(mockExit).not.toHaveBeenCalled(); // advisory: always exit 0
+    // The hook output is the agent's only channel to the developer, so it must
+    // read as a relay instruction rather than as background context.
+    expect(output).toContain("INSTRUCTION FOR THE CODING AGENT");
+    expect(output).toContain("relay the following to the user");
     // Auto-sync is installed + enabled, so a background refresh is triggered.
     expect(autosyncSpawn).toHaveBeenCalledTimes(1);
+  });
+
+  it("upgrades a pre-`--hook` SessionStart entry instead of leaving it broken", async () => {
+    const settingsPath = path.join(home, ".claude", "settings.json");
+    await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+    await fs.writeFile(
+      settingsPath,
+      JSON.stringify({
+        hooks: {
+          SessionStart: [{ hooks: [{ type: "command", command: "agconf session-check" }] }],
+        },
+      }),
+    );
+
+    await sessionCheckCommand({ installHook: true, home });
+
+    const settings = JSON.parse(await fs.readFile(settingsPath, "utf-8"));
+    expect(settings.hooks.SessionStart).toHaveLength(1); // upgraded in place, not duplicated
+    expect(settings.hooks.SessionStart[0].hooks[0].command).toBe("agconf session-check --hook");
+    expect(consoleLogSpy.mock.calls.map((c) => String(c[0])).join("\n")).toContain("Updated");
+
+    // Running it again is a no-op, not a second entry.
+    const after = await fs.readFile(settingsPath, "utf-8");
+    await sessionCheckCommand({ installHook: true, home });
+    expect(await fs.readFile(settingsPath, "utf-8")).toBe(after);
+  });
+
+  it("emits the SessionStart wire envelope with --hook", async () => {
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    await writeLockfile(repo, {
+      source: localSource,
+      globalBlockContent: "REPO VERSION",
+      skills: [],
+      targets: ["claude"],
+      markerPrefix: "agconf",
+    });
+    await writeLockfile(home, {
+      source: localSource,
+      globalBlockContent: "USER VERSION",
+      skills: [],
+      targets: ["claude"],
+      markerPrefix: "agconf",
+    });
+
+    await sessionCheckCommand({ cwd: repo, home, hook: true });
+
+    // Exactly one line of stdout, and it must validate as the envelope Codex
+    // expects — anything else makes Codex drop the note ("hook Failed").
+    expect(consoleLogSpy).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse(String(consoleLogSpy.mock.calls[0]?.[0]));
+    expect(payload.hookSpecificOutput.hookEventName).toBe("SessionStart");
+    const context = payload.hookSpecificOutput.additionalContext;
+    expect(context).toContain("INSTRUCTION FOR THE CODING AGENT");
+    expect(context).toContain("more than one scope");
+    // No ANSI escapes leak into the agent's context.
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting no escapes
+    expect(context).not.toMatch(/\u001B\[/);
+  });
+
+  it("emits a valid envelope with --hook even when there is nothing to report", async () => {
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    await syncUserScopeCommand({ scope: "user", local: canonical, home, target: ["claude"] });
+    await sessionCheckCommand({ installHook: true, home });
+    consoleLogSpy.mockClear();
+
+    await sessionCheckCommand({ cwd: repo, home, hook: true });
+
+    // Empty stdout is not valid SessionStart hook output — Codex would report
+    // `hook: SessionStart Failed` on the (common) clean path.
+    expect(consoleLogSpy).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse(String(consoleLogSpy.mock.calls[0]?.[0]));
+    expect(payload.hookSpecificOutput).toEqual({
+      hookEventName: "SessionStart",
+      additionalContext: "",
+    });
+  });
+
+  it("emits the envelope with --hook even when user scope is not set up", async () => {
+    await sessionCheckCommand({ cwd: repo, home, hook: true });
+
+    expect(consoleLogSpy).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse(String(consoleLogSpy.mock.calls[0]?.[0]));
+    expect(payload.hookSpecificOutput.hookEventName).toBe("SessionStart");
+  });
+
+  it("addresses a human, not an agent, when stdout is a terminal", async () => {
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    await writeLockfile(repo, {
+      source: localSource,
+      globalBlockContent: "CANON",
+      skills: [],
+      targets: ["claude"],
+      markerPrefix: "agconf",
+    });
+    await writeLockfile(home, {
+      source: localSource,
+      globalBlockContent: "CANON",
+      skills: [],
+      targets: ["claude"],
+      markerPrefix: "agconf",
+    });
+    const previous = process.stdout.isTTY;
+    process.stdout.isTTY = true;
+    try {
+      await sessionCheckCommand({ cwd: repo, home });
+    } finally {
+      process.stdout.isTTY = previous;
+    }
+
+    const output = consoleLogSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(output).toContain("more than one scope");
+    expect(output).not.toContain("INSTRUCTION FOR THE CODING AGENT");
+  });
+
+  it("--quiet silences the advisory notes without uninstalling the hook", async () => {
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    await writeLockfile(repo, {
+      source: localSource,
+      globalBlockContent: "CANON",
+      skills: [],
+      targets: ["claude"],
+      markerPrefix: "agconf",
+    });
+    await writeLockfile(home, {
+      source: localSource,
+      globalBlockContent: "CANON",
+      skills: [],
+      targets: ["claude"],
+      markerPrefix: "agconf",
+    });
+
+    await sessionCheckCommand({ cwd: repo, home, quiet: true });
+
+    expect(consoleLogSpy).not.toHaveBeenCalled();
+  });
+
+  it("nudges when the installed hook predates --hook", async () => {
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    await syncUserScopeCommand({ scope: "user", local: canonical, home, target: ["claude"] });
+    const settingsPath = path.join(home, ".claude", "settings.json");
+    await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+    await fs.writeFile(
+      settingsPath,
+      JSON.stringify({
+        hooks: {
+          SessionStart: [{ hooks: [{ type: "command", command: "agconf session-check" }] }],
+        },
+      }),
+    );
+    consoleLogSpy.mockClear();
+
+    await sessionCheckCommand({ cwd: repo, home });
+
+    // Without this, a Codex user whose hook predates the flag is never told —
+    // the note that would tell them is the note Codex discards.
+    const output = consoleLogSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(output).toContain("missing or out of date");
+    expect(output).toContain("--install-hook");
+  });
+
+  it("warns instead of rewriting a customized session-check hook command", async () => {
+    const settingsPath = path.join(home, ".claude", "settings.json");
+    await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+    const custom = "agconf session-check >> /tmp/agconf.log 2>&1";
+    await fs.writeFile(
+      settingsPath,
+      JSON.stringify({
+        hooks: { SessionStart: [{ hooks: [{ type: "command", command: custom }] }] },
+      }),
+    );
+
+    await sessionCheckCommand({ installHook: true, home });
+
+    const settings = JSON.parse(await fs.readFile(settingsPath, "utf-8"));
+    // Someone else's command line is left exactly as written, and no second
+    // entry is added beside it (that would double every note).
+    expect(settings.hooks.SessionStart).toHaveLength(1);
+    expect(settings.hooks.SessionStart[0].hooks[0].command).toBe(custom);
+    const output = consoleLogSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(output).toContain("without `--hook`");
+  });
+
+  it("prints the relay instruction once, however many notes there are", async () => {
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    await writeLockfile(repo, {
+      source: localSource,
+      globalBlockContent: "CANON",
+      skills: [],
+      targets: ["claude"],
+      markerPrefix: "agconf",
+    });
+    await syncUserScopeCommand({ scope: "user", local: canonical, home, target: ["claude"] });
+    consoleLogSpy.mockClear();
+
+    await sessionCheckCommand({ cwd: repo, home });
+
+    const output = consoleLogSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    // Duplication finding + missing-hook nudge — two notes, one header.
+    expect(output).toContain("more than one scope");
+    expect(output).toContain("--install-hook");
+    expect(output.match(/INSTRUCTION FOR THE CODING AGENT/g)).toHaveLength(1);
   });
 
   it("nudges the developer to restart when the probe reports the store is behind", async () => {
@@ -194,7 +401,7 @@ describe("session-check command", () => {
 
     const output = consoleLogSpy.mock.calls.map((c) => String(c[0])).join("\n");
     expect(output).toContain("1.0.0 → 1.1.0");
-    expect(output).toContain("restart");
+    expect(output).toContain("Restarting the session");
     expect(autosyncSpawn).toHaveBeenCalledTimes(1);
   });
 

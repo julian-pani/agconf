@@ -157,7 +157,8 @@ export function createCli(): Command {
       "Install the SessionStart hook for the user store's targets (Claude → ~/.claude/settings.json, Codex → ~/.codex/hooks.json)",
     )
     .option("-q, --quiet", "Minimal output")
-    .action(async (options: { installHook?: boolean; quiet?: boolean }) => {
+    .option("--hook", "Emit the SessionStart hook envelope (JSON) instead of human-readable text")
+    .action(async (options: { installHook?: boolean; quiet?: boolean; hook?: boolean }) => {
       await sessionCheckCommand(options);
     });
 

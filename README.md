@@ -273,20 +273,32 @@ twice; `session-check` warns you (and, for instructions, notes whether the two
 copies are identical or divergent). Instructions are flagged whenever both scopes
 carry the block; skills/rules/agents are flagged only for the specific objects
 present in **both** scopes (a repo skill and a different user skill is not a
-collision). The warning is framed as a note for you, not a task for the agent. It
-always exits 0 and never disrupts a session.
+collision). The output is addressed to the coding agent as an explicit instruction
+to *relay* the note to you at the start of its next reply — it is a heads-up for
+you to act on, not work for the agent to do. It always exits 0 and never disrupts
+a session.
 
-It also nudges you to re-run `--install-hook` if your user store later gained a
-target that never got its hook (e.g. you installed the hook while synced for Claude
-only, then re-synced with `--target claude,codex`) — the hook is otherwise only
-wired up for whatever targets existed when you last installed it.
+The installed hook command carries `--hook`, which switches the output to the
+SessionStart JSON envelope both harnesses understand (Codex *requires* it — it
+rejects plain text with `hook: SessionStart Failed`). At a terminal the same
+command prints a plain note addressed to you, with no agent framing.
+
+It also nudges you to re-run `--install-hook` when your hooks need attention: a
+target your user store gained after you last installed (e.g. you installed while
+synced for Claude only, then re-synced with `--target claude,codex`), or a hook
+installed before `--hook` existed. Re-running upgrades the command agconf wrote
+in place; a hook command you customized yourself is never rewritten — you get a
+warning telling you to add `--hook` to it.
+
+If the duplication it reports is deliberate, add `--quiet` to the hook command to
+silence the notes without uninstalling the hook.
 
 ```bash
 # Install it as a SessionStart hook for the targets your user store was synced to
 # (Claude → ~/.claude/settings.json, Codex → ~/.codex/hooks.json)
 agconf session-check --install-hook
 
-# Run it directly (what the hook runs)
+# Run it yourself (human-readable; the hook runs it with --hook)
 agconf session-check
 ```
 

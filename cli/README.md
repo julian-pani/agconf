@@ -28,7 +28,7 @@ Full documentation available on GitHub: https://github.com/julian-pani/agconf
 | `init --scope user` | Guided one-shot user-scope setup: sync + SessionStart hook + auto-sync | `agconf init --scope user` |
 | `sync --scope user` | Project the company instructions once per machine into `~/.claude`/`~/.codex` (git-tracked `~/.agconf` store) | `agconf sync --scope user --source org/standards` |
 | `autosync` | Keep the per-user store fresh automatically (runs at session start; opt-in) | `agconf autosync --install` |
-| `session-check` | Advisory cross-scope duplication + integrity check (SessionStart hook) | `agconf session-check --install-hook` |
+| `session-check` | Advisory cross-scope duplication + integrity check (`--hook` emits the SessionStart envelope) | `agconf session-check --install-hook` |
 | `propose` | Propose local changes to managed content back to the canonical repo (opens a PR), rebased onto canonical HEAD | `agconf propose` |
 | `propose --scope user` | Propose edits made to the per-user projection (`~/.claude`, `~/.codex`) instead of a repo | `agconf propose --scope user` |
 | `propose --new [path]` | Propose new (unmanaged) skills/rules/agents upstream; optional path filters discovery (**required** at user scope) | `agconf propose --new .claude/skills/my-skill` |
