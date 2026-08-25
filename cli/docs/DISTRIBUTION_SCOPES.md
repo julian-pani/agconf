@@ -440,7 +440,25 @@ commands and mechanisms work in which mode — see [§16](#16--feature--mode-mat
   when the two copies differ** (identity, not equality).
 - It also reports user-scope **integrity** drift (via `checkUserScope`). Output
   goes to stdout so a SessionStart hook injects it into context; exits 0 always
-  (advisory) and never throws.
+  (advisory) and never throws. Every note is printed under one header telling the
+  agent to **relay** it to the developer at the start of its next reply (and not to
+  act on it) — the agent is the only channel to the human, so context-only framing
+  means the developer never hears about it.
+- `--hook` (written into the installed hook command) emits the notes as the
+  SessionStart wire envelope `{hookSpecificOutput:{hookEventName,additionalContext}}` —
+  **always**, even with nothing to report (an empty `additionalContext`), because
+  empty stdout is not valid hook output either. Codex validates hook stdout against
+  its `session-start.command.output` schema and fails the hook on anything else;
+  Claude Code accepts the same envelope. Without the flag the command prints text:
+  human-framed on a TTY, relay-framed otherwise (so a hook installed before the flag
+  keeps working). `--quiet` suppresses the notes entirely.
+- Hook entries are keyed by `sessionStartHookState`: `current` (carries `--hook`),
+  `stale` (an agconf session-check command without it — runs, but Codex discards its
+  output), or `absent`. `--install-hook` rewrites only the exact command agconf
+  wrote (`upgradeLegacyHookCommands`), reports a customized `stale` command for the
+  developer to fix by hand, and never adds a second entry beside one — that would
+  double every note. `stale` also counts as not-installed for `findMissingHookTargets`,
+  so the advisory nudge reaches developers whose hook predates the flag.
 - `agconf session-check --install-hook` installs an idempotent SessionStart hook
   for each target the user store was synced to — Claude Code in
   `~/.claude/settings.json`, Codex in `~/.codex/hooks.json` — preserving existing

@@ -122,11 +122,28 @@ export async function detectCrossScopeDuplication(options: {
 /** Marker in the hook command so re-installs are idempotent by identity. */
 const HOOK_COMMAND = "agconf session-check";
 
+/**
+ * What the installers actually write. `--hook` makes session-check emit the
+ * SessionStart wire envelope (`hookSpecificOutput.additionalContext`) instead of
+ * human-readable text: Codex REQUIRES that JSON and fails the hook without it,
+ * and Claude Code understands the same envelope, so one command serves both.
+ */
+export const HOOK_COMMAND_FULL = `${HOOK_COMMAND} --hook`;
+
 export interface HookInstallResult {
   /** Which target's hook file this result is for. */
   target: Target;
   installed: boolean;
   alreadyPresent: boolean;
+  /** A pre-`--hook` command agconf had written was rewritten in place. */
+  upgraded: boolean;
+  /**
+   * A customized session-check command without `--hook` is installed here.
+   * agconf won't edit it (it isn't ours to rewrite) and won't add a second entry
+   * beside it, so the developer has to add the flag themselves — until then Codex
+   * discards its output.
+   */
+  stale: boolean;
   /**
    * Absolute path of the file written: Claude's `settings.json` or Codex's
    * `hooks.json`.
@@ -171,18 +188,57 @@ async function readHookConfigOrRefuse(filePath: string): Promise<Record<string, 
 }
 
 /**
- * Does a SessionStart entry list already carry the `agconf session-check` hook?
+ * What an agconf session-check hook in this SessionStart entry list looks like:
+ *   - `absent`  — no agconf session-check command at all.
+ *   - `current` — a command carrying `--hook`, i.e. one that emits the wire
+ *                 envelope both harnesses accept.
+ *   - `stale`   — an agconf session-check command WITHOUT `--hook`. It runs, but
+ *                 Codex rejects its plain-text output, so it needs updating.
+ * `current` wins over `stale` when both exist, so a leftover hand-rolled variant
+ * can't mask a healthy install.
+ *
  * Runtime-safe against junk parsed from a hand-edited config: `Array.isArray`
  * guards a truthy non-array `entry.hooks` (e.g. an object), which would otherwise
  * make `entry.hooks.some` throw a `TypeError` — unacceptable on the advisory path,
  * which must never throw.
  */
-function sessionStartContainsHook(sessionStart: SessionStartEntry[]): boolean {
-  return sessionStart.some(
-    (entry) =>
-      Array.isArray(entry?.hooks) &&
-      entry.hooks.some((h) => typeof h?.command === "string" && h.command.includes(HOOK_COMMAND)),
-  );
+type HookState = "absent" | "stale" | "current";
+
+function sessionStartHookState(sessionStart: SessionStartEntry[]): HookState {
+  let state: HookState = "absent";
+  for (const entry of sessionStart) {
+    if (!Array.isArray(entry?.hooks)) continue;
+    for (const hook of entry.hooks) {
+      if (typeof hook?.command !== "string" || !hook.command.includes(HOOK_COMMAND)) continue;
+      if (hook.command.includes(HOOK_COMMAND_FULL)) return "current";
+      state = "stale";
+    }
+  }
+  return state;
+}
+
+/**
+ * Append `--hook` to the plain `agconf session-check` command agconf itself wrote
+ * before the flag existed. Deliberately narrow: only a command that IS exactly
+ * that string (modulo surrounding whitespace) is rewritten. A command with any
+ * other text — a wrapper, a redirect, another program that merely ends with the
+ * same words — belongs to whoever wrote it, and editing its argument list could
+ * change what that program does. Those surface as `stale` instead, for the caller
+ * to report. Returns whether anything changed, so the caller knows to write.
+ */
+function upgradeLegacyHookCommands(sessionStart: SessionStartEntry[]): boolean {
+  let changed = false;
+  for (const entry of sessionStart) {
+    if (!Array.isArray(entry?.hooks)) continue;
+    for (const hook of entry.hooks) {
+      if (typeof hook?.command !== "string") continue;
+      if (hook.command.trim() === HOOK_COMMAND) {
+        hook.command = HOOK_COMMAND_FULL;
+        changed = true;
+      }
+    }
+  }
+  return changed;
 }
 
 /**
@@ -202,7 +258,7 @@ function upsertSessionStartHook(
   root: Record<string, unknown>,
   filePath: string,
   matcher?: string,
-): { alreadyPresent: boolean } {
+): { alreadyPresent: boolean; upgraded: boolean; stale: boolean } {
   if (
     "hooks" in root &&
     (typeof root.hooks !== "object" || root.hooks === null || Array.isArray(root.hooks))
@@ -217,17 +273,24 @@ function upsertSessionStartHook(
     ? (hooks.SessionStart as SessionStartEntry[])
     : [];
 
-  const alreadyPresent = sessionStartContainsHook(sessionStart);
-  if (!alreadyPresent) {
+  // A hook installed before `--hook` existed prints plain text, which Codex
+  // rejects — so re-running the installer upgrades it in place rather than
+  // reporting "already present" and leaving it broken.
+  const upgraded = upgradeLegacyHookCommands(sessionStart);
+  const state = sessionStartHookState(sessionStart);
+  // A `stale` entry still runs session-check, so adding a second one would make
+  // every session report the same notes twice. Leave it alone and let the caller
+  // tell the developer to add `--hook` to their customized command.
+  if (state === "absent") {
     const entry: SessionStartEntry = {
-      hooks: [{ type: "command", command: HOOK_COMMAND, timeout: HOOK_TIMEOUT_SECONDS }],
+      hooks: [{ type: "command", command: HOOK_COMMAND_FULL, timeout: HOOK_TIMEOUT_SECONDS }],
     };
     if (matcher) entry.matcher = matcher;
     sessionStart.push(entry);
   }
   hooks.SessionStart = sessionStart;
   root.hooks = hooks;
-  return { alreadyPresent };
+  return { alreadyPresent: state !== "absent" && !upgraded, upgraded, stale: state === "stale" };
 }
 
 /**
@@ -251,14 +314,28 @@ function hookFileSpec(homeDir: string, target: Target): { filePath: string; matc
 async function installHookForTarget(homeDir: string, target: Target): Promise<HookInstallResult> {
   const { filePath, matcher } = hookFileSpec(homeDir, target);
   const config = await readHookConfigOrRefuse(filePath);
-  const { alreadyPresent } = upsertSessionStartHook(config, filePath, matcher);
-  if (!alreadyPresent) await writeHookConfig(filePath, config);
-  return { target, installed: !alreadyPresent, alreadyPresent, filePath };
+  const { alreadyPresent, upgraded, stale } = upsertSessionStartHook(config, filePath, matcher);
+  if (!alreadyPresent || upgraded) await writeHookConfig(filePath, config);
+  return {
+    target,
+    installed: !alreadyPresent && !upgraded,
+    alreadyPresent,
+    upgraded,
+    stale,
+    filePath,
+  };
 }
 
+/**
+ * Write via a temp file + rename so the target is replaced atomically. These are
+ * the developer's live harness configs (`settings.json` holds their permissions):
+ * a crash or a full disk mid-write must not leave a truncated file behind.
+ */
 async function writeHookConfig(filePath: string, config: Record<string, unknown>): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
+  const tmpPath = `${filePath}.agconf-${process.pid}.tmp`;
+  await fs.writeFile(tmpPath, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
+  await fs.rename(tmpPath, filePath);
 }
 
 /**
@@ -297,15 +374,22 @@ export async function installSessionStartHooks(
   const prepared = [];
   for (const { target, filePath, matcher } of staged) {
     const config = await readHookConfigOrRefuse(filePath);
-    const { alreadyPresent } = upsertSessionStartHook(config, filePath, matcher);
-    prepared.push({ target, filePath, config, alreadyPresent });
+    const upsert = upsertSessionStartHook(config, filePath, matcher);
+    prepared.push({ target, filePath, config, ...upsert });
   }
 
   // Phase 2: persist the ones that changed.
   const results: HookInstallResult[] = [];
-  for (const { target, filePath, config, alreadyPresent } of prepared) {
-    if (!alreadyPresent) await writeHookConfig(filePath, config);
-    results.push({ target, installed: !alreadyPresent, alreadyPresent, filePath });
+  for (const { target, filePath, config, alreadyPresent, upgraded, stale } of prepared) {
+    if (!alreadyPresent || upgraded) await writeHookConfig(filePath, config);
+    results.push({
+      target,
+      installed: !alreadyPresent && !upgraded,
+      alreadyPresent,
+      upgraded,
+      stale,
+      filePath,
+    });
   }
   return results;
 }
@@ -358,7 +442,9 @@ async function targetHookInstalled(homeDir: string, target: Target): Promise<boo
   const sessionStart = (hooks as Record<string, unknown>).SessionStart;
   if (sessionStart === undefined) return false; // no SessionStart yet → install adds it
   if (!Array.isArray(sessionStart)) return true; // refuse-case
-  return sessionStartContainsHook(sessionStart);
+  // `stale` (no `--hook`) counts as not installed: it runs but Codex discards its
+  // output, and re-running `--install-hook` is exactly the fix the nudge offers.
+  return sessionStartHookState(sessionStart) === "current";
 }
 
 /**

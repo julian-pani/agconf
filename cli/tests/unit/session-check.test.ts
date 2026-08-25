@@ -237,7 +237,87 @@ describe("session-check core", () => {
       const cmds = settings.hooks.SessionStart.flatMap((e: { hooks?: unknown }) =>
         Array.isArray(e.hooks) ? e.hooks.map((h: { command?: string }) => h.command) : [],
       );
-      expect(cmds).toContain("agconf session-check");
+      expect(cmds).toContain("agconf session-check --hook");
+    });
+  });
+
+  describe("--hook upgrade of pre-flag entries", () => {
+    it("upgrades the Codex hook in place and preserves its matcher", async () => {
+      const hooksPath = path.join(home, ".codex", "hooks.json");
+      await fs.mkdir(path.dirname(hooksPath), { recursive: true });
+      await fs.writeFile(
+        hooksPath,
+        JSON.stringify({
+          hooks: {
+            SessionStart: [
+              {
+                matcher: "*",
+                hooks: [{ type: "command", command: "agconf session-check", timeout: 10 }],
+              },
+            ],
+          },
+        }),
+      );
+
+      const result = await installCodexSessionStartHook(home);
+
+      expect(result.upgraded).toBe(true);
+      expect(result.installed).toBe(false);
+      const config = JSON.parse(await fs.readFile(hooksPath, "utf-8"));
+      expect(config.hooks.SessionStart).toHaveLength(1);
+      expect(config.hooks.SessionStart[0].matcher).toBe("*"); // preserved
+      expect(config.hooks.SessionStart[0].hooks[0].command).toBe("agconf session-check --hook");
+      expect(config.hooks.SessionStart[0].hooks[0].timeout).toBe(10); // preserved
+    });
+
+    it("never rewrites a command agconf did not write", async () => {
+      const settingsPath = path.join(home, ".claude", "settings.json");
+      await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+      // Both end with the marker but belong to whoever wrote them: editing their
+      // argument list would change what those programs do.
+      const foreign = ["my-agconf session-check", "time agconf session-check"];
+      await fs.writeFile(
+        settingsPath,
+        JSON.stringify({
+          hooks: {
+            SessionStart: foreign.map((command) => ({ hooks: [{ type: "command", command }] })),
+          },
+        }),
+      );
+
+      const result = await installClaudeSessionStartHook(home);
+
+      const settings = JSON.parse(await fs.readFile(settingsPath, "utf-8"));
+      const cmds = settings.hooks.SessionStart.flatMap((e: { hooks?: unknown }) =>
+        Array.isArray(e.hooks) ? e.hooks.map((h: { command?: string }) => h.command) : [],
+      );
+      expect(cmds).toEqual(expect.arrayContaining(foreign));
+      // They already run session-check, so no duplicate entry is added — the
+      // caller is told they need `--hook` added by hand instead.
+      expect(result.stale).toBe(true);
+      expect(result.installed).toBe(false);
+      expect(cmds).not.toContain("agconf session-check --hook");
+    });
+
+    it("treats an up-to-date entry as current even beside a stale one", async () => {
+      const settingsPath = path.join(home, ".claude", "settings.json");
+      await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+      await fs.writeFile(
+        settingsPath,
+        JSON.stringify({
+          hooks: {
+            SessionStart: [
+              { hooks: [{ type: "command", command: "wrapper agconf session-check" }] },
+              { hooks: [{ type: "command", command: "agconf session-check --hook" }] },
+            ],
+          },
+        }),
+      );
+
+      const result = await installClaudeSessionStartHook(home);
+
+      expect(result.alreadyPresent).toBe(true);
+      expect(result.stale).toBe(false);
     });
   });
 

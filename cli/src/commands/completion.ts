@@ -39,7 +39,7 @@ const COMMANDS = {
   },
   "session-check": {
     description: "Cross-scope duplication + integrity check (SessionStart hook)",
-    options: ["--install-hook", "-q", "--quiet"],
+    options: ["--install-hook", "--hook", "-q", "--quiet"],
   },
   autosync: {
     description: "Auto-refresh the per-user store (runs at session start)",

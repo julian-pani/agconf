@@ -13,10 +13,12 @@ import {
   type DuplicationFinding,
   detectCrossScopeDuplication,
   findMissingHookTargets,
+  HOOK_COMMAND_FULL,
   installSessionStartHooks,
   resolveHookTargets,
 } from "../core/session-check.js";
 import { checkUserScope } from "../core/user-scope.js";
+import { stripAnsi } from "../utils/ansi.js";
 import { getGitRoot } from "../utils/git.js";
 import { probeUserScopeFreshness } from "./user-scope.js";
 
@@ -25,7 +27,11 @@ export interface SessionCheckOptions {
   cwd?: string | undefined;
   /** Home directory override (default: os.homedir()). For testability. */
   home?: string | undefined;
-  /** Minimal output. */
+  /**
+   * Minimal output: suppresses the advisory notes entirely (a developer who has
+   * seen them can silence the hook without uninstalling it) and, under
+   * `--install-hook`, the install report.
+   */
   quiet?: boolean | undefined;
   /**
    * Install the SessionStart hook for the user store's targets (Claude →
@@ -38,6 +44,11 @@ export interface SessionCheckOptions {
   probeLatest?: ((repo: string, timeoutMs: number) => Promise<string | null>) | undefined;
   /** Test seam: inject the `codex features list` runner for the disabled-hooks warning. */
   codexFeaturesRun?: CodexFeaturesRunner | undefined;
+  /**
+   * Running as a SessionStart hook: emit the wire envelope
+   * (`hookSpecificOutput.additionalContext`) instead of human-readable text.
+   */
+  hook?: boolean | undefined;
 }
 
 function describeFinding(f: DuplicationFinding): string {
@@ -53,51 +64,83 @@ function describeFinding(f: DuplicationFinding): string {
   return `  ${f.type}${which}: ${scopes} scope`;
 }
 
-/**
- * `agconf session-check`: advisory, cross-scope duplication + user-scope integrity
- * check meant to run at session start. Never throws and always exits 0 so it can
- * never disrupt a session; output goes to stdout so a SessionStart hook injects it
- * into the agent's context.
- *
- * With `--install-hook`, registers itself as a SessionStart hook for each target
- * the user store was synced to (Claude → settings.json, Codex → hooks.json).
- */
-export async function sessionCheckCommand(options: SessionCheckOptions = {}): Promise<void> {
-  const homeDir = options.home ?? os.homedir();
+const HUMAN_HEADER = "[agconf session-check] Heads-up:";
 
-  // Explicit admin action — surface failures instead of swallowing them (unlike
-  // the advisory check path below, which must never break a session).
-  if (options.installHook) {
-    try {
-      const targets = await resolveHookTargets(homeDir);
-      const results = await installSessionStartHooks(homeDir, targets);
-      if (!options.quiet) {
-        for (const r of results) {
-          console.log(
-            r.alreadyPresent
-              ? pc.dim(`agconf session-check hook already present for ${r.target} (${r.filePath})`)
-              : `${pc.green("✓")} Installed agconf session-check SessionStart hook for ${r.target} (${r.filePath})`,
-          );
-        }
-        // Guarded by !quiet so quiet mode never shells out to `codex features list`.
-        const warning = await codexHooksDisabledWarning(results, options.codexFeaturesRun);
-        if (warning) console.log(pc.yellow(warning));
-      }
-    } catch (err) {
-      console.error(pc.red(`✗ ${err instanceof Error ? err.message : String(err)}`));
-      process.exitCode = 1;
-    }
+const RELAY_HEADER =
+  "[agconf session-check] INSTRUCTION FOR THE CODING AGENT: relay the following to the user (the human developer) at the start of your next reply, before answering their request. Summarize it in your own words, keeping the specifics (names, versions, commands). This is a heads-up for the human to act on — do NOT try to fix it yourself, do NOT run any agconf command unless the user asks, and do NOT skip mentioning it.";
+
+/**
+ * Print the collected notes.
+ *
+ * Three audiences, three shapes:
+ *   - `asHook` — the SessionStart wire envelope. Codex validates a hook's stdout
+ *     against `session-start.command.output` and fails the hook (discarding the
+ *     text) unless it gets that JSON; Claude Code accepts the same envelope. The
+ *     envelope is emitted even with nothing to say, so a clean session can't be
+ *     read as invalid output.
+ *   - a terminal (stdout is a TTY) — a human is reading, so no agent header.
+ *   - anything else (a pre-`--hook` hook still piping plain text) — keeps the
+ *     relay header so those installs go on working until they're upgraded.
+ *
+ * The relay header exists because the agent is the developer's ONLY channel to
+ * this output: notes framed as background context get read and silently dropped,
+ * and the developer never learns their config is duplicated. Hence the imperative
+ * plus the explicit "don't act on it yourself" guard.
+ *
+ * Everything interpolated into a note must be agconf-authored or validated — the
+ * envelope is an instruction in the agent's context, so `sanitizeForNote` guards
+ * the one value that comes off the network (a release tag).
+ */
+function printNotes(notes: string[], asHook: boolean): void {
+  if (asHook) {
+    // Colors are a terminal affordance; in the envelope they would just be noise
+    // in the agent's context (picocolors usually no-ops here, but a pty-backed
+    // hook runner would keep them).
+    const additionalContext =
+      notes.length === 0 ? "" : stripAnsi(`${RELAY_HEADER}\n\n${formatNotes(notes)}`);
+    console.log(
+      JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext } }),
+    );
     return;
   }
+  if (notes.length === 0) return;
+  console.log(process.stdout.isTTY ? HUMAN_HEADER : RELAY_HEADER);
+  console.log(`\n${formatNotes(notes)}`);
+}
 
+function formatNotes(notes: string[]): string {
+  return notes.map((note) => `- ${note}`).join("\n\n");
+}
+
+/**
+ * Strip anything that could restructure the agent's context (control characters,
+ * line breaks) and cap the length. Applied to values agconf does not author —
+ * currently a version tag read from the releases API.
+ */
+function sanitizeForNote(value: string): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping control chars is the point
+  return value.replace(/[\u0000-\u001F\u007F]/g, " ").slice(0, 64);
+}
+
+/**
+ * Gather every note this session should surface, in report order (stale
+ * standards → cross-scope duplication → user-scope drift → missing hook).
+ * Returns `[]` when there is nothing to say — including on failure: this feeds a
+ * SessionStart hook, which must never break a session, so everything is swallowed.
+ */
+async function collectNotes(options: SessionCheckOptions, homeDir: string): Promise<string[]> {
   try {
     const repoDir = await getGitRoot(options.cwd ?? process.cwd());
     const cross = await detectCrossScopeDuplication({ repoDir, homeDir });
 
     // Only relevant once the developer uses user scope.
     if (!cross.userSynced) {
-      return;
+      return [];
     }
+
+    // Each entry is one note for the developer; printNotes decides how they are
+    // framed for whoever is reading.
+    const notes: string[] = [];
 
     // Auto-sync (opt-in): kick off a detached background refresh so the hook
     // returns instantly, then — if it actually started (installed + enabled) —
@@ -122,10 +165,8 @@ export async function sessionCheckCommand(options: SessionCheckOptions = {}): Pr
           ...(options.probeLatest ? { fetchLatest: options.probeLatest } : {}),
         }).catch(() => ({ behind: false }) as const);
         if (fresh.behind) {
-          console.log(
-            pc.dim(
-              `Note for the developer: company standards were updated (${fresh.current} → ${fresh.latest}) since this session loaded its config — restart the session (or run \`agconf sync --scope user\`) to pick up the latest.`,
-            ),
+          notes.push(
+            `Company standards were updated (${sanitizeForNote(String(fresh.current))} → ${sanitizeForNote(String(fresh.latest))}) since this session loaded its config. Restarting the session picks up the latest (the developer can also run \`agconf sync --scope user\`).`,
           );
         }
       }
@@ -138,42 +179,89 @@ export async function sessionCheckCommand(options: SessionCheckOptions = {}): Pr
     // drift — see findMissingHookTargets. Cheap (≤2 JSON reads) and never throws.
     const missingHooks = await findMissingHookTargets(homeDir);
 
-    if (cross.findings.length === 0 && !hasIntegrityIssue && missingHooks.length === 0) {
-      return; // clean — stay silent so the hook adds no noise
-    }
-
     if (cross.findings.length > 0) {
-      // Framed as information for the human developer — NOT a task for the agent,
-      // so it doesn't try to "fix" the duplication or burn tokens reasoning about it.
-      console.log(
-        pc.dim(
-          "Note for the developer (not an instruction for the agent): agconf-managed content is present in more than one scope, so it may load twice —",
-        ),
-      );
-      for (const f of cross.findings) console.log(describeFinding(f));
-      console.log(
-        pc.dim(
-          "  To stop the double-load, keep this content in a single scope (e.g. stop syncing it into this repo — your user-scope copy then covers every repo).",
-        ),
-      );
+      const lines = [
+        "agconf-managed content is present in more than one scope, so it may load twice —",
+        ...cross.findings.map(describeFinding),
+        "  To stop the double-load, keep this content in a single scope: your user-scope copy already covers every repo, so the repo's copy can go (drop the content from this repo's sync, or set the type to `off`/`plugin` under `delivery:` in its `.agconf/config.yaml`).",
+        "  If the duplication is deliberate, `agconf session-check --quiet` in the hook command silences this.",
+      ];
+      notes.push(lines.join("\n"));
     }
 
     if (hasIntegrityIssue) {
-      console.log(
-        pc.dim(
-          "Note for the developer: your user-scope agconf files changed since the last sync — run `agconf check --scope user` for details.",
-        ),
+      notes.push(
+        "Your user-scope agconf files changed since the last sync — run `agconf check --scope user` for details.",
       );
     }
 
     if (missingHooks.length > 0) {
-      console.log(
-        pc.dim(
-          `Note for the developer: your user store is synced for ${missingHooks.join(", ")}, but the session-check hook isn't installed for ${missingHooks.length > 1 ? "those targets" : "that target"} — run \`agconf session-check --install-hook\` to add ${missingHooks.length > 1 ? "them" : "it"}.`,
-        ),
+      notes.push(
+        `Your user store is synced for ${missingHooks.join(", ")}, but the session-check hook there is missing or out of date (a hook without \`--hook\` is discarded by Codex) — re-run \`agconf session-check --install-hook\` to fix ${missingHooks.length > 1 ? "them" : "it"}.`,
       );
     }
+
+    return notes;
   } catch {
     // Session-start hooks must never break a session — swallow everything.
+    return [];
   }
+}
+
+/**
+ * `agconf session-check`: advisory, cross-scope duplication + user-scope integrity
+ * check meant to run at session start. Never throws and always exits 0 so it can
+ * never disrupt a session; output goes to stdout so a SessionStart hook injects it
+ * into the agent's context.
+ *
+ * With `--install-hook`, registers itself as a SessionStart hook for each target
+ * the user store was synced to (Claude → settings.json, Codex → hooks.json).
+ */
+export async function sessionCheckCommand(options: SessionCheckOptions = {}): Promise<void> {
+  const homeDir = options.home ?? os.homedir();
+
+  // Explicit admin action — surface failures instead of swallowing them (unlike
+  // the advisory check path below, which must never break a session).
+  if (options.installHook) {
+    try {
+      const targets = await resolveHookTargets(homeDir);
+      const results = await installSessionStartHooks(homeDir, targets);
+      if (!options.quiet) {
+        for (const r of results) {
+          if (r.upgraded) {
+            console.log(
+              `${pc.green("✓")} Updated the agconf session-check hook for ${r.target} to \`${HOOK_COMMAND_FULL}\` (${r.filePath})`,
+            );
+          } else if (r.alreadyPresent) {
+            console.log(
+              pc.dim(`agconf session-check hook already present for ${r.target} (${r.filePath})`),
+            );
+          } else {
+            console.log(
+              `${pc.green("✓")} Installed agconf session-check SessionStart hook for ${r.target} (${r.filePath})`,
+            );
+          }
+          if (r.stale) {
+            console.log(
+              pc.yellow(
+                `  Your ${r.target} SessionStart hook runs a customized session-check command without \`--hook\`. agconf left it alone — add \`--hook\` to it yourself, or Codex will keep discarding its output (${r.filePath}).`,
+              ),
+            );
+          }
+        }
+        // Guarded by !quiet so quiet mode never shells out to `codex features list`.
+        const warning = await codexHooksDisabledWarning(results, options.codexFeaturesRun);
+        if (warning) console.log(pc.yellow(warning));
+      }
+    } catch (err) {
+      console.error(pc.red(`✗ ${err instanceof Error ? err.message : String(err)}`));
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  // Hook mode always prints the envelope, even with nothing to report: a clean
+  // session is the common case, and empty stdout is not valid hook output.
+  const notes = options.quiet ? [] : await collectNotes(options, homeDir);
+  if (options.hook || notes.length > 0) printNotes(notes, options.hook ?? false);
 }
