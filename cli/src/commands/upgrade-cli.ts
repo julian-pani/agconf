@@ -1,5 +1,4 @@
 import { execSync } from "node:child_process";
-import fs from "node:fs";
 import * as prompts from "@clack/prompts";
 import pc from "picocolors";
 import { getCliVersion } from "../core/lockfile.js";
@@ -8,7 +7,9 @@ import { createLogger } from "../utils/logger.js";
 import {
   buildInstallCommand,
   detectPackageManager,
-  type PackageManager,
+  isPackageManager,
+  PACKAGE_MANAGERS,
+  TOOL_MANAGERS,
 } from "../utils/package-manager.js";
 
 const NPM_PACKAGE_NAME = "agconf";
@@ -71,26 +72,33 @@ export async function upgradeCliCommand(options: UpgradeCliOptions): Promise<voi
   console.log(`${pc.yellow("→")} Update available: ${currentVersion} → ${latestVersion}`);
 
   // Detect package manager
-  const validPms: PackageManager[] = ["npm", "pnpm", "yarn", "bun"];
-  let pm: ReturnType<typeof detectPackageManager>;
-
-  if (options.packageManager) {
-    const pmName = options.packageManager as PackageManager;
-    if (!validPms.includes(pmName)) {
-      logger.error(`Invalid package manager: ${options.packageManager}`);
-      logger.info(`Valid options: ${validPms.join(", ")}`);
-      process.exit(1);
+  const override = options.packageManager;
+  if (override !== undefined && !isPackageManager(override)) {
+    logger.error(`Invalid package manager: ${override}`);
+    logger.info(`Valid options: ${PACKAGE_MANAGERS.join(", ")}`);
+    if ((TOOL_MANAGERS as readonly string[]).includes(override)) {
+      logger.info(
+        `${override} is detected automatically and its shims are rebuilt after the install — pass the underlying installer instead.`,
+      );
     }
-    pm = {
-      name: pmName,
-      installCommand: buildInstallCommand(pmName, NPM_PACKAGE_NAME),
-      detectedVia: "--package-manager flag",
-    };
-  } else {
-    pm = detectPackageManager(NPM_PACKAGE_NAME);
+    process.exit(1);
   }
+  const pm = detectPackageManager(NPM_PACKAGE_NAME, override ? { override } : {});
 
   console.log(`Package manager: ${pc.cyan(pm.name)} (${pm.detectedVia})`);
+  if (pm.toolManager && pm.toolManager !== pm.name) {
+    // Only `volta install` sticks under volta, so an override that installs
+    // some other way may not take effect at all.
+    const voltaNote =
+      pm.toolManager === "volta" ? pc.dim(" (upgrades only stick via volta install)") : "";
+    console.log(`Tool manager:    ${pc.cyan(pm.toolManager)}${voltaNote}`);
+  }
+
+  // Name every command up front: these are the commands the upgrade runs.
+  console.log(`Will run:        ${pc.cyan(pm.installCommand)}`);
+  if (pm.postInstallCommand) {
+    console.log(`                 ${pc.cyan(pm.postInstallCommand)}`);
+  }
   console.log();
 
   // Confirm update
@@ -119,11 +127,29 @@ export async function upgradeCliCommand(options: UpgradeCliOptions): Promise<voi
     installSpinner.fail("Upgrade failed");
     logger.error(error instanceof Error ? error.message : String(error));
     logger.info(`\nYou can try manually: ${pm.installCommand}`);
-    const otherPms = validPms.filter((p) => p !== pm.name);
-    logger.info(
-      `If ${pm.name} is not your package manager, try: agconf upgrade-cli --package-manager <${otherPms.join("|")}>`,
-    );
+    if (!override) {
+      const otherPms = PACKAGE_MANAGERS.filter((p) => p !== pm.name);
+      logger.info(
+        `If ${pm.name} is not your package manager, try: agconf upgrade-cli --package-manager <${otherPms.join("|")}>`,
+      );
+    }
     process.exit(1);
+  }
+
+  // Rebuild the tool manager's shims so the new binary is the one on $PATH.
+  let reshimFailed = false;
+  if (pm.postInstallCommand) {
+    const reshimSpinner = logger.spinner(`Rebuilding ${pm.toolManager} shims...`);
+    reshimSpinner.start();
+    try {
+      execSync(pm.postInstallCommand, { stdio: "pipe" });
+      reshimSpinner.succeed(`${pm.toolManager} shims rebuilt`);
+    } catch (error) {
+      reshimFailed = true;
+      reshimSpinner.fail(`Failed to rebuild ${pm.toolManager} shims`);
+      logger.warn(error instanceof Error ? error.message : String(error));
+      logger.info(`You can try manually: ${pc.cyan(pm.postInstallCommand)}`);
+    }
   }
 
   // Post-install verification: confirm the binary in $PATH is actually updated
@@ -140,29 +166,38 @@ export async function upgradeCliCommand(options: UpgradeCliOptions): Promise<voi
       `Version mismatch: installed ${latestVersion} but the agconf binary in $PATH is still ${installedVersion}`,
     );
 
-    // Check if running under a tool manager like Volta
-    const binPath = process.argv[1];
-    let resolvedPath: string | null = null;
-    try {
-      resolvedPath = binPath ? fs.realpathSync(binPath) : null;
-    } catch {
-      // ignore
-    }
-
-    if (resolvedPath?.includes("/.volta/")) {
-      logger.info(`Volta detected. Run: ${pc.cyan("volta install agconf@latest")}`);
-    } else if (resolvedPath?.includes("/.asdf/")) {
-      logger.info(`asdf detected. Run: ${pc.cyan("asdf reshim nodejs")}`);
-    } else if (resolvedPath?.includes("/.mise/") || resolvedPath?.includes("/.local/share/mise/")) {
-      logger.info(`mise detected. Run: ${pc.cyan("mise reshim")}`);
+    // Point at whatever is left to do, never at a step that already ran and
+    // did not help.
+    if (pm.postInstallCommand && reshimFailed) {
+      logger.info(
+        `Rebuild the ${pm.toolManager} shims, then re-check: ${pc.cyan(pm.postInstallCommand)}`,
+      );
+    } else if (pm.name === "volta" || pm.postInstallCommand) {
+      // `--package-manager volta` can select volta as the installer without any
+      // shim being detected, so name the step by whichever of the two applies.
+      const step = pm.toolManager ?? pm.name;
+      logger.info(
+        `The ${step} step already ran. Either another agconf is earlier in $PATH (check: ${pc.cyan("which -a agconf")}), or the install landed under a different Node version than the active one.`,
+      );
+    } else if (pm.toolManager === "volta") {
+      logger.info(
+        `Volta detected. Run: ${pc.cyan(buildInstallCommand("volta", NPM_PACKAGE_NAME))}`,
+      );
     } else {
       logger.info(
-        "Your tool manager may be shimming the binary. Check its docs to update global packages.",
+        `Another agconf may be earlier in $PATH, or installed under a different global prefix. Check with: ${pc.cyan("which -a agconf")}`,
       );
     }
 
     console.log();
     prompts.outro(pc.yellow("Upgrade installed but not active in $PATH"));
+  } else if (reshimFailed) {
+    console.log();
+    prompts.outro(
+      pc.yellow(
+        `CLI upgraded to ${latestVersion}, but the ${pm.toolManager} shim rebuild failed — run \`${pm.postInstallCommand}\` if the old version persists`,
+      ),
+    );
   } else {
     console.log();
     prompts.outro(pc.green(`CLI upgraded to ${latestVersion}!`));

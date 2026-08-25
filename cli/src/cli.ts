@@ -242,7 +242,7 @@ export function createCli(): Command {
     .command("upgrade-cli")
     .description("Upgrade the agconf CLI to the latest version")
     .option("-y, --yes", "Non-interactive mode")
-    .option("-p, --package-manager <pm>", "Package manager to use (npm, pnpm, yarn, bun)")
+    .option("-p, --package-manager <pm>", "Package manager to use (npm, pnpm, yarn, bun, volta)")
     .action(async (options: { yes?: boolean; packageManager?: string }) => {
       await upgradeCliCommand(options);
     });
