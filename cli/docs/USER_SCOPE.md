@@ -4,13 +4,54 @@ Repo scope commits the company standards into every repository. **User scope**
 projects them into your per-user agent config instead — `~/.claude`, `~/.codex` —
 so they apply in every project on your machine without being committed anywhere.
 
-Use this when you want the standards to follow *you* rather than a repo: personal
-projects, scratch checkouts, or repos where committing an `AGENTS.md` isn't
-appropriate. It is not either/or — plenty of setups run user scope on the laptop
-*and* repo scope in the team's repositories.
+It is **not recommended for now** — see the next section before adopting it: it
+never reaches cloud agent sessions. Where it fits is standards that should follow
+*you* on your own machine: personal projects, scratch checkouts, or repos where
+committing an `AGENTS.md` isn't appropriate. It is not either/or — it can run on
+the laptop alongside repo scope in the team's repositories.
 
 > For the design rationale and the full feature × mode comparison, see
 > [Distribution Scopes](./DISTRIBUTION_SCOPES.md). This page is the how-to.
+
+## Not recommended (for now)
+
+> **Status: not recommended.** User scope works as documented on this page, but
+> we advise against relying on it as your only delivery mode until the limitation
+> below is resolved. Prefer [repo scope](../../README.md#2-sync-to-your-projects).
+
+User scope lives **only on the machine it was synced on**. Everything it
+installs — the `~/.claude`/`~/.codex` projection, the `~/.agconf` store, the
+SessionStart hook — is per-machine state. **Cloud agent sessions never see it**:
+Claude Code on the web, Codex cloud, CI runners and similar environments start
+from a fresh machine every time, so in those sessions the company standards
+silently do not apply. Nothing warns you, because from the agent's point of view
+there is simply nothing there.
+
+In theory a cloud environment's setup script could run
+`agconf sync --scope user --source your-org/standards --yes` before the session
+starts. In practice the canonical repository sits behind your organization's
+GitHub authentication, which those environments usually cannot reach at setup
+time. As of September 2026 we have found no supported way to do this for Claude
+Code cloud sessions. Since agents are moving toward the cloud and away from
+developer machines, this is a growing gap rather than a shrinking one.
+
+Repo scope does not have this problem: the committed `AGENTS.md`, skills, rules
+and agents travel with the clone, so the standards apply wherever the repository
+is checked out — locally, in the cloud, and in CI.
+
+`agconf init --scope user` prints this caveat and asks you to confirm before it
+sets anything up (the default answer is no; `--yes` prints it and continues); a
+first `agconf sync --scope user` prints it too. If you do adopt user scope, keep
+repo scope in the repositories you also work on from the cloud.
+
+This section is the authoritative statement of the status and the only page
+that carries the "as of" date. When a reliable cloud provisioning path exists,
+revise it together with: the CLI notice (`printUserScopeCloudNotice` in
+`cli/src/commands/user-scope.ts`) and the confirm gate in
+`cli/src/commands/init-user-scope.ts`; the `--scope` help text of `init` and
+`sync` in `cli/src/cli.ts`; the banners in
+[Distribution Scopes](./DISTRIBUTION_SCOPES.md) (header, §4 cons, §8, §17 gap 1);
+and the pointers in the root and `cli/` READMEs.
 
 ## Install
 
@@ -170,6 +211,31 @@ that harness stays on disk and stops being checked. `init --scope user` warns yo
 when you de-select one; delete the leftovers by hand if you want it gone.
 
 ## Sending changes back
+
+If your copy of the company content lives in `~/.claude` / `~/.codex` rather
+than in a repo, propose from there:
+
+```bash
+# Edits you made to the projected skills, rules, agents, or the company block
+agconf propose --scope user
+
+# New content you authored — a path is required at user scope
+agconf propose --scope user --new ~/.claude/skills/my-new-skill
+```
+
+It reads the `~/.agconf` store lockfile and behaves exactly like the repo flow
+(including the three-way rebase onto canonical HEAD described in the
+[root README](../../README.md#rebasing-onto-canonical)), with three user-scope
+specifics:
+
+- **`--new` requires a path.** `~/.claude` also holds your *personal* skills,
+  agents and rules; agconf will not offer them to the company repo wholesale.
+- **The company block exists once per harness** (`~/.claude/CLAUDE.md` and
+  `~/.codex/AGENTS.md`). An identical edit in both is proposed once; if they've
+  drifted apart, propose stops and asks you to reconcile (or pick one with
+  `--files`).
+- **Your personal layer is never proposed.** `~/.agconf/USER.md` and anything
+  outside the managed block stay local.
 
 If you improve a skill or rule in `~/.claude`, propose it to the canonical repo
 rather than letting the next sync overwrite it:
