@@ -135,11 +135,11 @@ workflow:
 ```
 
 Direct commits are bounded by a path guard: every sync run verifies it changed
-nothing outside the paths agconf owns (`AGENTS.md`, `.claude/`, `.codex/`,
-`.agents/`, `.agconf/`, its own workflow files) and fails without committing
-otherwise. The check is a shell step in the sync workflow with the allowlist
-written out in full, so it can be audited without trusting agconf. See
-[Sync Path Guard](./docs/DOWNSTREAM_REPOSITORY_CONFIGURATION.md#sync-path-guard).
+nothing outside the paths agconf owns, and fails without committing otherwise.
+The check is a shell step in the sync workflow with the allowlist written out in
+full, so it can be audited without trusting agconf. See
+[Sync Path Guard](./docs/DOWNSTREAM_REPOSITORY_CONFIGURATION.md#sync-path-guard)
+for the allowlist and what it does and does not bound.
 
 For complete configuration reference and available settings, see [Downstream Repository Configuration](./docs/DOWNSTREAM_REPOSITORY_CONFIGURATION.md).
 

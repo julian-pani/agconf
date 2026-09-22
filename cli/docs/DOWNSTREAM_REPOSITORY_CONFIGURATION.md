@@ -149,7 +149,7 @@ exact managed file set:
 | `AGENTS.md`, `CLAUDE.md` | Instructions merge |
 | `.claude/**` | Claude skills, rules, sub-agents |
 | `.codex/**`, `.agents/**` | Codex sub-agents and skills |
-| `.agconf/**` | Lockfile and downstream config |
+| `.agconf/**` | The lockfile (`.agconf/lockfile.json`); your `config.yaml` lives here too but sync never writes it |
 | `.pre-commit-config.yaml` (`.yml`) | The `agconf-check` pre-commit hook registration |
 | `.github/workflows/<prefix>-sync.yml`, `<prefix>-check.yml` | Workflow sync, named after your marker prefix |
 
@@ -188,9 +188,11 @@ Two further limits worth knowing:
   covered. Nothing there is committed, and the runner is discarded after the
   job.
 - `.github/workflows/<prefix>-sync.yml` is on the allowlist, and that file is
-  itself CI with `contents: write` and `workflows: write`. The guard stops a
-  sync rewriting `ci.yml`; it does not stop it rewriting its own workflow, which
-  is comparable power one run later.
+  itself CI — pushed by a credential that must hold **Workflows: write** (see
+  the GitHub App setup in
+  [Canonical Repository Setup](./CANONICAL_REPOSITORY_SETUP.md)). The guard
+  stops a sync rewriting `ci.yml`; it does not stop it rewriting its own
+  workflow, which is comparable power one run later.
 
 ### Running it locally
 

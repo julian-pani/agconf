@@ -414,7 +414,10 @@ agconf canonical init --name <same-name> --org <same-org> --dir /tmp/agconf-scaf
 diff /tmp/agconf-scaffold/.github/workflows/sync-reusable.yml .github/workflows/sync-reusable.yml
 ```
 
-Take the `Verify sync only changed allowed paths` step. It is self-contained —
+Take the `Verify sync only changed allowed paths` step. **Insert it immediately
+after `Run sync` and before `Check for changes` and the commit steps** — it must
+run before anything stages or commits, or it enforces nothing and fails
+silently. It is self-contained —
 no new inputs, no secrets, nothing else in the workflow refers to it — so
 copying the step across is the whole migration. Downstream repos pick it up on
 their next sync after you tag a release.

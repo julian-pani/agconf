@@ -35,9 +35,9 @@ export async function verifyPathsCommand(options: VerifyPathsOptions = {}): Prom
   try {
     result = await verifyChangedPaths(repoRoot);
   } catch (error) {
-    // Most likely a malformed .agconf/config.yaml. Report it as a one-line
-    // error rather than an unhandled rejection: the guard still fails closed,
-    // but the reader needs to know why.
+    // Most likely git itself failing — not runnable, or a repository state it
+    // refuses to report on. Print a one-line error rather than an unhandled
+    // rejection: the guard still fails closed, but the reader needs to know why.
     console.error(pc.red(error instanceof Error ? error.message : String(error)));
     process.exit(1);
     return;

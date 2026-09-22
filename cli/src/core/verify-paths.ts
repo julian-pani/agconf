@@ -81,8 +81,8 @@ export function matchesAllowedPath(filePath: string, pattern: string): boolean {
 }
 
 /**
- * Resolve the allowlist for a repo: the base paths, the two workflow files
- * (named after the repo's marker prefix), and any downstream additions.
+ * Resolve the allowlist for a repo: the base paths plus the two workflow files,
+ * named after the repo's marker prefix. Nothing else can be added to it.
  */
 export async function resolveAllowedPaths(repoRoot: string): Promise<string[]> {
   // Best-effort: a repo synced before the lockfile recorded a marker prefix
