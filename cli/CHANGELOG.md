@@ -1,3 +1,9 @@
+## [0.28.0](https://github.com/julian-pani/agconf/compare/v0.27.1...v0.28.0) (2026-09-22)
+
+### Features
+
+* **sync:** bound automated syncs to an auditable path allowlist ([c8a4a2d](https://github.com/julian-pani/agconf/commit/c8a4a2dca2064e525b9d8201368f4afd4b6d5684)), closes [#91](https://github.com/julian-pani/agconf/issues/91) [#92](https://github.com/julian-pani/agconf/issues/92)
+
 ## [0.27.1](https://github.com/julian-pani/agconf/compare/v0.27.0...v0.27.1) (2026-08-25)
 
 ### Bug Fixes
