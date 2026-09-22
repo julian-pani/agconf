@@ -118,9 +118,94 @@ workflow:
 ```
 
 **Use when:**
-- You trust the canonical source completely
-- You want updates applied immediately
-- The repo is low-risk or for development purposes
+- You want updates applied immediately, without a review step
+- You trust the canonical source's *content* (the [path guard](#sync-path-guard)
+  bounds where a sync can write, but not what it puts in those files)
+
+## Sync Path Guard
+
+The sync workflow stages the whole worktree before committing, so without a
+guard a bug in agconf — or in the canonical content — could rewrite anything in
+your repo, and with `commit_strategy: direct` it would do so unreviewed.
+
+Every sync run therefore checks, after the sync and **before either commit
+strategy**, that the worktree changed nothing outside the paths agconf owns, and
+fails the job otherwise. Nothing is committed when it fails: a partial sync
+recorded by a lockfile claiming a complete one is worse than a red build.
+
+The check is written out **in the workflow itself** — a short shell step in
+`sync-reusable.yml` with the allowlist spelled out as a literal list — rather
+than hidden behind a CLI call. You can read the rule in the workflow file and
+its verdict in the job log without knowing anything about agconf. That is the
+point: what a sync is permitted to write should be auditable by whoever reviews
+the repo, not only by whoever wrote the tool. (What that does and does not
+guarantee is spelled out below.)
+
+The allowlist is deliberately **coarse** — whole directories rather than the
+exact managed file set:
+
+| Path | Written by |
+|------|-----------|
+| `AGENTS.md`, `CLAUDE.md` | Instructions merge |
+| `.claude/**` | Claude skills, rules, sub-agents |
+| `.codex/**`, `.agents/**` | Codex sub-agents and skills |
+| `.agconf/**` | The lockfile (`.agconf/lockfile.json`); your `config.yaml` lives here too but sync never writes it |
+| `.pre-commit-config.yaml` (`.yml`) | The `agconf-check` pre-commit hook registration |
+| `.github/workflows/<prefix>-sync.yml`, `<prefix>-check.yml` | Workflow sync, named after your marker prefix |
+
+Coarse on purpose: a list a reviewer can hold in their head is worth more than
+an exact one they have to take on faith, and a rule with no moving parts still
+holds when agconf's own bookkeeping is wrong. It bounds the blast radius of a
+sync; it does not certify each individual write. Notably, agconf's own workflow
+files are the only ones under `.github/workflows/` it may touch — a sync cannot
+rewrite `ci.yml`.
+
+### There is no way to widen it from configuration
+
+Deliberately. Every path agconf writes is already on the list, so a violation
+means one of two things — the canonical content is writing somewhere it should
+not, or agconf has a bug — and both want reporting rather than suppressing. A
+widening knob would also be a second contract between the downstream repo, the
+CLI and the canonical workflow, which is a lot of moving parts guarding a
+property that is only useful while it is simple.
+
+If you hit a violation for a path agconf legitimately writes, that is a bug in
+agconf: please report it, and the allowlist will change in the tool rather than
+in your repo.
+
+### What it does and does not bound
+
+The guard bounds **mistakes** — a bug in agconf, or canonical content that
+writes where it should not. It is not a boundary against a *malicious* agconf
+release: the step runs in the same job, after `npm install -g agconf` and after
+`agconf sync` has already executed arbitrary code, which could shim `git` or
+alter the environment the later step inherits.
+
+Two further limits worth knowing:
+
+- It measures what `git status` reports, so writes that never reach the index —
+  through a symlink pointing outside the worktree, or into `.git/` — are not
+  covered. Nothing there is committed, and the runner is discarded after the
+  job.
+- `.github/workflows/<prefix>-sync.yml` is on the allowlist, and that file is
+  itself CI — pushed by a credential that must hold **Workflows: write** (see
+  the GitHub App setup in
+  [Canonical Repository Setup](./CANONICAL_REPOSITORY_SETUP.md)). The guard
+  stops a sync rewriting `ci.yml`; it does not stop it rewriting its own
+  workflow, which is comparable power one run later.
+
+### Running it locally
+
+`agconf verify-paths` applies the same allowlist to your working tree, for
+checking a hand-run sync before you commit it:
+
+```bash
+agconf verify-paths
+```
+
+It judges the whole working tree, so run it on an otherwise-clean checkout — your
+own unrelated edits will be reported as violations. A test pins its allowlist
+and its matching behavior to the workflow's, so the two cannot drift apart.
 
 ## Generated Workflow Output
 

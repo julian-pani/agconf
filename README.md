@@ -175,6 +175,7 @@ and the [gap list](cli/docs/DISTRIBUTION_SCOPES.md#17-known-gaps).
 | `sync` | Sync content from canonical repo (fetches latest by default) |
 | `sync --scope user` | Project company standards **once per machine** into `~/.claude`/`~/.codex` instead of committing them per repo ([details](#user-scope---scope-user)) |
 | `check` | Verify managed files are unchanged (`--scope user` verifies the per-user projection; in a canonical repo, verifies compiled plugin freshness) |
+| `verify-paths` | Verify the working tree only changed paths agconf owns (local equivalent of the sync workflow's path guard) |
 | `autosync` | Keep the per-user store fresh automatically (runs at session start; opt-in) |
 | `session-check` | Advisory cross-scope duplication + integrity check, run at session start |
 | `compile` | Compile installable Claude Code / Codex plugins + marketplace from canonical content (canonical repos) |
@@ -263,6 +264,34 @@ Exit codes:
 In a **canonical** repo (one with a `plugins` block in `agconf.yaml`), `check`
 instead verifies that the committed plugin/marketplace artifacts are in sync
 with the canonical source.
+
+### `agconf verify-paths`
+
+Verify that the working tree only changed paths agconf owns — the local
+equivalent of the guard the sync workflow runs before it commits.
+
+In CI the check lives in the workflow YAML itself, spelled out as a literal
+allowlist plus a short shell step, so anyone reviewing the repo can audit what a
+sync may write without trusting agconf. This command applies the same list to
+your working tree, for a sync you ran by hand.
+
+```bash
+agconf verify-paths            # Report and exit 0/1
+agconf verify-paths --quiet    # Exit code only
+```
+
+Exit codes:
+- `0` - Every change is inside the paths agconf owns
+- `1` - Something outside them changed, or the check could not run
+
+See [Sync Path Guard](cli/docs/DOWNSTREAM_REPOSITORY_CONFIGURATION.md#sync-path-guard)
+for the full allowlist.
+
+The allowlist is coarse on purpose and fixed — it bounds where a sync can write,
+not what it writes there, and no configuration widens it. It bounds mistakes (an
+agconf bug, or canonical content writing where it should not), not a malicious
+agconf release, which runs in the same job. See
+[Sync Path Guard](cli/docs/DOWNSTREAM_REPOSITORY_CONFIGURATION.md#sync-path-guard).
 
 ### `agconf session-check`
 
@@ -617,6 +646,16 @@ The architecture uses GitHub's reusable workflows:
 - `agconf-check.yml` - Checks for modified managed files on PRs
 
 Both downstream workflows use the `agconf check` command to verify file integrity. Workflows reference the same version as your lockfile, ensuring consistency.
+
+Before committing anything, the sync workflow verifies that the sync stayed
+inside the paths agconf owns, and fails without committing if it didn't. This
+applies to both commit strategies. The allowlist is listed in full under
+[Sync Path Guard](cli/docs/DOWNSTREAM_REPOSITORY_CONFIGURATION.md#sync-path-guard).
+
+That check is a plain shell step in `sync-reusable.yml` with the allowlist
+written out in full — not a call into agconf — so a reviewer who has never used
+agconf can read the workflow and see exactly what a sync is permitted to touch.
+See [Sync Path Guard](cli/docs/DOWNSTREAM_REPOSITORY_CONFIGURATION.md#sync-path-guard).
 
 **For detailed setup instructions including GitHub App configuration for cross-repository access, see [cli/docs/CANONICAL_REPOSITORY_SETUP.md](cli/docs/CANONICAL_REPOSITORY_SETUP.md).**
 

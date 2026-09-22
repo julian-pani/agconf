@@ -29,6 +29,7 @@ Full documentation available on GitHub: https://github.com/julian-pani/agconf
 | `sync --scope user` | Project the company instructions once per machine into `~/.claude`/`~/.codex` (git-tracked `~/.agconf` store) | `agconf sync --scope user --source org/standards` |
 | `autosync` | Keep the per-user store fresh automatically (runs at session start; opt-in) | `agconf autosync --install` |
 | `session-check` | Advisory cross-scope duplication + integrity check (`--hook` emits the SessionStart envelope) | `agconf session-check --install-hook` |
+| `verify-paths` | Verify the worktree only changed agconf-owned paths (local equivalent of the sync workflow's path guard) | `agconf verify-paths` |
 | `propose` | Propose local changes to managed content back to the canonical repo (opens a PR), rebased onto canonical HEAD | `agconf propose` |
 | `propose --scope user` | Propose edits made to the per-user projection (`~/.claude`, `~/.codex`) instead of a repo | `agconf propose --scope user` |
 | `propose --new [path]` | Propose new (unmanaged) skills/rules/agents upstream; optional path filters discovery (**required** at user scope) | `agconf propose --new .claude/skills/my-skill` |
@@ -132,6 +133,13 @@ workflow:
   commit_strategy: direct
   commit_message: "chore: sync engineering standards"
 ```
+
+Direct commits are bounded by a path guard: every sync run verifies it changed
+nothing outside the paths agconf owns, and fails without committing otherwise.
+The check is a shell step in the sync workflow with the allowlist written out in
+full, so it can be audited without trusting agconf. See
+[Sync Path Guard](./docs/DOWNSTREAM_REPOSITORY_CONFIGURATION.md#sync-path-guard)
+for the allowlist and what it does and does not bound.
 
 For complete configuration reference and available settings, see [Downstream Repository Configuration](./docs/DOWNSTREAM_REPOSITORY_CONFIGURATION.md).
 

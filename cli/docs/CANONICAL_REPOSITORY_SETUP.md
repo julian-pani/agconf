@@ -368,6 +368,60 @@ The generated workflow files install the latest published `agconf` CLI (unpinned
 
 Workflows are generated without a pinned CLI version so downstream CI always picks up the latest release. See [VERSIONING.md](./VERSIONING.md) for how content (not the CLI) is pinned via the lockfile.
 
+### Sync Path Guard
+
+`sync-reusable.yml` carries a step that verifies each sync changed nothing
+outside the paths agconf owns, and fails the job — committing nothing — if it
+did. It runs before the commit, for both the `pr` and `direct` strategies.
+
+The check is written out as shell in the workflow, with the allowlist as a
+literal array, rather than delegated to the CLI. That is deliberate: it lets
+anyone reviewing a downstream repo see exactly what your canonical repo is
+permitted to write there, without trusting or even knowing agconf. Keep it that
+way if you customize the workflow — replacing it with a CLI call removes the
+property that makes `commit_strategy: direct` defensible for your consumers.
+
+The allowlist is named after your marker prefix, so the workflow files it
+permits are `<prefix>-sync.yml` and `<prefix>-check.yml`. It is baked in at
+scaffold time and there is no way for a downstream repo to widen it — see
+[Downstream Repository Configuration](./DOWNSTREAM_REPOSITORY_CONFIGURATION.md#sync-path-guard)
+for what that bounds.
+
+Two consequences for you as the canonical owner:
+
+- **If you change `markers.prefix` later**, syncs start writing
+  `<new-prefix>-sync.yml` while the guard still permits the old name, and every
+  downstream sync fails. Regenerate the reusable workflow at the same time.
+- **If a future agconf writes a new root-level path**, every canonical repo's
+  guard rejects it until the reusable workflow is regenerated. Treat adding one
+  as a change that needs a release note.
+
+#### Adding it to an existing canonical repository
+
+`canonical init` is what scaffolds `sync-reusable.yml`, and it only runs at
+init, so a canonical repo created before this step existed keeps syncing without
+the guard until you add it.
+
+> **Do not re-run `canonical init` in place to pick it up.** It overwrites
+> `agconf.yaml`, both reusable workflows and `agconf-ci.yml` unconditionally —
+> you would lose your targets, `rules_dir`, `plugins` definitions and any
+> workflow customization. With `--yes` it does so without prompting at all.
+
+Scaffold into a scratch directory instead, and copy the step across:
+
+```bash
+agconf canonical init --name <same-name> --org <same-org> --dir /tmp/agconf-scaffold
+diff /tmp/agconf-scaffold/.github/workflows/sync-reusable.yml .github/workflows/sync-reusable.yml
+```
+
+Take the `Verify sync only changed allowed paths` step. **Insert it immediately
+after `Run sync` and before `Check for changes` and the commit steps** — it must
+run before anything stages or commits, or it enforces nothing and fails
+silently. It is self-contained —
+no new inputs, no secrets, nothing else in the workflow refers to it — so
+copying the step across is the whole migration. Downstream repos pick it up on
+their next sync after you tag a release.
+
 ### How Reusable Workflows Work
 
 1. Your canonical repository hosts the reusable workflows

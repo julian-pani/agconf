@@ -11,6 +11,7 @@ import { proposeCommand } from "./commands/propose.js";
 import { sessionCheckCommand } from "./commands/session-check.js";
 import { syncCommand } from "./commands/sync.js";
 import { upgradeCliCommand } from "./commands/upgrade-cli.js";
+import { verifyPathsCommand } from "./commands/verify-paths.js";
 import { checkCliVersionMismatch, getCliVersion } from "./core/lockfile.js";
 import { getGitRoot } from "./utils/git.js";
 
@@ -146,6 +147,14 @@ export function createCli(): Command {
         await checkCommand(options);
       },
     );
+
+  program
+    .command("verify-paths")
+    .description("Verify the working tree only changed agconf-owned paths (for automated syncs)")
+    .option("-q, --quiet", "Minimal output, just exit code")
+    .action(async (options: { quiet?: boolean }) => {
+      await verifyPathsCommand(options);
+    });
 
   program
     .command("session-check")
