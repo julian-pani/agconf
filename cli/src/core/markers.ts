@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 // Default marker prefix
-const DEFAULT_MARKER_PREFIX = "agconf";
+export const DEFAULT_MARKER_PREFIX = "agconf";
 
 /**
  * Marker strings for managed content blocks.

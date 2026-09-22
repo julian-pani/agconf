@@ -366,6 +366,127 @@ jobs:
         env:
           GITHUB_TOKEN: \${{ steps.app-token.outputs.token || secrets.token }}
 
+      # GUARD: bounds what the commit steps below can contain.
+      #
+      # Those steps stage the whole worktree (git add -A), so without this a bug
+      # in the CLI -- or in the canonical repo's content -- could rewrite
+      # anything in this repository, and under commit_strategy 'direct' it would
+      # do so with no review at all.
+      #
+      # The check is spelled out here rather than delegated to the CLI so that
+      # anyone reading this workflow can see exactly which paths a sync may
+      # touch, without knowing anything about the tool doing the syncing. Note
+      # what that does and does not cover: the step runs in the same job, after
+      # the CLI has already executed, so it bounds mistakes -- a bug, or content
+      # writing where it should not -- rather than a deliberately malicious CLI.
+      #
+      # It runs before the strategy branch below, so it covers 'pr' as well:
+      # an automated PR that quietly reverts src/ is the kind that gets
+      # rubber-stamped.
+      - name: Verify sync only changed allowed paths
+        shell: bash
+        run: |
+          # Every path ${prefix} is allowed to write in a downstream repo.
+          # A pattern ending in '/**' allows everything beneath that directory;
+          # anything else must match a file exactly. No other wildcards are
+          # supported, so this list means precisely what it looks like.
+          ALLOWED_PATHS=(
+            "AGENTS.md"
+            "CLAUDE.md"
+            ".agconf/**"
+            ".claude/**"
+            ".codex/**"
+            ".agents/**"
+            ".pre-commit-config.yaml"
+            ".pre-commit-config.yml"
+            ".github/workflows/${prefix}-sync.yml"
+            ".github/workflows/${prefix}-check.yml"
+          )
+
+          is_allowed() {
+            local file="$1" pattern dir_prefix
+            for pattern in "\${ALLOWED_PATHS[@]}"; do
+              if [[ "$pattern" == */'**' ]]; then
+                dir_prefix="\${pattern%'**'}"
+                if [[ "$file" == "$dir_prefix"* ]]; then
+                  return 0
+                fi
+              elif [[ "$file" == "$pattern" ]]; then
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          # NUL-delimited, because porcelain's default quotes any path holding a
+          # space or a non-ASCII byte -- which would report a legitimate
+          # ".claude/skills/my skill/SKILL.md" as living outside ".claude/**".
+          # Captured to a file rather than read through a pipeline or process
+          # substitution: under 'set -e' those swallow a git failure, leaving an
+          # empty loop and a silent pass, which is the worst possible default
+          # for a check whose entire value is failing closed.
+          status_file="$(mktemp)"
+          trap 'rm -f "$status_file"' EXIT
+          if ! git status --porcelain -uall -z > "$status_file"; then
+            echo "::error::Could not read git status; refusing to commit anything."
+            exit 1
+          fi
+
+          violations=()
+          while IFS= read -r -d '' entry; do
+            if [ -z "$entry" ]; then
+              continue
+            fi
+            # Porcelain v1: two status characters, a space, then the path.
+            entry_status="\${entry:0:2}"
+            file="\${entry:3}"
+            # A rename or copy is followed by a second record holding the
+            # original path. Both sides are checked, so moving a file out of an
+            # allowed directory is caught as well as moving one in.
+            case "$entry_status" in
+              R*|C*)
+                if IFS= read -r -d '' origin; then
+                  if ! is_allowed "$origin"; then
+                    violations+=("$entry_status $origin")
+                  fi
+                fi
+                ;;
+            esac
+            if ! is_allowed "$file"; then
+              violations+=("$entry_status $file")
+            fi
+          done < "$status_file"
+
+          if [ \${#violations[@]} -gt 0 ]; then
+            echo "::error::Sync changed \${#violations[@]} path(s) outside the allowed list. Nothing was committed."
+            # No backticks anywhere below: inside a double-quoted shell string
+            # they are command substitution, not Markdown.
+            {
+              echo "### Sync blocked: changed paths outside the allowed list"
+              echo
+              echo "Nothing was committed."
+              echo
+              echo "Changed but not allowed:"
+              for file in "\${violations[@]}"; do
+                echo "- $file"
+              done
+              echo
+              echo "Allowed paths:"
+              for pattern in "\${ALLOWED_PATHS[@]}"; do
+                echo "- $pattern"
+              done
+              echo
+              echo "The list above is everything ${prefix} is allowed to write here."
+              echo "A path outside it means either the canonical content is writing"
+              echo "somewhere it should not, or agconf has a bug. Nothing was"
+              echo "committed, so this repository is unchanged -- report it rather"
+              echo "than editing this list."
+            } | tee -a "\${GITHUB_STEP_SUMMARY:-/dev/null}"
+            exit 1
+          fi
+
+          echo "Verified: every change is within the allowed paths."
+
       - name: Check for changes
         id: check-changes
         run: |

@@ -92,19 +92,28 @@ interface WorkflowFile {
  * Get workflow file definitions for a given config.
  */
 export function getWorkflowFiles(config: WorkflowConfig): WorkflowFile[] {
-  const prefix = config.workflowPrefix;
+  const [syncFilename, checkFilename] = getManagedWorkflowFilenames(config.workflowPrefix);
   return [
     {
       name: "sync",
-      filename: `${prefix}-sync.yml`,
+      filename: syncFilename ?? "",
       reusableWorkflow: "sync-reusable.yml",
     },
     {
       name: "check",
-      filename: `${prefix}-check.yml`,
+      filename: checkFilename ?? "",
       reusableWorkflow: "check-reusable.yml",
     },
   ];
+}
+
+/**
+ * Filenames of the workflow files agconf manages in a downstream repo, for a
+ * given marker prefix. Keeps the path guard (`core/verify-paths.ts`) naming the
+ * same two files {@link getWorkflowFiles} writes, rather than a parallel list.
+ */
+export function getManagedWorkflowFilenames(markerPrefix: string): string[] {
+  return [`${markerPrefix}-sync.yml`, `${markerPrefix}-check.yml`];
 }
 
 interface WorkflowStatus {

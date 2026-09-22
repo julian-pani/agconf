@@ -50,6 +50,10 @@ const COMMANDS = {
     description: "Check if managed files have been modified",
     options: ["-q", "--quiet", "--debug", "--hook", "--scope"],
   },
+  "verify-paths": {
+    description: "Verify the working tree only changed agconf-owned paths",
+    options: ["-q", "--quiet"],
+  },
   "session-check": {
     description: "Cross-scope duplication + integrity check (SessionStart hook)",
     options: ["--install-hook", "--hook", "-q", "--quiet"],
