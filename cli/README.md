@@ -25,8 +25,8 @@ Full documentation available on GitHub: https://github.com/julian-pani/agconf
 | `sync` | Sync content from canonical repo (fetches latest by default) | `agconf sync` or `agconf sync --pinned` |
 | `check` | Verify managed files are unchanged (`--scope user` checks the per-user projection; in a canonical repo, verifies compiled plugin freshness) | `agconf check` or `agconf check --scope user` |
 | `compile` | Compile installable Claude Code / Codex plugins + marketplace from canonical content | `agconf compile` or `agconf compile --check` |
-| `init --scope user` | Guided one-shot user-scope setup: sync + SessionStart hook + auto-sync | `agconf init --scope user` |
-| `sync --scope user` | Project the company instructions once per machine into `~/.claude`/`~/.codex` (git-tracked `~/.agconf` store) | `agconf sync --scope user --source org/standards` |
+| `init --scope user` | Guided one-shot user-scope setup: sync + SessionStart hook + auto-sync. **Not recommended for now** — machine-local, absent in cloud sessions ([why](./docs/USER_SCOPE.md#not-recommended-for-now)) | `agconf init --scope user` |
+| `sync --scope user` | Project the company instructions once per machine into `~/.claude`/`~/.codex` (git-tracked `~/.agconf` store). Same caveat as `init --scope user` | `agconf sync --scope user --source org/standards` |
 | `autosync` | Keep the per-user store fresh automatically (runs at session start; opt-in) | `agconf autosync --install` |
 | `session-check` | Advisory cross-scope duplication + integrity check (`--hook` emits the SessionStart envelope) | `agconf session-check --install-hook` |
 | `verify-paths` | Verify the worktree only changed agconf-owned paths (local equivalent of the sync workflow's path guard) | `agconf verify-paths` |
@@ -64,8 +64,11 @@ agconf init --source your-org/engineering-standards
 ```
 
 Or **once per machine** into your own `~/.claude` / `~/.codex`, so they apply
-everywhere without being committed anywhere. This asks for the source, the
-harnesses to project into, and whether to refresh in the background:
+in every repo on that machine without being committed anywhere. **Not
+recommended for now**: it lives only on that machine, so cloud agent sessions
+never see it (see [the guide](./docs/USER_SCOPE.md#not-recommended-for-now)).
+This asks for the source, the harnesses to project into, and whether to refresh
+in the background:
 
 ```bash
 agconf init --scope user

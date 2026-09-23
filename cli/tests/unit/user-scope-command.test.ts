@@ -89,6 +89,20 @@ describe("user-scope commands", () => {
     expect(mockExit).not.toHaveBeenCalled();
   });
 
+  it("prints the not-recommended notice on a first sync only", async () => {
+    const logged = () => consoleLogSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+
+    await syncUserScopeCommand({ scope: "user", local: canonical, home, target: ["claude"] });
+    expect(logged()).toContain("not recommended");
+    expect(logged()).toMatch(/cloud/i);
+
+    // Once the store exists the developer has already seen (and accepted) it.
+    consoleLogSpy.mockClear();
+    await syncUserScopeCommand({ scope: "user", home });
+    expect(logged()).not.toContain("not recommended");
+    expect(mockExit).not.toHaveBeenCalled();
+  });
+
   it("honours an explicit --source over a local source recorded in the store", async () => {
     await syncUserScopeCommand({ scope: "user", local: canonical, home, target: ["claude"] });
 

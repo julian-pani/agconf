@@ -33,6 +33,35 @@ export class NoUserScopeSourceError extends Error {
   }
 }
 
+/**
+ * The one reason user scope is currently marked "not recommended": it lives only
+ * on the machine it was synced on. Printed on every first-time projection —
+ * `init --scope user` (where an interactive run is also asked to confirm) and a
+ * bare first `sync --scope user` — so nobody adopts the scope without seeing it.
+ * The text is deliberately dateless (the docs carry the "as of" date); revisit
+ * both together when cloud environments can provision the store before a session.
+ */
+export function printUserScopeCloudNotice(): void {
+  console.log();
+  console.log(pc.yellow(pc.bold("!  User scope is not recommended (for now)")));
+  console.log();
+  for (const line of [
+    "It lives only on this machine. Cloud agent sessions — Claude Code on the web,",
+    "Codex cloud, CI runners — start from a fresh environment and never see it, so",
+    "the company standards silently do not apply there. A cloud setup script could",
+    "in theory run `agconf sync --scope user`, but the canonical repository usually",
+    "sits behind your organization's GitHub auth, which those environments cannot",
+    "reach before the session starts; for Claude Code we know of no way to do it.",
+    "",
+    "Prefer repo scope (`agconf init` in each repository): committed files travel",
+    "with the clone, so the standards apply wherever the repo is checked out —",
+    "locally, in the cloud, and in CI.",
+  ]) {
+    console.log(line ? pc.yellow(`   ${line}`) : "");
+  }
+  console.log();
+}
+
 export interface RunUserScopeSyncResult {
   /** The sync result, or null when skipped because already up to date. */
   result: UserSyncResult | null;
@@ -185,6 +214,12 @@ export async function probeUserScopeFreshness(
 export async function syncUserScopeCommand(options: UserScopeSyncOptions): Promise<void> {
   const logger = createLogger();
   const homeDir = options.home ?? os.homedir();
+
+  // A first projection is the moment the developer commits to this scope, so the
+  // machine-local caveat is printed here too, not only by the guided `init`.
+  if (!(await getSyncStatusSafe(homeDir)).hasSynced) {
+    printUserScopeCloudNotice();
+  }
 
   let result: UserSyncResult | null;
   try {
