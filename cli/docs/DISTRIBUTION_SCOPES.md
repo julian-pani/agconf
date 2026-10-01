@@ -12,6 +12,12 @@
 > user-facing usage, see the [User Scope guide](./USER_SCOPE.md) — how to install
 > it, what lands where, how to update or remove it.
 >
+> **User scope is currently marked "not recommended"**: it is machine-local, so
+> cloud agent sessions never see it, and the canonical repo usually cannot be
+> reached from a cloud environment's setup script. Repo scope remains the
+> recommended default. See [§17 gap 1](#17-known-gaps) and the guide's
+> [Not recommended (for now)](./USER_SCOPE.md#not-recommended-for-now).
+>
 > **Looking for "does feature X work in mode Y?"** → [§16 Feature × mode
 > matrix](#16-feature--mode-matrix), with the remaining gaps called out in
 > [§17](#17-known-gaps).
@@ -120,6 +126,13 @@ most reliable freshness mechanism of any option here.
   goes user-scope.)
 - Not git-visible: a fresh clone / CI / a teammate who hasn't run the installer
   gets nothing. The repo no longer records "this project expects standard X."
+- **Absent in cloud sessions.** The projection is per-machine state, and a cloud
+  agent session (Claude Code on the web, Codex cloud, CI) starts from a fresh
+  machine. A setup script could in theory sync user scope first, but the
+  canonical repo is normally behind the org's GitHub auth, which the setup phase
+  cannot reach. This is the reason the scope ships as "not recommended" (§8,
+  §17); the [User Scope guide](./USER_SCOPE.md#not-recommended-for-now) carries
+  the current status.
 - Codex specifics are newer/flakier: open bugs on `~/.codex/AGENTS.md` being read;
   hooks behind a feature flag.
 
@@ -235,7 +248,18 @@ the doctor overlap report.
 
 ## 8. Recommendation
 
-**Don't pick one — split by content type, because the harnesses force it:**
+> **Revised (September 2026): user scope is not recommended for now.** The split
+> below was written before the cloud-session limitation (§4 cons, §17 gap 1) was
+> weighed. Because a user-scope projection never reaches cloud agent sessions,
+> and agents are moving to the cloud, **repo scope is the recommended default
+> for all content types**, with plugins for the types they suit. User scope
+> remains supported for developers who work only from their own machine, and the
+> CLI says so (`printUserScopeCloudNotice` in `commands/user-scope.ts`, shown by
+> `init --scope user` — which asks to confirm — and by a first
+> `sync --scope user`). The original analysis is kept below as the record of the
+> design; re-evaluate it when cloud environments can provision the store.
+
+**Original analysis — don't pick one; split by content type, because the harnesses force it:**
 
 - **Instructions + rules → per-user (Option A).** They can't be plugins, and
   they're the bulk of the identical, repeated content users are complaining about.
@@ -620,14 +644,26 @@ currently exposes no keys at all).
 Distinguishing "not yet supported" from "deliberately not applicable" — the ❌
 cells above that are **gaps**, in rough priority order:
 
-1. **Installed-plugin verification.** `check` verifies the *committed* plugin
+1. **User scope is absent in cloud sessions.** The whole projection is
+   per-machine state, so Claude Code on the web, Codex cloud and CI runners never
+   have it, and nothing tells the agent or the developer that the standards are
+   missing. Provisioning it from a cloud environment's setup script needs the
+   canonical repo to be reachable before the session starts, which the org's
+   GitHub auth normally prevents. Until this has a solution, user scope is
+   shipped as **not recommended** and the CLI says so at first setup; the
+   [User Scope guide](./USER_SCOPE.md#not-recommended-for-now) is the
+   authoritative statement of the status. Possible directions, none decided: a
+   cloud-side bootstrap that works with the harness's own GitHub credential, or a
+   published plugin/marketplace carrying the instructions (blocked by the
+   no-slot problem in §2).
+2. **Installed-plugin verification.** `check` verifies the *committed* plugin
    artifacts in canonical. There is no equivalent of "is the plugin I have
    installed the one canonical publishes", and `session-check` cannot see plugin
    scope, so a plugin-delivered skill can silently duplicate a synced one.
-2. **`check --hook` at user scope** is accepted but ignored. It should either be
+3. **`check --hook` at user scope** is accepted but ignored. It should either be
    rejected as an invalid combination or made a no-op with a message; today it
    silently degrades to a plain check that exits 1 on any drift.
-3. **No delivery map at user scope.** You cannot say "skills come from a plugin,
+4. **No delivery map at user scope.** You cannot say "skills come from a plugin,
    instructions from user scope" at the per-user level the way a repo can.
 
 Deliberately **not applicable** (do not file these as gaps): instructions/rules

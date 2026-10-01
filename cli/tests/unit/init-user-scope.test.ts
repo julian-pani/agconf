@@ -124,9 +124,30 @@ describe("initUserScopeCommand", () => {
     expect(mockExit).not.toHaveBeenCalled();
     // The "run autosync --install" tip is suppressed — init just did it.
     expect(logged()).not.toContain("autosync --install");
-    // Non-interactive: no prompts, no completion offer.
+    // Non-interactive: no prompts, no completion offer — but the machine-local
+    // caveat still prints, so a scripted setup leaves a trace of it in the log.
     expect(prompts.confirm).not.toHaveBeenCalled();
     expect(promptCompletionInstall).not.toHaveBeenCalled();
+    expect(logged()).toContain("not recommended");
+  });
+
+  it("opens with the cloud-session notice and aborts a fresh run when declined", async () => {
+    vi.mocked(prompts.confirm).mockResolvedValueOnce(false as never); // don't set up anyway
+
+    await initUserScopeCommand({ scope: "user", local: canonical, home });
+
+    expect(logged()).toContain("not recommended");
+    expect(logged()).toMatch(/cloud/i);
+    // The gate is the first prompt, pre-answered "no": nothing else was asked
+    // and nothing written.
+    expect(prompts.confirm).toHaveBeenCalledTimes(1);
+    expect(
+      (vi.mocked(prompts.confirm).mock.calls[0]?.[0] as { initialValue?: boolean }).initialValue,
+    ).toBe(false);
+    expect(prompts.multiselect).not.toHaveBeenCalled();
+    expect(await exists(path.join(home, ".claude"))).toBe(false);
+    expect(await exists(path.join(home, ".agconf"))).toBe(false);
+    expect(stdout()).toContain("Operation cancelled");
   });
 
   it("installs a hook for every target the store was synced to", async () => {
@@ -172,9 +193,23 @@ describe("initUserScopeCommand", () => {
     expect(prompts.text).not.toHaveBeenCalled();
   });
 
+  it("cancelling the not-recommended gate (Ctrl-C) aborts before anything is written", async () => {
+    vi.mocked(prompts.confirm).mockResolvedValue(Symbol("cancel") as never);
+    vi.mocked(prompts.isCancel).mockImplementation((v: unknown) => typeof v === "symbol");
+
+    await initUserScopeCommand({ scope: "user", local: canonical, home });
+
+    expect(prompts.multiselect).not.toHaveBeenCalled();
+    expect(prompts.text).not.toHaveBeenCalled();
+    expect(await exists(path.join(home, ".claude"))).toBe(false);
+    expect(await exists(path.join(home, ".agconf"))).toBe(false);
+  });
+
   it("prompts for targets and auto-sync, and honours a declined auto-sync", async () => {
     vi.mocked(prompts.multiselect).mockResolvedValue(["claude", "codex"] as never);
-    vi.mocked(prompts.confirm).mockResolvedValue(false as never); // decline auto-sync
+    vi.mocked(prompts.confirm)
+      .mockResolvedValueOnce(true as never) // past the not-recommended gate
+      .mockResolvedValue(false as never); // decline auto-sync
 
     await initUserScopeCommand({ scope: "user", local: canonical, home });
 
@@ -189,7 +224,9 @@ describe("initUserScopeCommand", () => {
   it("prompts for the canonical repo on a first run with no source flag", async () => {
     vi.mocked(prompts.text).mockResolvedValue("acme/standards" as never);
     vi.mocked(prompts.multiselect).mockResolvedValue(["claude"] as never);
-    vi.mocked(prompts.confirm).mockResolvedValue(false as never);
+    vi.mocked(prompts.confirm)
+      .mockResolvedValueOnce(true as never) // past the not-recommended gate
+      .mockResolvedValue(false as never);
 
     // The answer is actually used: resolution proceeds against the repo typed
     // at the prompt (and then fails on the stubbed clone).
@@ -211,10 +248,14 @@ describe("initUserScopeCommand", () => {
     });
     vi.clearAllMocks();
 
-    // Declining the re-run prompt changes nothing.
+    // Declining the re-run prompt changes nothing. It is the ONLY gate on a
+    // re-run — the not-recommended confirm is for fresh setups (the notice
+    // itself still prints).
     vi.mocked(prompts.confirm).mockResolvedValueOnce(false as never);
     await initUserScopeCommand({ scope: "user", home });
+    expect(prompts.confirm).toHaveBeenCalledTimes(1);
     expect(prompts.multiselect).not.toHaveBeenCalled();
+    expect(logged()).toContain("not recommended");
 
     // Accepting it re-syncs with no --local: the source comes from the store.
     // Delete the projection first, so its reappearance proves the re-sync ran
@@ -228,11 +269,13 @@ describe("initUserScopeCommand", () => {
   });
 
   it("cancelling the target prompt aborts without touching the home directory", async () => {
-    vi.mocked(prompts.isCancel).mockReturnValue(true);
+    vi.mocked(prompts.confirm).mockResolvedValueOnce(true as never); // past the gate
     vi.mocked(prompts.multiselect).mockResolvedValue(Symbol("cancel") as never);
+    vi.mocked(prompts.isCancel).mockImplementation((v: unknown) => typeof v === "symbol");
 
     await initUserScopeCommand({ scope: "user", local: canonical, home });
 
+    expect(prompts.multiselect).toHaveBeenCalledTimes(1);
     expect(await exists(path.join(home, ".claude"))).toBe(false);
     expect(await exists(path.join(home, ".agconf"))).toBe(false);
   });
@@ -374,7 +417,9 @@ describe("initUserScopeCommand", () => {
   it("validates the canonical repository typed at the prompt", async () => {
     vi.mocked(prompts.text).mockResolvedValue("  acme/standards  " as never);
     vi.mocked(prompts.multiselect).mockResolvedValue(["claude"] as never);
-    vi.mocked(prompts.confirm).mockResolvedValue(false as never);
+    vi.mocked(prompts.confirm)
+      .mockResolvedValueOnce(true as never) // past the not-recommended gate
+      .mockResolvedValue(false as never);
 
     await expect(initUserScopeCommand({ scope: "user", home })).rejects.toThrow(
       "process.exit called",
@@ -405,8 +450,10 @@ describe("initUserScopeCommand", () => {
 
   it("cancelling the auto-sync prompt aborts before anything is written", async () => {
     vi.mocked(prompts.multiselect).mockResolvedValue(["claude"] as never);
-    vi.mocked(prompts.confirm).mockResolvedValue(Symbol("cancel") as never);
-    // Cancel only the confirm — the multiselect answer must still be accepted.
+    vi.mocked(prompts.confirm)
+      .mockResolvedValueOnce(true as never) // past the not-recommended gate
+      .mockResolvedValue(Symbol("cancel") as never);
+    // Cancel only the auto-sync confirm — the multiselect answer must still be accepted.
     vi.mocked(prompts.isCancel).mockImplementation((v: unknown) => typeof v === "symbol");
 
     await initUserScopeCommand({ scope: "user", local: canonical, home });
@@ -425,7 +472,9 @@ describe("initUserScopeCommand", () => {
 
   it("a declined auto-sync survives a later --yes run", async () => {
     vi.mocked(prompts.multiselect).mockResolvedValue(["claude"] as never);
-    vi.mocked(prompts.confirm).mockResolvedValue(false as never); // decline
+    vi.mocked(prompts.confirm)
+      .mockResolvedValueOnce(true as never) // past the not-recommended gate
+      .mockResolvedValue(false as never); // decline auto-sync
     await initUserScopeCommand({ scope: "user", local: canonical, home });
     expect(await fs.readFile(configPath(), "utf-8")).toContain("enabled: false");
 
@@ -506,6 +555,7 @@ describe("initUserScopeCommand", () => {
   });
 
   it("cancelling the source prompt aborts before anything is written", async () => {
+    vi.mocked(prompts.confirm).mockResolvedValueOnce(true as never); // past the gate
     vi.mocked(prompts.text).mockResolvedValue(Symbol("cancel") as never);
     vi.mocked(prompts.isCancel).mockImplementation((v: unknown) => typeof v === "symbol");
 
@@ -513,6 +563,7 @@ describe("initUserScopeCommand", () => {
 
     expect(await exists(path.join(home, ".claude"))).toBe(false);
     expect(await exists(path.join(home, ".agconf"))).toBe(false);
+    expect(prompts.text).toHaveBeenCalledTimes(1);
     expect(prompts.multiselect).not.toHaveBeenCalled();
   });
 

@@ -14,6 +14,7 @@ import { promptCompletionInstall } from "./completion.js";
 import { installStoreHooks, printHookLines } from "./hook-install.js";
 import {
   NoUserScopeSourceError,
+  printUserScopeCloudNotice,
   printUserSyncResult,
   resolveRecordedSource,
   runUserScopeSync,
@@ -47,6 +48,11 @@ export interface InitUserScopeOptions extends UserScopeSyncOptions {
  * individual commands use (`runUserScopeSync`, `enableAutosync`,
  * `installSessionStartHooks`), so there is exactly one implementation of each.
  * `sync --scope user` remains the scriptable path; this is the discoverable one.
+ *
+ * It opens with the machine-local caveat (`printUserScopeCloudNotice`): user
+ * scope is not present in cloud sessions, so it is currently "not recommended".
+ * A fresh interactive run must confirm past it; a re-run already has its own
+ * "run setup again?" gate, and `--yes` only prints it.
  */
 export async function initUserScopeCommand(options: InitUserScopeOptions): Promise<void> {
   const logger = createLogger();
@@ -56,6 +62,19 @@ export async function initUserScopeCommand(options: InitUserScopeOptions): Promi
   prompts.intro(pc.bold("agconf init --scope user"));
 
   const status = await getSyncStatusSafe(homeDir);
+
+  printUserScopeCloudNotice();
+  if (!status.hasSynced && !options.yes) {
+    // Default "no": the scope is not recommended, so plain Enter must not adopt it.
+    const proceed = await prompts.confirm({
+      message: "Set up user scope anyway?",
+      initialValue: false,
+    });
+    if (prompts.isCancel(proceed) || !proceed) {
+      prompts.cancel("Operation cancelled — run `agconf init` inside a repository instead.");
+      return;
+    }
+  }
 
   if (status.hasSynced && !options.yes) {
     const again = await prompts.confirm({

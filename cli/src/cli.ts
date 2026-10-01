@@ -75,7 +75,7 @@ export function createCli(): Command {
     .option("-t, --target <targets...>", "Target platforms (claude, codex)")
     .option(
       "--scope <scope>",
-      "Distribution scope: 'repo' (default) or 'user' (guided setup of ~/.agconf, ~/.claude, ~/.codex)",
+      "Distribution scope: 'repo' (default) or 'user' (guided setup of ~/.agconf, ~/.claude, ~/.codex; not recommended — machine-local, absent in cloud sessions)",
     )
     .option("--no-autosync", "With --scope user: don't enable background auto-sync")
     .action(
@@ -113,7 +113,7 @@ export function createCli(): Command {
     .option("--expand-changes", "Show all items in output (default: first 5)")
     .option(
       "--scope <scope>",
-      "Distribution scope: 'repo' (default) or 'user' (project into ~/.claude, ~/.codex via the ~/.agconf store)",
+      "Distribution scope: 'repo' (default) or 'user' (project into ~/.claude, ~/.codex via the ~/.agconf store; not recommended — machine-local, absent in cloud sessions)",
     )
     .action(
       async (options: {
