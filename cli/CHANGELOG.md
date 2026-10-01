@@ -1,3 +1,9 @@
+## [0.29.0](https://github.com/julian-pani/agconf/compare/v0.28.0...v0.29.0) (2026-10-01)
+
+### Features
+
+* **user-scope:** mark user scope not recommended and warn about cloud sessions ([6442255](https://github.com/julian-pani/agconf/commit/6442255131a3dfde85ef2b26768eac798f5849aa))
+
 ## [0.28.0](https://github.com/julian-pani/agconf/compare/v0.27.1...v0.28.0) (2026-09-22)
 
 ### Features
