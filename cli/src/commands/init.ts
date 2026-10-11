@@ -1,5 +1,6 @@
 import * as prompts from "@clack/prompts";
 import pc from "picocolors";
+import { loadDownstreamConfig, setWorkflowCommitStrategy } from "../config/loader.js";
 import { getSyncStatus } from "../core/sync.js";
 import { createLogger } from "../utils/logger.js";
 import { promptCompletionInstall } from "./completion.js";
@@ -88,6 +89,12 @@ export async function initCommand(options: InitOptions): Promise<void> {
   // Check for modified skill files and warn
   await checkModifiedFilesBeforeSync(targetDir, targets, options, tempDir);
 
+  // Asked last, so an abort or failure above leaves no config behind. Only GitHub
+  // sources get a sync workflow, so only they have a strategy to choose.
+  if (resolvedVersion.ref !== "local" && repository) {
+    await promptCommitStrategy(targetDir, options);
+  }
+
   // Perform sync (includes workflow files for release versions)
   await performSync({
     targetDir,
@@ -108,4 +115,42 @@ export async function initCommand(options: InitOptions): Promise<void> {
   if (!options.yes) {
     await promptCompletionInstall();
   }
+}
+
+const COMMIT_STRATEGY_DOCS_URL =
+  "https://github.com/julian-pani/agconf/blob/master/cli/docs/DOWNSTREAM_REPOSITORY_CONFIGURATION.md#commit-strategies";
+
+/**
+ * Ask how the generated sync workflow should apply changes and record the answer
+ * in `.agconf/config.yaml`. Skipped in non-interactive mode and when the repo
+ * already chose a strategy; the sync that follows reads the file back.
+ */
+export async function promptCommitStrategy(targetDir: string, options: InitOptions): Promise<void> {
+  if (options.yes) return;
+  const existing = await loadDownstreamConfig(targetDir);
+  if (existing?.workflow) return;
+
+  prompts.note(`Details: ${COMMIT_STRATEGY_DOCS_URL}`, "Commit strategy");
+  const choice = await prompts.select({
+    message: "How should the sync workflow apply updates?",
+    options: [
+      {
+        value: "pr",
+        label: "Pull request (recommended)",
+        hint: "opens a PR for review before anything changes",
+      },
+      {
+        value: "direct",
+        label: "Direct commit",
+        hint: "commits straight to the branch, no review step",
+      },
+    ],
+    initialValue: "pr",
+  });
+  if (prompts.isCancel(choice)) {
+    prompts.cancel("Operation cancelled");
+    process.exit(0);
+  }
+  await setWorkflowCommitStrategy(targetDir, choice as "pr" | "direct");
+  prompts.log.info("Saved commit strategy to .agconf/config.yaml (commit this file).");
 }

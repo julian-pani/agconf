@@ -118,6 +118,28 @@ export async function setAutosyncEnabled(homeDir: string, enabled: boolean): Pro
   await fs.writeFile(configPath, doc.toString(), "utf-8");
 }
 
+/**
+ * Set `workflow.commit_strategy` in the downstream config
+ * (`.agconf/config.yaml`), PRESERVING the rest of the file — comments and any
+ * other keys — by patching the YAML document in place. Creates the file if absent.
+ */
+export async function setWorkflowCommitStrategy(
+  repoRoot: string,
+  strategy: "pr" | "direct",
+): Promise<void> {
+  const configPath = path.join(repoRoot, ".agconf", DOWNSTREAM_CONFIG);
+  let raw = "";
+  try {
+    raw = await fs.readFile(configPath, "utf-8");
+  } catch (error) {
+    if (!(isNodeError(error) && error.code === "ENOENT")) throw error;
+  }
+  const doc = parseDocument(raw);
+  doc.setIn(["workflow", "commit_strategy"], strategy);
+  await fs.mkdir(path.dirname(configPath), { recursive: true });
+  await fs.writeFile(configPath, doc.toString(), "utf-8");
+}
+
 // Type guard for Node.js errors with code property
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error;

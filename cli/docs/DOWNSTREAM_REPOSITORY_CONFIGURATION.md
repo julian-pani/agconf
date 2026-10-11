@@ -217,7 +217,7 @@ jobs:
     uses: owner/canonical-repo/.github/workflows/sync-reusable.yml@v1.0.0
     with:
       force: ${{ inputs.force || false }}
-      commit_strategy: 'direct'
+      commit_strategy: ${{ inputs.commit_strategy || 'direct' }}
       commit_message: 'chore: sync engineering standards'
       reviewers: ${{ vars.AGCONF_REVIEWERS || '' }}
     secrets:
@@ -225,6 +225,10 @@ jobs:
       app_id: ${{ secrets.AGCONF_APP_ID }}
       app_private_key: ${{ secrets.AGCONF_APP_PRIVATE_KEY }}
 ```
+
+The generated workflow also exposes `commit_strategy` as a `workflow_dispatch` choice input (`pr` | `direct`), so a manual run can override the strategy for that run. Anyone who can start the workflow manually can therefore pick `direct` even in a `pr` repo; if the sync token can bypass branch protection, that push skips PR review (the path guard still bounds what can change). The configured value (or `pr` when none is set) is the input's default and the value used by scheduled and `repository_dispatch` runs.
+
+`agconf init` asks which strategy to use (interactive runs only; `--yes` keeps the default) and records it in `.agconf/config.yaml`.
 
 All three secrets are passed through, but you only need to configure **one** authentication method (PAT or GitHub App). See [Cross-Repository Authentication](./CANONICAL_REPOSITORY_SETUP.md#cross-repository-authentication) for setup details.
 
@@ -240,8 +244,8 @@ All three secrets are passed through, but you only need to configure **one** aut
 
 ## Important Notes
 
-1. **File is never overwritten** - Your `.agconf/config.yaml` persists across syncs
-2. **File is optional** - Only create it if you need to customize behavior
+1. **Syncs never overwrite it** - Your `.agconf/config.yaml` persists across syncs; interactive `agconf init` only adds `workflow.commit_strategy` when no `workflow` block exists
+2. **File is optional** - Create it if you need to customize behavior (`agconf init` creates it when you pick a commit strategy)
 3. **Reviewers fallback** - If `reviewers` is not set, falls back to `vars.{PREFIX}_REVIEWERS` GitHub variable
 
 ## Next Steps
