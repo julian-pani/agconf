@@ -1,3 +1,9 @@
+## [0.30.0](https://github.com/julian-pani/agconf/compare/v0.29.0...v0.30.0) (2026-10-11)
+
+### Features
+
+* **workflows:** add commit_strategy dispatch input and init prompt ([b6c159e](https://github.com/julian-pani/agconf/commit/b6c159e0c5f20d9398d0498efba1eadf9e501efe))
+
 ## [0.29.0](https://github.com/julian-pani/agconf/compare/v0.28.0...v0.29.0) (2026-10-01)
 
 ### Features
