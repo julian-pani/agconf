@@ -206,13 +206,17 @@ export function generateSyncWorkflow(
 ): string {
   const { sourceRepo, cliName, secretPrefix, workflowPrefix } = config;
 
+  // The configured strategy is the default for manual runs and the value used by
+  // scheduled/repository_dispatch runs, where no workflow_dispatch input exists.
+  const commitStrategy = settings?.commit_strategy ?? "pr";
+
   // Build the 'with' section lines
-  const withLines: string[] = [`      force: \${{ inputs.force || false }}`];
+  const withLines: string[] = [
+    `      force: \${{ inputs.force || false }}`,
+    `      commit_strategy: \${{ inputs.commit_strategy || '${commitStrategy}' }}`,
+  ];
 
   // Add workflow settings if provided
-  if (settings?.commit_strategy) {
-    withLines.push(`      commit_strategy: '${settings.commit_strategy}'`);
-  }
   if (settings?.pr_branch_prefix) {
     withLines.push(`      pr_branch_prefix: '${settings.pr_branch_prefix}'`);
   }
@@ -256,6 +260,14 @@ on:
         required: false
         default: false
         type: boolean
+      commit_strategy:
+        description: 'pr = open a pull request; direct = push to the selected branch without review'
+        required: false
+        default: '${commitStrategy}'
+        type: choice
+        options:
+          - pr
+          - direct
 
   repository_dispatch:
     types: [${workflowPrefix.replace(/-/g, "_")}-release]

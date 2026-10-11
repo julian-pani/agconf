@@ -206,7 +206,26 @@ jobs:
       it("includes commit_strategy when provided", () => {
         const settings: WorkflowSettings = { commit_strategy: "direct" };
         const content = generateSyncWorkflow("v1.0.0", DEFAULT_CONFIG, settings);
-        expect(content).toContain("commit_strategy: 'direct'");
+        expect(content).toContain("inputs.commit_strategy || 'direct'");
+        expect(content).toContain("default: 'direct'");
+      });
+
+      it("exposes commit_strategy as a workflow_dispatch choice defaulting to pr", () => {
+        const content = generateSyncWorkflow("v1.0.0", DEFAULT_CONFIG);
+        expect(content).toContain(
+          "      commit_strategy:\n        description: 'pr = open a pull request; direct = push to the selected branch without review'\n        required: false\n        default: 'pr'\n        type: choice\n        options:\n          - pr\n          - direct",
+        );
+        expect(content).toContain("inputs.commit_strategy || 'pr'");
+      });
+
+      it("uses the configured strategy as both the dispatch default and the fallback", () => {
+        const content = generateSyncWorkflow("v1.0.0", DEFAULT_CONFIG, {
+          commit_strategy: "direct",
+        });
+        expect(content).toContain("        default: 'direct'\n        type: choice");
+        expect(content).toContain(
+          "commit_strategy: ${" + "{ inputs.commit_strategy || 'direct' }}",
+        );
       });
 
       it("includes pr_branch_prefix when provided", () => {
@@ -250,7 +269,7 @@ jobs:
           reviewers: "admin",
         };
         const content = generateSyncWorkflow("v1.0.0", DEFAULT_CONFIG, settings);
-        expect(content).toContain("commit_strategy: 'direct'");
+        expect(content).toContain("inputs.commit_strategy || 'direct'");
         expect(content).toContain("pr_branch_prefix: 'sync/update'");
         expect(content).toContain("pr_title: 'Update standards'");
         expect(content).toContain("commit_message: 'chore: sync'");
@@ -260,7 +279,7 @@ jobs:
       it("generates default workflow when settings is undefined", () => {
         const content = generateSyncWorkflow("v1.0.0", DEFAULT_CONFIG, undefined);
         expect(content).toContain("vars.AGCONF_REVIEWERS");
-        expect(content).not.toContain("commit_strategy:");
+        expect(content).toContain("inputs.commit_strategy || 'pr'");
         expect(content).not.toContain("pr_branch_prefix:");
         expect(content).not.toContain("pr_title:");
         expect(content).not.toContain("commit_message:");
@@ -270,7 +289,7 @@ jobs:
         const settings: WorkflowSettings = {};
         const content = generateSyncWorkflow("v1.0.0", DEFAULT_CONFIG, settings);
         expect(content).toContain("vars.AGCONF_REVIEWERS");
-        expect(content).not.toContain("commit_strategy:");
+        expect(content).toContain("inputs.commit_strategy || 'pr'");
         expect(content).not.toContain("pr_branch_prefix:");
       });
     });
@@ -494,7 +513,7 @@ jobs: {}`;
 
         const syncWorkflowPath = path.join(tempDir, ".github/workflows/agconf-sync.yml");
         const content = await fs.readFile(syncWorkflowPath, "utf-8");
-        expect(content).toContain("commit_strategy: 'direct'");
+        expect(content).toContain("inputs.commit_strategy || 'direct'");
         expect(content).toContain("commit_message: 'chore: sync'");
       });
 
@@ -514,7 +533,7 @@ jobs: {}`;
 
         const syncWorkflowPath = path.join(tempDir, ".github/workflows/agconf-sync.yml");
         const content = await fs.readFile(syncWorkflowPath, "utf-8");
-        expect(content).toContain("commit_strategy: 'direct'");
+        expect(content).toContain("inputs.commit_strategy || 'direct'");
       });
 
       it("supports both resolvedConfig and workflowSettings", async () => {
@@ -527,7 +546,7 @@ jobs: {}`;
         // Should use custom prefix for filenames
         const syncWorkflowPath = path.join(tempDir, ".github/workflows/custom-sync.yml");
         const content = await fs.readFile(syncWorkflowPath, "utf-8");
-        expect(content).toContain("commit_strategy: 'direct'");
+        expect(content).toContain("inputs.commit_strategy || 'direct'");
         expect(content).toContain("name: custom Sync");
       });
 

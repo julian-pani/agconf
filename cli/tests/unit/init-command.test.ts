@@ -12,12 +12,13 @@ vi.mock("../../src/commands/completion.js", () => ({
 vi.mock("@clack/prompts", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@clack/prompts")>()),
   confirm: vi.fn(),
+  select: vi.fn(),
   isCancel: vi.fn(() => false),
 }));
 
 import * as prompts from "@clack/prompts";
 import { promptCompletionInstall } from "../../src/commands/completion.js";
-import { initCommand } from "../../src/commands/init.js";
+import { initCommand, promptCommitStrategy } from "../../src/commands/init.js";
 
 /**
  * Command-level tests for `agconf init`: the guards and prompts that the
@@ -62,6 +63,7 @@ describe("initCommand", () => {
     errSpy.mockRestore();
     vi.mocked(promptCompletionInstall).mockReset();
     vi.mocked(prompts.confirm).mockReset();
+    vi.mocked(prompts.select).mockReset();
     vi.mocked(prompts.isCancel).mockReset().mockReturnValue(false);
     await fs.rm(repo, { recursive: true, force: true });
     await fs.rm(canonical, { recursive: true, force: true });
@@ -151,5 +153,71 @@ describe("initCommand", () => {
     await initCommand({ cwd: repo, local: canonical });
 
     expect(promptCompletionInstall).toHaveBeenCalledTimes(1);
+  });
+
+  describe("commit strategy prompt", () => {
+    const configFile = () => fs.readFile(path.join(repo, ".agconf", "config.yaml"), "utf-8");
+
+    it("records the chosen strategy in .agconf/config.yaml", async () => {
+      vi.mocked(prompts.select).mockResolvedValue("direct");
+
+      await promptCommitStrategy(repo, {});
+
+      expect(prompts.select).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringContaining("sync workflow") }),
+      );
+      expect(await configFile()).toContain("commit_strategy: direct");
+    });
+
+    it("does not prompt or write config under --yes", async () => {
+      await promptCommitStrategy(repo, { yes: true });
+
+      expect(prompts.select).not.toHaveBeenCalled();
+      await expect(configFile()).rejects.toThrow();
+    });
+
+    it("does not prompt when the repo already configured a workflow", async () => {
+      await fs.mkdir(path.join(repo, ".agconf"), { recursive: true });
+      await fs.writeFile(
+        path.join(repo, ".agconf", "config.yaml"),
+        "workflow:\n  commit_strategy: direct\n",
+        "utf-8",
+      );
+
+      await promptCommitStrategy(repo, {});
+
+      expect(prompts.select).not.toHaveBeenCalled();
+    });
+
+    it("prompts when the config exists without a workflow block, preserving other keys", async () => {
+      await fs.mkdir(path.join(repo, ".agconf"), { recursive: true });
+      await fs.writeFile(
+        path.join(repo, ".agconf", "config.yaml"),
+        "delivery:\n  skills: plugin\n",
+        "utf-8",
+      );
+      vi.mocked(prompts.select).mockResolvedValue("pr");
+
+      await promptCommitStrategy(repo, {});
+
+      const written = await configFile();
+      expect(written).toContain("skills: plugin");
+      expect(written).toContain("commit_strategy: pr");
+    });
+
+    it("aborts (exit 0) when the prompt is cancelled", async () => {
+      vi.mocked(prompts.select).mockResolvedValue(Symbol("cancel"));
+      vi.mocked(prompts.isCancel).mockReturnValue(true);
+
+      await expect(promptCommitStrategy(repo, {})).rejects.toThrow("process.exit(0) called");
+      await expect(configFile()).rejects.toThrow();
+    });
+
+    it("is not asked for a local source, which generates no sync workflow", async () => {
+      await initCommand({ cwd: repo, local: canonical });
+
+      expect(prompts.select).not.toHaveBeenCalled();
+      await expect(configFile()).rejects.toThrow();
+    });
   });
 });
